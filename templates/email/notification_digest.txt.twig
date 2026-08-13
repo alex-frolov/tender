@@ -1,0 +1,8 @@
+{{ 'body'|trans({'%count%': count}, 'notification_digest.template', locale) }}
+{% for event_type, items in items %}
+* {{ event_type }} ({{ items|length }})
+
+{% for item in items %}
+  {% if item.number is defined %}{{ item.number }} {% endif %}{% if item.title is defined %}{{ item.title }}{% endif %}
+{% endfor %}
+{% endfor %}

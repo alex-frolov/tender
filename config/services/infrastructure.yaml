@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Фреймворк-клей (App\Infrastructure): внешние ресурсы, общие для всех модулей.
+# Нижний слой — на него не ссылаются контроллеры/UseCase (phparkitect, правило 1/7).
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Redis-клиент: live-состояние, rate limit, кэш
+    # (явный аргумент REDIS_URL — autowire не подставляет string)
+    Redis:
+        class: Redis
+        factory: ['App\Infrastructure\Redis\RedisFactory', 'create']
+        arguments:
+            - '%env(REDIS_URL)%'
+
+    # AMQP-соединение (RabbitMQ; messenger async-транспорт)
+    AMQPConnection:
+        class: AMQPConnection
+        factory: ['App\Infrastructure\Amqp\AmqpConnectionFactory', 'create']
+        arguments:
+            - '%env(RABBITMQ_URL)%'

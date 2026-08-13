@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Auction: аукционы (4 типа), ставки, таймер, live-состояние (SSE/Mercure).
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Правила аукциона: контракт → базовая реализация
+    # ядра (коммерческие дефолты). Policy-плагин (ru-state-procurement) заменяет
+    # алиас своей реализацией AuctionRules, не меняя ядро. Используется
+    # RulesSnapshotFactory для фиксации rules_snapshot при старте торгов.
+    App\Auction\Rules\AuctionRules:
+        alias: App\Auction\Rules\DefaultAuctionRules
+
+    # Снапшот правил аукциона при старте — публичный для тестов
+    App\Auction\Rules\RulesSnapshotFactory:
+
+    # Аукционы: старт торгов и подача ставки REDUCTION(fixed)
+    # — публичные точки входа для контроллеров/тестов.
+    App\Auction\AuctionService:
+
+    App\Auction\AuctionBidService:
+
+    # Аукционы: выбор победителя — авто (REDUCTION) /
+    # ручной (FREE_PRICE/PRICE_REQUEST) — публичная точка входа для контроллеров
+    App\Auction\AuctionWinnerService:
+
+    # Redis-снапшот live-состояния аукциона — публичный
+    # для контроллеров/команд/тестов
+    App\Auction\State\AuctionStateService:
+
+    # Аукционы: команды heartbeat/recovery —
+    # порог простоя heartbeat из AUCTION_HEARTBEAT_TIMEOUT. Команды — в модуле
+    # Auction (App\Auction\Command, access-слой).
+    App\Auction\Command\AuctionHeartbeatCommand:
+        arguments:
+            $heartbeatTtlSeconds: '%auction_heartbeat_timeout%'
+
+    App\Auction\Command\AuctionRecoverCommand:
+        arguments:
+            $heartbeatTimeoutSec: '%auction_heartbeat_timeout%'
+
+    # Read-контракт статистики модуля для дашборда — публичный для тестов.
+    App\Auction\Service\AuctionDashboardQueryService:
+
+    # Mercure: SSE live-аукционов.
+    # Публикация из ядра (outbox → RabbitMQ → consumer → HTTP POST в hub):
+    # Hub публикует с publish-JWT (право publish), подписка (discovery) —
+    # subscribe-JWT (право sub) на приватный topic auction:{id}.
+    # JWT-секреты раздельные: publish / subscribe (HS256, LcobucciFactory).
+    App\Auction\Stream\Mercure\PublishJwtFactory:
+        class: Symfony\Component\Mercure\Jwt\LcobucciFactory
+        arguments:
+            - '%env(MERCURE_JWT_SECRET_PUBLISH)%'
+
+    App\Auction\Stream\Mercure\SubscribeJwtFactory:
+        class: Symfony\Component\Mercure\Jwt\LcobucciFactory
+        arguments:
+            - '%env(MERCURE_JWT_SECRET_SUBSCRIBE)%'
+
+    # Провайдер publish-JWT: право publish на любые topic'и аукциона (ядро).
+    App\Auction\Stream\Mercure\PublishTokenProvider:
+        class: Symfony\Component\Mercure\Jwt\FactoryTokenProvider
+        arguments:
+            - '@App\Auction\Stream\Mercure\PublishJwtFactory'
+            - []         # subscribe: нет
+            - ['auction:*'] # publish: приватные topic'и аукционов
+
+    # Hub для публикации (MERCURE_PUBLISH_URL) + фабрика subscribe-токенов
+    # (MERCURE_JWT_SECRET_SUBSCRIBE) для discovery-ссылки клиента.
+    Symfony\Component\Mercure\Hub:
+        class: Symfony\Component\Mercure\Hub
+        arguments:
+            - '%env(MERCURE_PUBLISH_URL)%'
+            - '@App\Auction\Stream\Mercure\PublishTokenProvider'
+            - '@App\Auction\Stream\Mercure\SubscribeJwtFactory'
+            - '%env(MERCURE_PUBLIC_URL)%'
+
+    Symfony\Component\Mercure\HubInterface:
+        alias: Symfony\Component\Mercure\Hub
+
+    # Discovery SSE-стрима аукциона — публичная точка
+    # входа для контроллера/тестов.
+    App\Auction\Stream\AuctionStreamPublisher:
+
+    App\Auction\Stream\AuctionStreamDiscovery:
+        arguments:
+            $subscribeTtl: '%env(int:MERCURE_SUBSCRIBE_TTL)%'

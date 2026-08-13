@@ -1,0 +1,20 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Platform\UseCase;
+
+/**
+ * Маркер-интерфейс UseCase модуля Platform.
+ *
+ * UseCase — прикладной слой модуля: 1 класс = 1 действие пользователя
+ * (command/query). Публичный контракт: другие модули и контроллеры вызывают
+ * UseCase напрямую; во внутренности модуля (Entity/Repository/Form/Input/
+ * Presenter/Exception/Controller/...) не заглядывают (PHPArkitect, правило 6).
+ *
+ * Каждый UseCase: final class, implements PlatformUseCase, один публичный метод
+ * execute() со строгой типизацией входа/выхода.
+ */
+interface PlatformUseCase
+{
+}

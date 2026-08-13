@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "platform.rate_limit.exceeded",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "platform.rate_limit.exceeded" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": ["string", "null"], "format": "uuid" },
+    "aggregate_type": { "const": "platform" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["key", "limit", "window"],
+      "properties": {
+        "key": { "type": "string" },
+        "limit": { "type": "integer", "minimum": 0 },
+        "window": { "type": "integer", "minimum": 1 },
+        "retry_after": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

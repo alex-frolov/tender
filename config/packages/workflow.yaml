@@ -1,0 +1,4 @@
+# Точка загрузки конфигураций workflow (AGENTS.md).
+# Каждый workflow хранится отдельным файлом в config/workflow/{name}.yaml.
+imports:
+    - { resource: '../workflow/*.yaml' }

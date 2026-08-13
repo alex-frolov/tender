@@ -1,0 +1,73 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.dist
+.dockerhub.secrets
+config/secrets/*
+
+# Git and CI
+.git
+.gitattributes
+.gitignore
+.github
+
+# Build artifacts and dependencies (installed inside the image)
+vendor/
+node_modules/
+public/bundles/
+.pnpm-store/
+.yarn/
+.yarnrc.yml
+.pnp.*
+
+# Symfony runtime data — exclude contents but keep the directories themselves
+# (the dirs are tracked in git via .gitkeep and code expects them to exist)
+var/
+
+# IDE, tools, caches
+.idea/
+.claude/
+.vscode/
+.opencode/
+.php-cs-fixer.cache
+.php_cs.cache
+.phpunit.result.cache
+.phpunit/
+nbproject/
+
+# Dev-only configs
+tests/
+.php-cs-fixer.dist.php
+php-cs-fixer.sh
+phpstan.sh
+phpstan.neon
+phpstan-baseline.neon
+eslint.config.mjs
+.editorconfig
+.codecov.yml
+phpunit.xml
+phpunit.xml.dist
+package.json
+pnpm-lock.yaml
+webpack.config.js
+
+# Docker — в app-образ нужен только entrypoint воркера; web-образ (docker/web.Dockerfile)
+# дополнительно забирает прод-nginx-конфиг. Остальное (dev Dockerfile, php-fpm pool) —
+# build/run-артефакты хоста и в образы не попадают.
+docker/*
+!docker/worker-entrypoint.sh
+!docker/scheduler-entrypoint.sh
+!docker/web.Dockerfile
+!docker/nginx/
+!docker/nginx/prod.conf
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local Symfony overrides
+public/.user.ini
+php.ini
+.php-version
+config/packages/local.yaml
+config/bundles-local.php

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "contract.expired",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "contract.expired" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "contract" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["contract_id", "valid_to"],
+      "properties": {
+        "contract_id": { "type": "string", "format": "uuid" },
+        "valid_to": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

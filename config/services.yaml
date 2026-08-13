@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# This file is the entry point to configure your own services.
+# Files in the packages/ subdirectory configure your dependencies.
+# See also https://symfony.com/doc/current/service_container/import.html
+
+# ВАЖНО (порядок загрузки): imports обрабатываются ДО services/parameters текущего
+# файла (Symfony\...\Loader\ContentLoaderTrait::loadContent). Поэтому ресурс
+# App\: (регистрация всех классов src/) вынесен в первый импортируемый файл
+# services/00-app.yaml: он загружается раньше модульных файлов, и явные
+# определения сервисов модулей (services/{module}.yaml) гарантированно
+# переопределяют автозарегистрированные («последние определения заменяют
+# предыдущие»). Параметры ниже — глобальные, на них ссылаются модульные файлы
+# (%параметры резолвятся на этапе компиляции, порядок файлов не важен).
+
+parameters:
+    # Порог простоя heartbeat live-аукциона (сек): если Redis-
+    # heartbeat TRADE-аукциона отсутствует/простоил дольше — авто-пауза.
+    # Интервал команды auctions:heartbeat должен быть < этого значения.
+    auction_heartbeat_timeout: '%env(int:AUCTION_HEARTBEAT_TIMEOUT)%'
+
+    # Webhooks: лимит попыток доставки (после него —
+    # dead-letter + platform.webhook.failed) и таймаут HTTP-запроса к подписчику.
+    webhook_max_attempts: '%env(int:WEBHOOK_MAX_ATTEMPTS)%'
+    webhook_delivery_timeout: '%env(int:WEBHOOK_DELIVERY_TIMEOUT)%'
+
+    # Экспорт: каталог готовых файлов (потоковая
+    # генерация xlsx/csv через OpenSpout). Локальный диск var/exports.
+    export_dir: '%kernel.project_dir%/var/exports'
+
+    # Уведомления: интервал ежедневного дайджеста (сек).
+    # Цикл рассылки самопланируется (NotificationDigestMessageHandler после
+    # каждого запуска планирует следующий на этот интервал; первый запуск —
+    # команда notifications:digest:schedule).
+    notification_digest_interval: '%env(int:NOTIFICATION_DIGEST_INTERVAL)%'
+
+    # Плагин ru-state-procurement: feature-flag активации доменных
+    # правил РФ. 1 — правила РФ активны (алиасы контрактов переключаются
+    # compiler pass'ом ProcurementRulesPass); 0 — дефолты ядра.
+    procurement_plugin_enabled: '%env(bool:PROCUREMENT_PLUGIN_ENABLED)%'
+
+imports:
+    # 00-app.yaml — _defaults + App\: (ресурс src/). ДОЛЖЕН быть первым:
+    # загружается раньше модульных файлов, чтобы явные определения модулей
+    # гарантированно переопределяли автозарегистрированные.
+    - { resource: 'services/00-app.yaml' }
+    # Фреймворк-клей (Redis, AMQP) — нижний слой, общий.
+    - { resource: 'services/infrastructure.yaml' }
+    # Shared kernel (сквозные сервисы).
+    - { resource: 'services/shared.yaml' }
+    # Бизнес-модули: конфигурация сервисов рядом с модулем.
+    - { resource: 'services/iam.yaml' }
+    - { resource: 'services/tender.yaml' }
+    - { resource: 'services/bid.yaml' }
+    - { resource: 'services/auction.yaml' }
+    - { resource: 'services/contract.yaml' }
+    - { resource: 'services/document.yaml' }
+    - { resource: 'services/platform.yaml' }
+    - { resource: 'services/analytics.yaml' }
+    - { resource: 'services/export.yaml' }
+    - { resource: 'services/notification.yaml' }
+    - { resource: 'services/saved_search.yaml' }
+    - { resource: 'services/favorite.yaml' }
+    # Плагин ru-state-procurement: загружается последним — правила
+    # активируются compiler pass'ом в Kernel::build (services.yaml параметр).
+    - { resource: 'services/ru_state_procurement.yaml' }

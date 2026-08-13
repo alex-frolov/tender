@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tender.updated",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "tender.updated" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "tender" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["tender_id"],
+      "properties": {
+        "tender_id": { "type": "string", "format": "uuid" },
+        "changed_fields": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "reason": { "type": ["string", "null"], "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

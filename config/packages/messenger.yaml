@@ -1,0 +1,110 @@
+framework:
+    messenger:
+        failure_transport: failed
+
+        default_bus: messenger.bus.default
+
+        buses:
+            messenger.bus.default:
+                middleware:
+                    - App\Infrastructure\Messenger\Middleware\DispatchAfterCommitMiddleware
+
+        transports:
+            # Основной транспорт — RabbitMQ (амqp ext)
+            async:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                retry_strategy:
+                    max_retries: 3
+                    delay: 1000
+                    multiplier: 2
+                options:
+                    exchange:
+                        name: tender_events
+                        type: topic
+                    queues:
+                        tender_events: ~
+
+            # Выделенный канал почты — отдельная очередь tender_emails
+            # (писем много, они не должны блокировать очередь доменных событий
+            # и наоборот; SMTP-задержки не влияют на outbox-события)
+            emails:
+                dsn: '%env(MESSENGER_EMAILS_DSN)%'
+                retry_strategy:
+                    max_retries: 3
+                    delay: 1000
+                    multiplier: 2
+                options:
+                    exchange:
+                        name: tender_emails
+                        type: topic
+                    queues:
+                        tender_emails: ~
+
+            # Dead-letter (после исчерпания ретраев)
+            failed:
+                dsn: 'doctrine://default?queue_name=failed'
+            # Redis-транспорт (live-обновления, счётчики)
+            live:
+                dsn: '%env(MESSENGER_REDIS_DSN)%'
+
+            # Доставка webhook: отдельная очередь tender_webhooks —
+            # HTTP к подписчикам не блокирует очередь доменных событий.
+            # Ретраи с экспоненциальной задержкой (1/5/25/125 сек):
+            # delay 1000 мс, multiplier 5. Предел попыток дублируется
+            # параметром webhook_max_attempts (после него — dead-letter).
+            webhooks:
+                dsn: '%env(RABBITMQ_URL)%'
+                retry_strategy:
+                    max_retries: 5
+                    delay: 1000
+                    multiplier: 5
+                options:
+                    exchange:
+                        name: tender_webhooks
+                        type: topic
+                    queues:
+                        tender_webhooks: ~
+
+            # Фоновый экспорт: отдельная очередь tender_exports —
+            # потоковая генерация xlsx/csv (IO/CPU-тяжёлая) не блокирует очередь
+            # доменных событий и webhook-доставку. Ретрай с задержкой: генерация
+            # идемпотентна (ready/failed не перезапускается, ExportJobProcessor).
+            exports:
+                dsn: '%env(RABBITMQ_URL)%'
+                retry_strategy:
+                    max_retries: 3
+                    delay: 2000
+                    multiplier: 2
+                options:
+                    exchange:
+                        name: tender_exports
+                        type: topic
+                    queues:
+                        tender_exports: ~
+
+        routing:
+            # Все события домена — через amqp-транспорт
+            'App\Shared\Events\EventMessage': async
+            # Задачи таймлайна (отложенные) — redis (TTL-поддержка)
+            'App\Tender\Timeline\TimelineMessage': live
+            # Письма (mailer) — асинхронно через выделенный канал почты
+            'Symfony\Component\Mailer\Messenger\SendEmailMessage': emails
+            # Доставка webhook — выделенный транспорт
+            'App\Platform\WebhookDeliveryMessage': webhooks
+            # Уведомления: мгновенные письма — выделенный канал почты;
+            # дайджест — Redis (TTL-поддержка, самопланирование следующего запуска)
+            'App\Notification\NotificationEmailMessage': emails
+            'App\Notification\NotificationDigestMessage': live
+            # Фоновый экспорт — выделенный транспорт
+            'App\Export\ExportJobMessage': exports
+
+when@test:
+    framework:
+        messenger:
+            transports:
+                async: 'in-memory://'
+                failed: 'in-memory://'
+                live: 'in-memory://'
+                emails: 'in-memory://'
+                webhooks: 'in-memory://'
+                exports: 'in-memory://'

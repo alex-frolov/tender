@@ -1,0 +1,28 @@
+framework:
+    rate_limiter:
+        # Общий лимит на API-ключ/IP (RL-1). Лимит вынесен в env-контракт
+        # (RATE_LIMIT_GLOBAL_PER_MIN, .env.example): для нагрузочных k6-прогонов
+        # поднимается через compose-оверрайд (docker-compose.load.yml) — иначе
+        # 600/мин/IP не позволяет достичь целевой нагрузки (100–200 ставок/сек).
+        api_global:
+            policy: 'token_bucket'
+            limit: '%env(int:RATE_LIMIT_GLOBAL_PER_MIN)%'
+            rate: { interval: '1 minute' }
+
+        # Лимит на тендер (ставки/сек) — защита аукциона (RL-1, RL-6)
+        auction_bids:
+            policy: 'sliding_window'
+            limit: 10
+            interval: '1 second'
+
+        # Лимит на тендер (запросы к документам/карточке)
+        tender_reads:
+            policy: 'sliding_window'
+            limit: 100
+            interval: '1 minute'
+
+        # Лимит на отправку email (подтверждение/восстановление пароля)
+        email_send:
+            policy: 'fixed_window'
+            limit: 5
+            interval: '10 minutes'

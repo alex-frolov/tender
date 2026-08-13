@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "platform.webhook.failed",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "platform.webhook.failed" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "webhook_delivery" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["webhook_id", "delivery_id", "event_type", "attempts"],
+      "properties": {
+        "webhook_id": { "type": "string", "format": "uuid" },
+        "delivery_id": { "type": "string", "format": "uuid" },
+        "event_type": { "type": "string" },
+        "attempts": { "type": "integer", "minimum": 1 },
+        "last_error": { "type": "string" },
+        "last_http_status": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

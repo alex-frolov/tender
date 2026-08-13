@@ -1,0 +1,1 @@
+body: "Your bid for tender %number% \"%title%\" has been rejected.\n\nReason: %reason%\n\nThis is an automated message."

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "export.created",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "export.created" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "export_job" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["job_id", "export_type", "format", "tenant_id"],
+      "properties": {
+        "job_id": { "type": "string", "format": "uuid" },
+        "export_type": { "type": "string", "enum": ["tenders", "bids", "contracts"] },
+        "format": { "type": "string", "enum": ["xlsx", "csv"] },
+        "tenant_id": { "type": "string", "format": "uuid" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

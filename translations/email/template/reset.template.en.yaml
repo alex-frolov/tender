@@ -1,0 +1,1 @@
+body: "To reset your password, follow the link:\n%link%\n\nThe link is valid for %minutes% minutes. If you didn't request it, ignore this message."

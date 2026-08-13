@@ -1,0 +1,62 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Iam: пользователи, компании, аутентификация, роли/права.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Проверка прав по ролям — публичная для тестов/контроллеров.
+    # Фактическая проверка прав при аутентификации по API-ключу сужается scopes
+    # ключа (ScopedPermissionChecker): все permission-Voter'ы зависят от интерфейса
+    # PermissionCheckerInterface, который алиасится на декоратор.
+    App\Iam\Service\PermissionCheckService:
+
+    # Кэш наборов прав — публичный для очистки в тестах
+    App\Iam\Service\RolePermissionCache:
+
+    # Password hasher (JWT-API; security-bundle авторизацию не настраивает через hashers):
+    # UserPasswordHasherInterface → UserPasswordHasher (NativePasswordHasher)
+    Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactoryInterface:
+        class: Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactory
+        arguments:
+            -
+                App\Iam\Entity\User:
+                    class: Symfony\Component\PasswordHasher\Hasher\NativePasswordHasher
+                    arguments: []
+
+    Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface:
+        class: Symfony\Component\PasswordHasher\Hasher\UserPasswordHasher
+        arguments:
+            - '@Symfony\Component\PasswordHasher\Hasher\PasswordHasherFactoryInterface'
+
+    # JWT: HS256, секрет из env, TTL из env
+    App\Iam\Service\JwtService:
+        arguments:
+            $secret: '%env(AUTH_JWT_SECRET)%'
+            $accessTtl: '%env(int:AUTH_ACCESS_TTL)%'
+
+    App\Iam\Service\RefreshTokenService:
+        arguments:
+            $refreshTtl: '%env(int:AUTH_REFRESH_TTL)%'
+
+    # Подтверждение email: TTL токена, шаблон ссылки, адрес отправителя
+    App\Iam\Service\EmailVerificationService:
+        arguments:
+            $tokenTtl: '%env(int:EMAIL_VERIFY_TTL)%'
+            $verifyUrlTemplate: '%env(EMAIL_VERIFY_URL_TEMPLATE)%'
+            $from: '%env(MAILER_FROM)%'
+
+    # Восстановление пароля: TTL токена, шаблон ссылки, адрес отправителя
+    App\Iam\Service\PasswordResetService:
+        arguments:
+            $tokenTtl: '%env(int:PASSWORD_RESET_TTL)%'
+            $resetUrlTemplate: '%env(PASSWORD_RESET_URL_TEMPLATE)%'
+            $from: '%env(MAILER_FROM)%'
+
+    # Управление пользователями компании: ссылка приглашения, адрес отправителя
+    App\Iam\Service\UserManagementService:
+        arguments:
+            $inviteUrlTemplate: '%env(INVITE_URL_TEMPLATE)%'
+            $from: '%env(MAILER_FROM)%'

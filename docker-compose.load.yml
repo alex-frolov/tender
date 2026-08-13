@@ -1,0 +1,47 @@
+# Load-test override (задача 7.2, NFR-1/22): поднимает rate-limit до значений,
+# при которых достижимы SLO нагрузки, и добавляет webhook-receiver (php -S),
+# который принимает доставки webhook'ов и отдаёт /stats для k6-сценария.
+#
+# Запуск: docker compose -f docker-compose.yml -f docker-compose.load.yml up -d app worker loadreceiver
+# После прогона: docker compose -f docker-compose.yml -f docker-compose.load.yml down
+# (или просто вернуть лимиты через docker compose up -d app worker).
+services:
+  app:
+    environment:
+      # NFR-1 требует 100–200 ставок/сек — общий лимит api_global (600/мин/IP)
+      # этому мешает. На время нагрузочного прогона поднимаем до 100k/мин.
+      RATE_LIMIT_GLOBAL_PER_MIN: "100000"
+      # Dev-режим с debug=1 компилирует/инвалидирует контейнер и включает
+      # profiler на каждый запрос (+300–400 мс overhead) — SLO (p95 < 100 мс,
+      # < 200 мс) в таких замерах недостижимы. Нагрузочный прогон идёт против
+      # профиля без debug (как prod-компиляция): APP_ENV=dev + APP_DEBUG=0.
+      APP_DEBUG: "0"
+    volumes:
+      # php-fpm pool для нагрузки: дефолтный max_children=5 не даёт достичь
+      # NFR-1 (100–200 ставок/сек при 20 конкурентных VU).
+      - ./docker/php/load-www.conf:/usr/local/etc/php-fpm.d/zz-load.conf:ro
+
+  worker:
+    environment:
+      RATE_LIMIT_GLOBAL_PER_MIN: "100000"
+      APP_DEBUG: "0"
+
+  webhooks:
+    environment:
+      APP_DEBUG: "0"
+
+  # Webhook-receiver для нагрузочного сценария: живёт в compose-сети (worker
+  # доставляет на http://loadreceiver:8787/hook), порт 8787 публикуется наружу
+  # для k6 (GET /stats). Роутер — scripts/load_webhook_receiver.php.
+  loadreceiver:
+    image: php:8.5-cli
+    volumes:
+      - ./:/var/www:ro
+    command: ["php", "-S", "0.0.0.0:8787", "/var/www/scripts/load_webhook_receiver.php"]
+    environment:
+      RECEIVER_LOG: /tmp/load_receiver.log
+      RECEIVER_STATS: /tmp/load_receiver_stats.json
+    ports:
+      - "8787:8787"
+    depends_on:
+      - app

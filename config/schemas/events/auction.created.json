@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "auction.created",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "auction.created" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "auction" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["auction_id", "tender_id", "lot_id", "type", "status", "no_start_price"],
+      "properties": {
+        "auction_id": { "type": "string", "format": "uuid" },
+        "tender_id": { "type": "string", "format": "uuid" },
+        "lot_id": { "type": "string", "format": "uuid" },
+        "type": { "type": "string", "enum": ["reduction", "free_price", "price_request"] },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "agreement", "new", "scheduled", "trade", "paused", "choice", "approve", "in_work", "done_by_performer", "done", "claim", "done_by_claim", "cancelled", "expired", "deleted"]
+        },
+        "no_start_price": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

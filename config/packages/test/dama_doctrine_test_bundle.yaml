@@ -1,0 +1,8 @@
+# dama/doctrine-test-bundle: изоляция тестов через транзакции.
+# Каждый тест выполняется внутри BEGIN...ROLLBACK — данные не попадают в БД,
+# ручная чистка (DQL DELETE) не требуется, скорость набора выше.
+# Статическое соединение + кэши метаданных/запросов переживают перезагрузку ядра.
+dama_doctrine_test:
+    enable_static_connection: true
+    enable_static_meta_data_cache: true
+    enable_static_query_cache: true

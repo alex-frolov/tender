@@ -1,0 +1,38 @@
+# Нормализация переносов строк: всё текстовое — LF (Docker/linux-окружение).
+* text=auto
+
+*.php text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.lock text eol=lf
+*.xml text eol=lf
+*.twig text eol=lf
+*.sh text eol=lf
+*.sql text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.env.dist text eol=lf
+.env.prod.dist text eol=lf
+.env.test text eol=lf
+.editorconfig text eol=lf
+
+# Бинарные файлы — не трогать и не диффать как текст.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+
+# Служебные файлы не попадают в архивы (Code → Download ZIP).
+/.github export-ignore
+/.editorconfig export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore

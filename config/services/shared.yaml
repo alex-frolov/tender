@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Shared kernel — сквозные технические сервисы (не бизнес-модули).
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Audit-service — публичная точка входа (вызывается из контроллеров/сервисов)
+    App\Shared\Audit\AuditService:
+
+    # Идемпотентность мутаций: TTL ключа (retention idempotency_keys).
+    # Публичная точка входа для middleware и cleanup-команды.
+    App\Shared\Idempotency\IdempotencyService:
+        arguments:
+            $ttlSeconds: '%env(int:IDEMPOTENCY_TTL)%'
+
+    # Реестр JSON Schema событий (schema registry, testing-strategy.md §5).
+    # Схемы — config/schemas/events/{event_type}.json (конверт + payload).
+    # Потребляется OutboxEventSchemaListener (prePersist) и тестами.
+    App\Shared\Events\Schema\EventSchemaRegistry:
+        arguments:
+            $schemasDir: '%kernel.project_dir%/config/schemas/events'

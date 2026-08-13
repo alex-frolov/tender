@@ -1,0 +1,27 @@
+# Конфигурация авторизации (доступ на уровне кода, а не access_control).
+#
+# Аутентификация остаётся за самописным JWT-механизмом (App\Iam\Auth\AuthMiddleware),
+# который кладёт authenticated-токен в TokenStorage. Здесь настраивается только
+# авторизация: AccessDecisionManager + Voter'ы. Само применение прав —
+# декларативно в контроллерах через #[IsGranted(...)] (см. AGENTS.md).
+security:
+    # Провайдер требуется для работы security-компонента; фактическое восстановление
+    # пользователя из JWT делает AuthMiddleware (класс App\Iam\Entity\User уже в токене).
+    providers:
+        app_user_provider:
+            entity:
+                class: App\Iam\Entity\User
+                property: email
+
+    firewalls:
+        api:
+            pattern: ^/
+            stateless: true
+            security: true
+            entry_point: App\Security\ApiAccessDeniedHandler
+            access_denied_handler: App\Security\ApiAccessDeniedHandler
+
+    # positive-стратегия: доступ если любой Voter проголосовал "за".
+    access_decision_manager:
+        strategy: affirmative
+        allow_if_all_abstain: false

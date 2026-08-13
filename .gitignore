@@ -1,0 +1,62 @@
+/.idea
+.DS_Store
+
+# Секреты локального окружения: реальные значения не коммитим (NFR-11);
+# шаблон для локального .env — .env.dist (закоммичен), тестовые значения — .env.test.
+# Прод-секреты — .env.prod (из шаблона .env.prod.dist, задача 7.6).
+/.env
+/.env.dev
+/.env.prod
+/.env.local
+/.env.local.php
+/.env.*.local
+
+# Нагрузочные тесты: сгенерированные артефакты (state с токенами, логи receiver)
+/load/state.json
+/load/receiver.log
+/load/receiver_stats.json
+/load/k6/results/
+
+###> symfony/framework-bundle ###
+/config/secrets/prod/prod.decrypt.private.php
+/public/bundles/
+/var/
+/vendor/
+###< symfony/framework-bundle ###
+
+###> phpunit/phpunit ###
+.phpunit
+/phpunit.xml
+/.phpunit.cache/
+/.phpunit.result.cache
+###< phpunit/phpunit ###
+
+###> friendsofphp/php-cs-fixer ###
+/.php_cs
+/.php_cs.cache
+/.php-cs-fixer.php
+/.php-cs-fixer.cache
+###< friendsofphp/php-cs-fixer ###
+
+# some hosters require a htaccess to change the PHP version
+/public/.htaccess
+
+# custom apache rules e.g. to deactivate ioncube loader
+/public/.user.ini
+
+# for symfony local webserver
+/php.ini
+/.php-version
+
+# for keeping empty directories
+/config/packages/local.yaml
+/config/bundles-local.php
+
+###> symfony/webpack-encore-bundle ###
+/node_modules/
+npm-debug.log
+yarn-error.log
+###< symfony/webpack-encore-bundle ###
+/nbproject/*
+
+.dockerhub.secrets

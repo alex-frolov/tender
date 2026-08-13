@@ -1,0 +1,1 @@
+body: "Событие %event_type% (тендер %tender_number% «%tender_title%»).\n\nПричина/подробности: %reason%\n\nID события: %event_id%\n\nЭто сообщение отправлено автоматически."

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "analytics.counter_rotated",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "analytics.counter_rotated" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": ["string", "null"], "format": "uuid" },
+    "aggregate_type": { "const": "analytics" },
+    "aggregate_id": { "type": "string" },
+    "payload": {
+      "type": "object",
+      "required": ["rotated"],
+      "properties": {
+        "rotated": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

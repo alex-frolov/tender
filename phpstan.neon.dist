@@ -1,0 +1,21 @@
+parameters:
+    level: max
+    paths:
+        - src
+        - tests
+    tmpDir: var/cache/phpstan
+    symfony:
+        containerXmlPath: var/cache/dev/App_KernelDevDebugContainer.xml
+
+    # Деньги — только int minor units (PR-1): запрет float/decimal в src
+    treatPhpDocTypesAsCertain: false
+
+    # Doctrine присваивает id через reflection — false positive property.unusedType
+    # (шаг 4 refactor-modular-monolith.md: сущности переехали в src/{Module}/Entity/)
+    ignoreErrors:
+        -
+            identifier: property.unusedType
+            path: src/*/Entity/*.php
+
+includes:
+    - vendor/phpstan/phpstan-symfony/extension.neon

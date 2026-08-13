@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Platform: API-ключи, webhooks (подписки/доставки), rate limiting,
+# декоратор permission-проверки по scopes API-ключа.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # API-ключи — жизненный цикл ключей
+    # (create/list/revoke/rotate) + аутентификация по ключу (resolve/recordLastUsed)
+    # — публичная точка входа для контроллеров/средств аутентификации/тестов.
+    App\Platform\ApiKeyService:
+
+    # webhooks — подписки и доставка — публичные
+    # точки входа для контроллеров/команд/тестов.
+    App\Platform\WebhookService:
+
+    App\Platform\WebhookDeliveryService:
+
+    # Декоратор проверки прав: при аутентификации по API-ключу набор прав
+    # сужается scopes ключа. PermissionCheckerInterface
+    # (интерфейс модуля Iam) алиасится на декоратор — все permission-Voter'ы
+    # получают «scoped» проверку автоматически.
+    App\Platform\Service\ScopedPermissionChecker:
+        arguments:
+            $inner: '@App\Iam\Service\PermissionCheckService'
+
+    App\Iam\Service\PermissionCheckerInterface:
+        alias: App\Platform\Service\ScopedPermissionChecker

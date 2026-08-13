@@ -1,0 +1,1 @@
+body: "Event %event_type% (tender %tender_number% \"%tender_title%\").\n\nDetails: %reason%\n\nEvent ID: %event_id%\n\nThis is an automated notification."

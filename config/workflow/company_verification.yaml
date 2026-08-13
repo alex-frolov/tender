@@ -1,0 +1,29 @@
+framework:
+    workflows:
+        company_verification:
+            type: state_machine
+            marking_store:
+                type: method
+                property: verificationStatus
+            supports:
+                - App\Iam\Entity\Company
+            initial_marking: !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::PENDING->value
+            places:
+                - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::PENDING->value
+                - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::ACTIVE->value
+                - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::REJECTED->value
+                - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::SUSPENDED->value
+            transitions:
+                !php/enum App\Iam\Entity\Enum\CompanyStatusTransition::APPROVE->value:
+                    from:
+                        - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::PENDING->value
+                        - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::SUSPENDED->value
+                    to: !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::ACTIVE->value
+                !php/enum App\Iam\Entity\Enum\CompanyStatusTransition::REJECT->value:
+                    from:
+                        - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::PENDING->value
+                        - !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::SUSPENDED->value
+                    to: !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::REJECTED->value
+                !php/enum App\Iam\Entity\Enum\CompanyStatusTransition::SUSPEND->value:
+                    from: !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::ACTIVE->value
+                    to: !php/enum App\Iam\Entity\Enum\CompanyStatusEnum::SUSPENDED->value

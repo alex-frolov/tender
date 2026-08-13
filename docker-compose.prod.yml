@@ -1,0 +1,222 @@
+# Tender Platform — production deployment (задача 7.6, NFR-17/18).
+#
+# Standalone-профиль прод-развёртывания: multi-stage prod-образы, healthchecks,
+# именованные volumes для данных, секреты — только из окружения/.env.prod
+# (в git секреты не попадают, NFR-11). dev-профиль (docker-compose.yml) не
+# переиспользуется: прод не монтирует исходники и не публикует служебные порты.
+#
+# Запуск:
+#   cp .env.dist .env.prod         # + заполнить секреты (или секрет-менеджер)
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml --profile deploy run --rm migrate
+#   docker compose -f docker-compose.prod.yml up -d
+#   bash scripts/deploy-smoke.sh http://localhost:${HTTP_PORT:-8080}
+#
+# Полный процесс (миграции → rollout → healthchecks → smoke → откат) —
+# см. operations/deployment.md и scripts/deploy.sh.
+
+name: tender-prod
+
+x-app-env: &app-env
+  APP_ENV: prod
+  APP_DEBUG: "0"
+  APP_SECRET: ${APP_SECRET:?APP_SECRET required}
+  APP_SHARE_DIR: var/share
+  DOCUMENT_MAX_FILE_BYTES: ${DOCUMENT_MAX_FILE_BYTES:-20971520}
+  DEFAULT_URI: ${DEFAULT_URI:-http://localhost}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-tender}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}@db:5432/${POSTGRES_DB:-tender}?serverVersion=17&charset=utf8
+  REDIS_URL: redis://redis:6379
+  RABBITMQ_URL: amqp://${RABBITMQ_USER:-tender}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD required}@rabbitmq:5672/%2Ftender
+  MESSENGER_TRANSPORT_DSN: amqp://${RABBITMQ_USER:-tender}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD required}@rabbitmq:5672/%2Ftender
+  MESSENGER_EMAILS_DSN: amqp://${RABBITMQ_USER:-tender}:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD required}@rabbitmq:5672/%2Ftender
+  MESSENGER_REDIS_DSN: redis://redis:6379/messages
+  MESSENGER_DOCTRINE_DSN: doctrine://default?auto_setup=0
+  MERCURE_URL: http://mercure/.well-known/mercure
+  MERCURE_PUBLIC_URL: ${MERCURE_PUBLIC_URL:?MERCURE_PUBLIC_URL required}
+  MERCURE_PUBLISH_URL: http://mercure/.well-known/mercure
+  MERCURE_JWT_SECRET_PUBLISH: ${MERCURE_JWT_SECRET_PUBLISH:?MERCURE_JWT_SECRET_PUBLISH required}
+  MERCURE_JWT_SECRET_SUBSCRIBE: ${MERCURE_JWT_SECRET_SUBSCRIBE:?MERCURE_JWT_SECRET_SUBSCRIBE required}
+  MERCURE_SUBSCRIBE_TTL: "3600"
+  MAILER_DSN: ${MAILER_DSN:?MAILER_DSN required}
+  MAILER_FROM: ${MAILER_FROM:-no-reply@tender-platform.local}
+  EMAIL_VERIFY_TTL: ${EMAIL_VERIFY_TTL:-3600}
+  EMAIL_VERIFY_URL_TEMPLATE: ${EMAIL_VERIFY_URL_TEMPLATE:?EMAIL_VERIFY_URL_TEMPLATE required}
+  PASSWORD_RESET_TTL: ${PASSWORD_RESET_TTL:-1800}
+  PASSWORD_RESET_URL_TEMPLATE: ${PASSWORD_RESET_URL_TEMPLATE:?PASSWORD_RESET_URL_TEMPLATE required}
+  INVITE_URL_TEMPLATE: ${INVITE_URL_TEMPLATE:?INVITE_URL_TEMPLATE required}
+  AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?AUTH_JWT_SECRET required}
+  AUTH_ACCESS_TTL: ${AUTH_ACCESS_TTL:-900}
+  AUTH_REFRESH_TTL: ${AUTH_REFRESH_TTL:-2592000}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY required}
+  DOMAIN_TIMEZONE: ${DOMAIN_TIMEZONE:-Europe/Moscow}
+  LOCK_DSN: ${LOCK_DSN:-flock}
+  IDEMPOTENCY_TTL: ${IDEMPOTENCY_TTL:-3600}
+  AUCTION_HEARTBEAT_TIMEOUT: ${AUCTION_HEARTBEAT_TIMEOUT:-300}
+  WEBHOOK_MAX_ATTEMPTS: ${WEBHOOK_MAX_ATTEMPTS:-5}
+  WEBHOOK_DELIVERY_TIMEOUT: ${WEBHOOK_DELIVERY_TIMEOUT:-10}
+  NOTIFICATION_DIGEST_INTERVAL: ${NOTIFICATION_DIGEST_INTERVAL:-86400}
+  RATE_LIMIT_GLOBAL_PER_MIN: ${RATE_LIMIT_GLOBAL_PER_MIN:-600}
+  FILES_STORAGE: local
+  FILES_LOCAL_DIR: /var/www/var/files
+
+services:
+  app:
+    image: tender-platform/app:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: prod-minimal
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - app_var:/var/www/var
+    healthcheck:
+      # php-fpm: FastCGI на :9000 (не HTTP) — проверяем, что слушает сокет.
+      # ($$ — экранирование compose-интерполяции для $e/$m в php-коде)
+      test: ["CMD", "php", "-r", "exit(@fsockopen('127.0.0.1', 9000, $$e, $$m, 1) ? 0 : 1);"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      mercure: { condition: service_healthy }
+
+  web:
+    image: tender-platform/web:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/web.Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    volumes:
+      - ./docker/nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      # Полный HTTP-путь: nginx → php-fpm → /health/live (app+db+redis).
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/live || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      app: { condition: service_healthy }
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tender}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      POSTGRES_DB: ${POSTGRES_DB:-tender}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tender} -d ${POSTGRES_DB:-tender}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-tender}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD required}
+      RABBITMQ_DEFAULT_VHOST: /tender
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mercure:
+    # ВНИМАНИЕ: пиним v0.16 (не latest!) — см. docker-compose.yml / observability.md
+    image: dunglas/mercure:v0.16.3
+    restart: unless-stopped
+    environment:
+      MERCURE_PUBLISHER_JWT_KEY: ${MERCURE_JWT_SECRET_PUBLISH:?MERCURE_JWT_SECRET_PUBLISH required}
+      MERCURE_SUBSCRIBER_JWT_KEY: ${MERCURE_JWT_SECRET_SUBSCRIBE:?MERCURE_JWT_SECRET_SUBSCRIBE required}
+      MERCURE_PUBLIC_URL: ${MERCURE_PUBLIC_URL:?MERCURE_PUBLIC_URL required}
+      SERVER_NAME: ${MERCURE_SERVER_NAME:-:80}
+      MERCURE_EXTRA_DIRECTIVES: |
+        cors_origins ${MERCURE_CORS_ORIGINS:-*}
+        anonymous 0
+    ports:
+      - "${MERCURE_PORT:-3008}:80"
+    healthcheck:
+      test: ["CMD", "pgrep", "caddy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  worker:
+    image: tender-platform/app:${APP_VERSION:-latest}
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - app_var:/var/www/var
+    command: ["sh", "/var/www/docker/worker-entrypoint.sh"]
+    depends_on:
+      app: { condition: service_started }
+
+  webhooks:
+    image: tender-platform/app:${APP_VERSION:-latest}
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - app_var:/var/www/var
+    command: ["php", "/var/www/bin/console", "messenger:consume", "webhooks", "-vv"]
+    depends_on:
+      app: { condition: service_started }
+
+  scheduler:
+    image: tender-platform/app:${APP_VERSION:-latest}
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - app_var:/var/www/var
+    # Периодические задачи: heartbeat аукционов, снапшоты счётчиков, cleanup,
+    # digest. См. docker/scheduler-entrypoint.sh (scheduler:run не существует).
+    command: ["sh", "/var/www/docker/scheduler-entrypoint.sh"]
+    depends_on:
+      app: { condition: service_started }
+
+  # Одноразовая миграция: docker compose -f docker-compose.prod.yml --profile deploy run --rm migrate
+  migrate:
+    image: tender-platform/app:${APP_VERSION:-latest}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: prod-minimal
+    profiles: ["deploy"]
+    environment: *app-env
+    volumes:
+      - app_var:/var/www/var
+    command: ["php", "/var/www/bin/console", "doctrine:migrations:migrate", "--no-interaction"]
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+
+volumes:
+  db_data:
+  redis_data:
+  rabbitmq_data:
+  app_var:

@@ -1,0 +1,1 @@
+{{ 'body'|trans({'%event_type%': event_type, '%event_id%': event_id, '%tender_number%': payload.number|default('-'), '%tender_title%': payload.title|default('-'), '%reason%': payload.reason|default('-')}, 'notification.template', locale) }}

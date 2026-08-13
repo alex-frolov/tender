@@ -1,0 +1,171 @@
+framework:
+    workflows:
+        auction:
+            type: state_machine
+            marking_store:
+                type: method
+                property: status
+            supports:
+                - App\Auction\Entity\Auction
+            initial_marking: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+            places:
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CREATED->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DRAFT->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::AGREEMENT->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::SCHEDULED->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::PAUSED->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CHOICE->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE_BY_PERFORMER->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CLAIM->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE_BY_CLAIM->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CANCELLED->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::EXPIRED->value
+                - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DELETED->value
+            transitions:
+                # ── Создание: CREATED (фиктивный) → хранимый статус.
+                # Применяются до persist; CREATED в БД не появляется. По умолчанию
+                # аукцион создаётся сразу в new (конструктор/initial_marking);
+                # persist_to_draft/persist_to_agreement — альтернативные пути.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::PERSIST_TO_DRAFT->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CREATED->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DRAFT->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::PERSIST_TO_NEW->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CREATED->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::PERSIST_TO_AGREEMENT->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CREATED->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::AGREEMENT->value
+
+                # ── DRAFT: публикация / на согласование / удаление / отмена.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::PUBLISH->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DRAFT->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::REQUEST_AGREEMENT->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DRAFT->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::AGREEMENT->value
+                # Мягкое удаление — только из DRAFT (инвариант 8).
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::DELETE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DRAFT->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DELETED->value
+
+                # ── AGREEMENT: согласовано → new; отмена.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::APPROVE_AGREEMENT->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::AGREEMENT->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+
+                # ── NEW: планирование / истечение / отмена.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::SCHEDULE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::SCHEDULED->value
+
+                # ── SCHEDULED: старт торгов / отмена / снятие с планирования.
+                # T13: старт возможен только с зафиксированным срезом правил
+                # (rules_snapshot): сервис старта сначала замораживает правила
+                # (Auction::captureRulesSnapshot), затем применяет start_trade.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::START_TRADE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::SCHEDULED->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                    guard: "subject.getRulesSnapshot() !== null"
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::UNSCHEDULE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::SCHEDULED->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+
+                # ── TRADE: завершение / ручной выбор / истечение /
+                # отмена / пауза (инцидент/тех. пауза, таймер заморожен).
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::FINISH->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CHOICE->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::CHOOSE_WINNER_MANUAL->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::PAUSE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::PAUSED->value
+
+                # ── PAUSED: возобновление (таймер с остатка) / отмена.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::RESUME->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::PAUSED->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+
+                # ── CHOICE: утверждение победителя / истечение / отмена.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::APPROVE_WINNER->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CHOICE->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+
+                # ── APPROVE / IN_WORK / DONE_BY_PERFORMER ──
+                # Исполнение: старт работ, отметка исполнителя, подтверждение
+                # заказчика (DONE), претензия (CLAIM). Guard DONE при наличии
+                # действительного договора (B2)  (contract_tenders).
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::START_WORK->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::MARK_DONE_BY_PERFORMER->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE_BY_PERFORMER->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::CONFIRM_DONE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE_BY_PERFORMER->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::CLAIM->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE_BY_PERFORMER->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CLAIM->value
+
+                # ── CLAIM: урегулировано → in_work / удовлетворена →
+                # done_by_claim / расторжение → cancelled.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::RESOLVE_CLAIM->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CLAIM->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::ACCEPT_CLAIM->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CLAIM->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DONE_BY_CLAIM->value
+
+                # ── Отмена и истечение
+                # — общие переходы (multi-from): единый to.
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::CANCEL->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::DRAFT->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::AGREEMENT->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::SCHEDULED->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::PAUSED->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CHOICE->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::APPROVE->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::IN_WORK->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CLAIM->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CANCELLED->value
+                !php/enum App\Auction\Entity\Enum\AuctionStatusTransition::EXPIRE->value:
+                    from:
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::NEW->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::TRADE->value
+                        - !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::CHOICE->value
+                    to: !php/enum App\Auction\Entity\Enum\AuctionStatusEnum::EXPIRED->value

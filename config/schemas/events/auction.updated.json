@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "auction.updated",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "auction.updated" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "auction" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["auction_id", "changed_fields"],
+      "properties": {
+        "auction_id": { "type": "string", "format": "uuid" },
+        "changed_fields": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Изменённые поля параметров торгов (type/step_mode/bid_step_minor/bid_step_percent_bps/price_min_limit_minor/price_max_limit_minor/step_duration_sec/max_extensions)"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

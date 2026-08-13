@@ -1,0 +1,303 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Tests\Functional\Platform;
+
+use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Enum\CompanyTypeEnum;
+use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Platform\Controller\Webhook\WebhookCreateController;
+use App\Platform\Controller\Webhook\WebhookDeleteController;
+use App\Platform\Controller\Webhook\WebhookDeliveryListController;
+use App\Platform\Controller\Webhook\WebhookListController;
+use App\Platform\Controller\Webhook\WebhookRotateSecretController;
+use App\Platform\Controller\Webhook\WebhookUpdateController;
+use App\Platform\Entity\WebhookDelivery;
+use App\Tests\Factory\CompanyFactory;
+use App\Tests\Factory\UserFactory;
+use App\Tests\Factory\WebhookFactory;
+use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Bundle\FrameworkBundle\KernelBrowser;
+use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use Symfony\Component\Uid\Uuid;
+
+/**
+ * webhooks — CRUD и журнал доставок через API (WH-1..7, AM-14).
+ *
+ * - Создание (POST /webhooks): секрет отдаётся один раз; события валидируются
+ *   (формат prefix.action); фильтры payload (WH-7);
+ * - Список (GET /webhooks): подписки без секретов;
+ * - Обновление (PATCH): url/events/status; ротация секрета (POST /rotate-secret);
+ * - Журнал доставок (GET /webhooks/{id}/deliveries);
+ * - Удаление (DELETE /webhooks/{id}): 204;
+ * - Права (FR-1.5.10): webhooks.manage — admin; manager/agent — 403;
+ *   401 без токена; чужая подписка — 404.
+ *
+ * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ */
+final class WebhookCrudTest extends WebTestCase
+{
+    private static ?KernelBrowser $client = null;
+
+    protected function tearDown(): void
+    {
+        self::$client = null;
+        parent::tearDown();
+    }
+
+    private static function client(): KernelBrowser
+    {
+        self::$client ??= self::createClient();
+
+        return self::$client;
+    }
+
+    private static function uniqueIp(): string
+    {
+        return '33.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
+    }
+
+    /**
+     * @param array<string, mixed>|null $data
+     */
+    private static function request(string $method, string $url, string $token, ?array $data = null): KernelBrowser
+    {
+        $client = self::client();
+        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
+        $client->request(
+            $method,
+            $url,
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer '.$token],
+            null === $data ? '' : (json_encode($data, \JSON_UNESCAPED_UNICODE) ?: ''),
+        );
+
+        return $client;
+    }
+
+    private static function loginAs(string $email): string
+    {
+        $client = self::client();
+        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
+        $client->request(
+            'POST',
+            TokenController::URL,
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json'],
+            json_encode(['email' => $email, 'password' => UserFactory::PASSWORD], \JSON_UNESCAPED_UNICODE) ?: '{}',
+        );
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsString($body['access_token']);
+
+        return $body['access_token'];
+    }
+
+    private static function adminToken(): string
+    {
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'wh-admin-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        return self::loginAs((string) $user->getEmail());
+    }
+
+    public function testFullLifecycleCreateListUpdateRotateDeliveriesDelete(): void
+    {
+        self::client();
+        $token = self::adminToken();
+
+        // Создание: секрет отдаётся один раз.
+        $client = self::request('POST', WebhookCreateController::URL, $token, [
+            'url' => 'https://example.com/hooks/1',
+            'events' => ['tender.published', 'tender.updated'],
+            'filters' => ['tender_id' => 'tender-42'],
+        ]);
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        $webhookId = $body['id'];
+        self::assertIsString($webhookId);
+        self::assertSame('https://example.com/hooks/1', $body['url']);
+        self::assertSame(['tender.published', 'tender.updated'], $body['events']);
+        self::assertSame(['tender_id' => 'tender-42'], $body['filters']);
+        self::assertSame('active', $body['status']);
+        self::assertIsString($body['secret']);
+        self::assertGreaterThanOrEqual(16, \strlen($body['secret']));
+
+        // Список: без секрета.
+        $client = self::request('GET', WebhookListController::URL, $token);
+        self::assertResponseStatusCodeSame(200);
+        $list = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($list);
+        self::assertIsArray($list['items']);
+        $first = $list['items'][0];
+        self::assertIsArray($first);
+        $ids = array_column($list['items'], 'id');
+        self::assertContains($webhookId, $ids);
+        self::assertArrayNotHasKey('secret', $first);
+
+        // Обновление: status → paused, url.
+        $client = self::request('PATCH', str_replace('{webhookId}', $webhookId, WebhookUpdateController::URL), $token, [
+            'status' => 'paused',
+        ]);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('paused', $body['status']);
+
+        // Ротация секрета: новый секрет один раз.
+        $client = self::request('POST', str_replace('{webhookId}', $webhookId, WebhookRotateSecretController::URL), $token);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame($webhookId, $body['id']);
+        self::assertIsString($body['secret']);
+
+        // Журнал доставок (пустой).
+        $client = self::request('GET', str_replace('{webhookId}', $webhookId, WebhookDeliveryListController::URL), $token);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsArray($body['items']);
+
+        // Удаление → 204.
+        $client = self::request('DELETE', str_replace('{webhookId}', $webhookId, WebhookDeleteController::URL), $token);
+        self::assertResponseStatusCodeSame(204);
+
+        // После удаления список пуст.
+        $client = self::request('GET', WebhookListController::URL, $token);
+        $list = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($list);
+        self::assertSame([], $list['items']);
+    }
+
+    public function testCreateValidatesEvents(): void
+    {
+        self::client();
+        $token = self::adminToken();
+
+        $client = self::request('POST', WebhookCreateController::URL, $token, [
+            'url' => 'https://example.com/hooks/2',
+            'events' => ['Tender.Published'],
+        ]);
+        self::assertResponseStatusCodeSame(422);
+
+        $client = self::request('POST', WebhookCreateController::URL, $token, [
+            'url' => 'ftp://example.com/hook',
+            'events' => ['tender.published'],
+        ]);
+        self::assertResponseStatusCodeSame(422);
+    }
+
+    public function testSecretGeneratedWhenNotProvided(): void
+    {
+        self::client();
+        $token = self::adminToken();
+
+        $client = self::request('POST', WebhookCreateController::URL, $token, [
+            'url' => 'https://example.com/hooks/3',
+            'events' => ['auction.bid'],
+        ]);
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsString($body['secret']);
+        self::assertGreaterThanOrEqual(16, \strlen($body['secret']));
+    }
+
+    public function testManagerAndAgentCannotManageWebhooksReturns403(): void
+    {
+        self::client();
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+
+        $manager = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::MANAGER,
+            'email' => 'wh-manager-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $agent = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'wh-agent-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $managerToken = self::loginAs((string) $manager->getEmail());
+        $agentToken = self::loginAs((string) $agent->getEmail());
+
+        // manager и agent — webhooks.manage отключено по умолчанию (FR-1.5.10).
+        $client = self::request('POST', WebhookCreateController::URL, $managerToken, [
+            'url' => 'https://example.com/hooks/4',
+            'events' => ['tender.published'],
+        ]);
+        self::assertResponseStatusCodeSame(403);
+
+        $client = self::request('GET', WebhookListController::URL, $agentToken);
+        self::assertResponseStatusCodeSame(403);
+    }
+
+    public function testUnauthenticatedReturns401(): void
+    {
+        self::client();
+        $client = self::request('GET', WebhookListController::URL, '');
+        self::assertResponseStatusCodeSame(401);
+    }
+
+    public function testForeignWebhookReturns404(): void
+    {
+        self::client();
+        $other = WebhookFactory::createOne();
+        $token = self::adminToken();
+
+        $client = self::request('PATCH', str_replace('{webhookId}', (string) $other->getId(), WebhookUpdateController::URL), $token, [
+            'status' => 'paused',
+        ]);
+        self::assertResponseStatusCodeSame(404);
+
+        $client = self::request('GET', str_replace('{webhookId}', (string) $other->getId(), WebhookDeliveryListController::URL), $token);
+        self::assertResponseStatusCodeSame(404);
+    }
+
+    public function testDeliveriesListShowsRecords(): void
+    {
+        self::client();
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'wh-del-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $token = self::loginAs((string) $user->getEmail());
+
+        $webhook = WebhookFactory::createOne(['tenantId' => $company->getId(), 'events' => ['tender.published']]);
+        $delivery = new WebhookDelivery(
+            webhook: $webhook,
+            eventId: Uuid::v4(),
+            eventType: 'tender.published',
+            payload: '{"event_type":"tender.published"}',
+        );
+        $delivery->markDead(3, 500, 'HTTP 500');
+        static::getContainer()->get(EntityManagerInterface::class)->persist($delivery);
+        static::getContainer()->get(EntityManagerInterface::class)->flush();
+
+        $client = self::request('GET', str_replace('{webhookId}', (string) $webhook->getId(), WebhookDeliveryListController::URL), $token);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsArray($body['items']);
+        self::assertCount(1, $body['items']);
+        $item = $body['items'][0];
+        self::assertIsArray($item);
+        self::assertSame('tender.published', $item['event_type']);
+        self::assertSame('dead', $item['status']);
+        self::assertSame(3, $item['attempts']);
+        self::assertSame(500, $item['last_http_status']);
+        self::assertSame('HTTP 500', $item['last_error']);
+    }
+}

@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Contract: договоры, этапы, претензии, обеспечение.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Правила обеспечения: контракт → базовая
+    # реализация ядра (коммерческие дефолты). Policy-плагин (ru-state-procurement)
+    # заменяет алиас своей реализацией SecurityRules, не меняя ядро.
+    App\Contract\Rules\SecurityRules:
+        alias: App\Contract\Rules\DefaultSecurityRules
+
+    # договоры — публичные точки входа для контроллеров/тестов.
+    App\Contract\ContractService:
+
+    App\Contract\ContractScanService:
+
+    App\Contract\ClaimService:
+
+    # Реализация публичного контракта App\Contract\ContractExecutionService
+    # (интерфейс резолвится autowire'ом по единственной реализации).
+    App\Contract\Service\ContractExecutionService:
+
+    App\Contract\SecurityService:
+
+    # Read-контракт статистики модуля для дашборда — публичный для тестов.
+    App\Contract\Service\ContractDashboardQueryService:

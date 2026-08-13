@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Favorite: избранное пользователей.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # избранное (модуль Favorite) — self-service
+    # «мои данные» — публичная точка входа для контроллеров/тестов.
+    App\Favorite\FavoriteService:

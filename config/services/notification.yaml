@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Notification: подписки, доставка (email/webhook/telegram), digest.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # уведомления (модуль Notification) — подписки
+    # пользователей и доставка (мгновенные письма + ежедневный дайджест) —
+    # публичные точки входа для контроллеров/команд/тестов. $from — адрес
+    # отправителя писем (MAILER_FROM).
+    App\Notification\NotificationSubscriptionService:
+
+    App\Notification\NotificationDeliveryService:
+
+    App\Notification\NotificationDigestService:
+        arguments:
+            $from: '%env(MAILER_FROM)%'
+
+    App\Notification\NotificationEmailMessageHandler:
+        arguments:
+            $from: '%env(MAILER_FROM)%'
+
+    # Команда планирования первого запуска дайджеста — интервал из параметра
+    # notification_digest_interval (self-scheduling цикла рассылки).
+    App\Notification\Command\NotificationDigestScheduleCommand:
+        arguments:
+            $intervalSeconds: '%notification_digest_interval%'

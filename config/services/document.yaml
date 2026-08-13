@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Document: файлы, документы (версии), типы документов, видимость.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Документы: реализации публичных контрактов модуля
+    # (интерфейсы App\Document\DocumentService / DocumentTypeService резолвятся
+    # autowire'ом по единственной реализации). Максимальный размер файла —
+    # из env (DOCUMENT_MAX_FILE_BYTES, байт).
+    App\Document\Service\DocumentService:
+        arguments:
+            $maxFileBytes: '%env(int:DOCUMENT_MAX_FILE_BYTES)%'
+
+    App\Document\Service\DocumentTypeService:
+
+    # Авто-генерация документов: публичный контракт App\Document\DocumentGenerator
+    # резолвится autowire'ом по единственной реализации. Вызывается ТОЛЬКО
+    # policy-плагинами (например ru-state-procurement) для создания документов
+    # от имени системы (owner_role=system, is_auto_generated=true).
+    App\Document\Service\DocumentGeneratorService:
+
+    # Файловое хранилище документов: локальный диск FILES_LOCAL_DIR
+    App\Document\Storage\FileStorage:
+        arguments:
+            $rootDir: '%env(FILES_LOCAL_DIR)%'

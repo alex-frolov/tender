@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Bid: заявки, двухчастность, секретность до вскрытия, допуск.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Заявки: сервис публичной точки входа + шифрование
+    # содержимого до вскрытия на ключе ENCRYPTION_KEY.
+    # $from — адрес отправителя писем уведомлений (отклонение).
+    App\Bid\BidService:
+        arguments:
+            $from: '%env(MAILER_FROM)%'
+
+    App\Bid\BidPayloadCipher:
+        arguments:
+            $encryptionKey: '%env(ENCRYPTION_KEY)%'
+
+    # Read-контракт статистики модуля для дашборда — публичный для тестов.
+    App\Bid\Service\BidDashboardQueryService:

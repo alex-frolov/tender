@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "auction.winner_chosen",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "auction.winner_chosen" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "auction" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["auction_id", "supplier_id", "price_minor", "basis", "vat_rate", "mode"],
+      "properties": {
+        "auction_id": { "type": "string", "format": "uuid" },
+        "supplier_id": { "type": "string", "format": "uuid" },
+        "price_minor": { "type": "integer", "minimum": 0 },
+        "basis": { "type": "string", "enum": ["net", "gross"] },
+        "vat_rate": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "mode": { "type": "string", "enum": ["auto", "manual"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

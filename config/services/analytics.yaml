@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Analytics: Redis-счётчики + снапшот в PG, дашборд и статистика.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # аналитика — Redis-счётчики + снапшот-джоб —
+    # публичные точки входа для контроллеров/команд/тестов.
+    App\Analytics\CounterService:
+
+    App\Analytics\CounterSnapshotService:
+
+    # Публичный read-контракт модуля Analytics (modules.md §8). Ни один сервис
+    # src/ не инжектит его (только тесты), поэтому в проде/деве определение
+    # приватно и удаляется компилятором как неиспользуемое (RemoveUnusedDefinitionsPass).
+    # Тестам он нужен по id из контейнера → в тестовом окружении публикуется
+    # через when@test (прод-контейнер остаётся чистым).
+    App\Analytics\AnalyticsQueryService:
+
+    # дашборд и статистика — публичные точки входа для
+    # контроллеров/тестов. Читают через публичные read-контракты модулей.
+    App\Analytics\Dashboard\DashboardService:
+
+    App\Analytics\Dashboard\TenderStatsService:
+
+when@test:
+    services:
+        # Тесты (AnalyticsQueryServiceTest) достают сервис по id из контейнера —
+        # публикуем его ТОЛЬКО в тестовом окружении (в проде не используется).
+        # Повторяем autowire: true — when@test создаёт отдельное определение.
+        App\Analytics\AnalyticsQueryService:
+            autowire: true
+            public: true

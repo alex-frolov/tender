@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Tender: тендеры, лоты, таймлайн, отмена/отзыв.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Агрегация статуса тендера при мультилоте — реализация
+    # публичного контракта App\Tender\TenderStatusAggregator (интерфейс
+    # резолвится autowire'ом по единственной реализации).
+    App\Tender\Service\TenderStatusAggregator:
+
+    # Сроки таймлайна: контракт → базовая реализация ядра.
+    # Policy-плагин (ru-state-procurement) заменяет алиас своей реализацией,
+    # не меняя ядро.
+    App\Tender\Timeline\TimelineRules:
+        alias: App\Tender\Timeline\DefaultTimelineRules
+
+    # Read-контракт статистики модуля для дашборда — публичный для тестов.
+    App\Tender\Service\TenderDashboardQueryService:

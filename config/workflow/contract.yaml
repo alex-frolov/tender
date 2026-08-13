@@ -1,0 +1,66 @@
+framework:
+    workflows:
+        contract:
+            type: state_machine
+            marking_store:
+                type: method
+                property: status
+            supports:
+                - App\Contract\Entity\Contract
+            initial_marking: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DRAFT->value
+            places:
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DRAFT->value
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::PENDING_SIGNATURE->value
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::SIGNED->value
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::REGISTERED->value
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::TERMINATED->value
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::EXPIRED->value
+                - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DELETED->value
+            transitions:
+                # C1: отправка на подписание сторонам (draft → pending_signature).
+                # Инициирует заказчик (contracts.sign); событие contract.pending_signature.
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::SEND_FOR_SIGNATURE->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DRAFT->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::PENDING_SIGNATURE->value
+                # C2: подписание (pending_signature → signed). Guard требует подписи
+                # ОБЕИХ сторон (signedByCustomer && signedBySupplier) — статус меняется
+                # только когда обе подписи на месте; при одной подписи договор остаётся
+                # в pending_signature. Событие contract.signed.
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::SIGN->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::PENDING_SIGNATURE->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::SIGNED->value
+                    guard: "subject.isSignedByCustomer() && subject.isSignedBySupplier()"
+                # C3: возврат на доработку (pending_signature → draft).
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::BACK_TO_DRAFT->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::PENDING_SIGNATURE->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DRAFT->value
+                # C6: регистрация договора (signed → registered).
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::REGISTER->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::SIGNED->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::REGISTERED->value
+                # C7/C9: расторжение (signed/registered → terminated).
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::TERMINATE->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::SIGNED->value
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::REGISTERED->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::TERMINATED->value
+                # C8/C10: истечение срока по valid_to (signed/registered → expired).
+                # Инициирует система (по расписанию/проверке), не пользователь.
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::EXPIRE->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::SIGNED->value
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::REGISTERED->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::EXPIRED->value
+                # C4/C5/C11/C12: мягкое удаление (draft/pending_signature/signed/
+                # registered → deleted). До начала исполнения; после — только terminate.
+                !php/enum App\Contract\Entity\Enum\ContractStatusTransition::DELETE->value:
+                    from:
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DRAFT->value
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::PENDING_SIGNATURE->value
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::SIGNED->value
+                        - !php/enum App\Contract\Entity\Enum\ContractStatusEnum::REGISTERED->value
+                    to: !php/enum App\Contract\Entity\Enum\ContractStatusEnum::DELETED->value

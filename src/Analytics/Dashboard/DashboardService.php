@@ -1,0 +1,90 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Analytics\Dashboard;
+
+use App\Auction\AuctionDashboardQuery;
+use App\Bid\BidDashboardQuery;
+use App\Contract\ContractDashboardQuery;
+use App\Iam\Entity\User;
+use App\Shared\Exception\ConflictException;
+use App\Tender\TenderDashboardQuery;
+use Symfony\Component\Uid\Uuid;
+
+/**
+ * Дашборд компании (AM-13, GET /dashboard).
+ *
+ * Композиция счётчиков и ближайших дедлайнов из публичных read-контрактов
+ * модулей-владельцев (Tender/Bid/Auction/Contract): активные тендеры (по
+ * агрегированному статусу FR-1.1.3), мои заявки (как поставщик), мои
+ * договоры (как сторона), ближайшие дедлайны приёма заявок и окончания торгов.
+ *
+ * Срез данных — компания актора (tenant-изоляция на уровне запросов модулей);
+ * актор без компании (platform_admin) не имеет дашборда компании → 409.
+ */
+final readonly class DashboardService
+{
+    /** Максимум дедлайнов в ответе. */
+    private const int DEADLINE_LIMIT = 10;
+
+    public function __construct(
+        private TenderDashboardQuery $tenders,
+        private BidDashboardQuery $bids,
+        private AuctionDashboardQuery $auctions,
+        private ContractDashboardQuery $contracts,
+    ) {
+    }
+
+    /**
+     * @return array{active_tenders: int, my_bids: int, my_contracts: int,
+     *              upcoming_deadlines: list<array{entity_type: string, entity_id: string, deadline_at: string}>}
+     *
+     * @throws ConflictException если актор без компании
+     */
+    public function get(User $actor): array
+    {
+        $companyId = $this->requireCompany($actor);
+
+        $deadlines = [];
+        foreach ($this->tenders->upcomingBidDeadlines($companyId, self::DEADLINE_LIMIT) as $row) {
+            $deadlines[] = [
+                'entity_type' => 'tender',
+                'entity_id' => $row['tender_id'],
+                'deadline_at' => $row['deadline_at'],
+            ];
+        }
+        foreach ($this->auctions->upcomingTradeEnds($companyId, self::DEADLINE_LIMIT) as $row) {
+            $deadlines[] = [
+                'entity_type' => 'auction',
+                'entity_id' => $row['auction_id'],
+                'deadline_at' => $row['deadline_at'],
+            ];
+        }
+
+        usort(
+            $deadlines,
+            static fn (array $a, array $b): int => $a['deadline_at'] <=> $b['deadline_at'],
+        );
+
+        return [
+            'active_tenders' => $this->tenders->countActive($companyId),
+            'my_bids' => $this->bids->countForSupplier($companyId),
+            'my_contracts' => $this->contracts->countForCompany($companyId),
+            'upcoming_deadlines' => \array_slice($deadlines, 0, self::DEADLINE_LIMIT),
+        ];
+    }
+
+    /**
+     * @throws ConflictException если актор без компании
+     */
+    private function requireCompany(User $actor): Uuid
+    {
+        $companyId = $actor->getCompanyId();
+        if (null === $companyId) {
+            throw new ConflictException('Actor has no company');
+        }
+
+        return $companyId;
+    }
+}

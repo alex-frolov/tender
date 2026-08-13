@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль Export: фоновый экспорт xlsx/csv.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # экспорт — публичные точки входа для
+    # контроллеров/тестов. ExportRowSourceRegistry собирает источники строк
+    # модулей (Tender/Bid/Contract), ExportJobProcessor генерирует файл потоково.
+    App\Export\ExportService:
+
+    App\Export\ExportJobProcessor:
+
+    App\Export\ExportRowSourceRegistry:
+        arguments:
+            $sources:
+                - '@App\Tender\Service\TenderExportSource'
+                - '@App\Bid\Service\BidExportSource'
+                - '@App\Contract\Service\ContractExportSource'
+
+    # Файловое хранилище экспортных файлов (локальный диск var/exports)
+    App\Export\Storage\ExportFileStorage:
+        arguments:
+            $rootDir: '%export_dir%'

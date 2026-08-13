@@ -1,0 +1,7 @@
+framework:
+    rate_limiter:
+        # маленький лимит для тестов 429 (RL-3)
+        api_global:
+            policy: 'token_bucket'
+            limit: 3
+            rate: { interval: '1 minute' }

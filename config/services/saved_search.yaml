@@ -1,0 +1,12 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Модуль SavedSearch: сохранённые поиски и периодический дайджест.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # сохранённые поиски (модуль SavedSearch) —
+    # self-service «мои данные» — публичная точка входа для контроллеров/тестов.
+    App\SavedSearch\SavedSearchService:

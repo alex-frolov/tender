@@ -1,0 +1,79 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Document\Form;
+
+use App\Document\Entity\Enum\DocumentVisibility;
+use App\Document\Input\CreateDocumentTypeInput;
+use Symfony\Component\Form\AbstractType;
+use Symfony\Component\Form\CallbackTransformer;
+use Symfony\Component\Form\Extension\Core\Type\CheckboxType;
+use Symfony\Component\Form\Extension\Core\Type\ChoiceType;
+use Symfony\Component\Form\Extension\Core\Type\TextType;
+use Symfony\Component\Form\FormBuilderInterface;
+use Symfony\Component\OptionsResolver\OptionsResolver;
+use Symfony\Component\Validator\Constraints\Length;
+use Symfony\Component\Validator\Constraints\NotBlank;
+use Symfony\Component\Validator\Constraints\Regex;
+
+/**
+ * Форма создания типа документа (FR-1.2.7, POST /document-types, суперадмин).
+ * code — уникальный код (строчные буквы/цифры/подчёркивание); name — наименование;
+ * owner_role (customer/executor/both); visibility (public/private); required.
+ *
+ * @extends AbstractType<CreateDocumentTypeInput>
+ */
+final class CreateDocumentTypeType extends AbstractType
+{
+    public function buildForm(FormBuilderInterface $builder, array $options): void
+    {
+        $builder
+            ->add('code', TextType::class, [
+                'empty_data' => '',
+                'constraints' => [
+                    new NotBlank(message: 'code is required'),
+                    new Length(max: 50),
+                    new Regex(pattern: '/^[a-z][a-z0-9_]*$/', message: 'code must be lowercase letters, digits, underscore'),
+                ],
+            ])
+            ->add('name', TextType::class, [
+                'empty_data' => '',
+                'constraints' => [
+                    new NotBlank(message: 'name is required'),
+                    new Length(max: 200),
+                ],
+            ])
+            ->add('owner_role', ChoiceType::class, [
+                'property_path' => 'ownerRole',
+                'empty_data' => '',
+                'choices' => ['customer' => 'customer', 'executor' => 'executor', 'both' => 'both'],
+                'constraints' => [new NotBlank(message: 'owner_role is required')],
+            ])
+            ->add('visibility', ChoiceType::class, [
+                'empty_data' => '',
+                'choices' => DocumentVisibility::getValues(),
+                'constraints' => [new NotBlank(message: 'visibility is required')],
+            ])
+            ->add('required', CheckboxType::class, [
+                'required' => false,
+            ])
+        ;
+        $builder->get('owner_role')->addModelTransformer(new CallbackTransformer(
+            static fn (?string $value): string => $value ?? '',
+            static fn (?string $value): string => $value ?? '',
+        ));
+        $builder->get('visibility')->addModelTransformer(new CallbackTransformer(
+            static fn (?string $value): string => $value ?? '',
+            static fn (?string $value): string => $value ?? '',
+        ));
+    }
+
+    public function configureOptions(OptionsResolver $resolver): void
+    {
+        $resolver->setDefaults([
+            'csrf_protection' => false,
+            'data_class' => CreateDocumentTypeInput::class,
+        ]);
+    }
+}

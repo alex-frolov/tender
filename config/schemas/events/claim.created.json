@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "claim.created",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "claim.created" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "claim" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["claim_id", "contract_id", "stage", "amount_minor"],
+      "properties": {
+        "claim_id": { "type": "string", "format": "uuid" },
+        "contract_id": { "type": "string", "format": "uuid" },
+        "auction_id": { "type": "string", "format": "uuid" },
+        "stage": { "type": "string", "enum": ["approve", "in_work", "done_by_performer"] },
+        "amount_minor": { "type": "integer", "minimum": 0 },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

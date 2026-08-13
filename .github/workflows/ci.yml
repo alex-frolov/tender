@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint · CS Fixer · PHPStan · PHPArkitect · PHPUnit · Coverage
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: tender_test
+          POSTGRES_USER: tender
+          POSTGRES_PASSWORD: tender
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tender"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-management
+        env:
+          RABBITMQ_DEFAULT_USER: tender
+          RABBITMQ_DEFAULT_PASS: tender
+          RABBITMQ_DEFAULT_VHOST: /tender
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: pdo_pgsql, intl, zip, pcntl, redis, amqp, opcache
+          coverage: pcov
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist --no-progress
+
+      - name: Composer audit (dependency security)
+        run: composer audit --locked --no-interaction
+
+      - name: Lint (php -l)
+        run: composer lint
+
+      - name: Schema registry (events.md ↔ JSON Schema)
+        run: composer schema:check
+
+      - name: PHP CS Fixer (check)
+        run: composer cs-fixer:check
+
+      - name: PHPStan (level max)
+        run: composer phpstan
+
+      - name: PHPArkitect (layers & modules)
+        run: composer arkitect
+
+      - name: PHPUnit
+        env:
+          APP_ENV: test
+          DATABASE_URL: postgresql://tender:tender@127.0.0.1:5432/tender_test?serverVersion=17
+          REDIS_URL: redis://127.0.0.1:6379
+          RABBITMQ_URL: amqp://tender:tender@127.0.0.1:5672/%2Ftender
+        run: |
+          composer test:parallel
+          composer test:smoke
+
+      - name: Code coverage gate (≥80%)
+        env:
+          APP_ENV: test
+          DATABASE_URL: postgresql://tender:tender@127.0.0.1:5432/tender_test?serverVersion=17
+          REDIS_URL: redis://127.0.0.1:6379
+          RABBITMQ_URL: amqp://tender:tender@127.0.0.1:5672/%2Ftender
+        run: composer test:coverage
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: quality
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dev image
+        run: docker build -f docker/Dockerfile -t tender-app:ci .
+
+      - name: Build prod image (target prod-minimal)
+        run: docker build -f docker/Dockerfile --target prod-minimal -t tender-app:ci-prod .
+
+      - name: Build prod web image (nginx)
+        run: docker build -f docker/web.Dockerfile -t tender-web:ci .

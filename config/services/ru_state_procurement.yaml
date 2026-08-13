@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=../../vendor/symfony/dependency-injection/Loader/schema/services.schema.json
+
+# Плагин ru-state-procurement: доменные правила РФ (44-ФЗ/223-ФЗ)
+# через контракты ядра. Policy-плагин, исполняется внутри ядра.
+#
+# Активация правил — через compiler pass ProcurementRulesPass (Kernel::build):
+# при PROCUREMENT_PLUGIN_ENABLED=1 алиасы контрактов TimelineRules/AuctionRules/
+# SecurityRules переключаются на реализации плагина («РФ-правила активны»);
+# при 0 остаются дефолты ядра (ядро не меняется).
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Загрузчик конфигурации правил (config/ru_state_procurement.yaml) —
+    # «конфигурация — внешние данные плагина, не код» (критерий §9).
+    App\RuStateProcurement\Config\ProcurementConfigLoader:
+        arguments:
+            $configFile: '%kernel.project_dir%/config/ru_state_procurement.yaml'
+
+    # ProcurementConfig собирается фабрикой при сборке контейнера.
+    App\RuStateProcurement\Config\ProcurementConfig:
+        factory: ['@App\RuStateProcurement\Config\ProcurementConfigLoader', 'load']
+
+    # Генерация протоколов через контракт DocumentGenerator.
+    App\RuStateProcurement\Protocol\RuProtocolGenerator:
+
+    # Реакция на доменные события (tender.opened / auction.winner_chosen).
+    # $enabled — feature-flag PROCUREMENT_PLUGIN_ENABLED (отключение плагина
+    # без изменений ядра).
+    App\RuStateProcurement\Event\RuProtocolListener:
+        arguments:
+            $enabled: '%procurement_plugin_enabled%'
+
+    # Установка/сводка правил плагина.
+    App\RuStateProcurement\Command\InstallRuStateProcurementCommand:

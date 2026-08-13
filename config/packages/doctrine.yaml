@@ -1,0 +1,127 @@
+doctrine:
+    dbal:
+        url: '%env(resolve:DATABASE_URL)%'
+
+        # IMPORTANT: You MUST configure your server version,
+        # either here or in the DATABASE_URL env var (see .env file)
+        #server_version: '16'
+
+        profiling_collect_backtrace: '%kernel.debug%'
+    orm:
+        validate_xml_mapping: true
+        naming_strategy: doctrine.orm.naming_strategy.underscore
+        identity_generation_preferences:
+            Doctrine\DBAL\Platforms\PostgreSQLPlatform: identity
+        auto_mapping: true
+        mappings:
+            # Модульные маппинги сущностей:
+            # по одному маппингу на module-namespace. Enum'ы (App\Shared\Entity\Enum +
+            # App\Iam\Entity\Enum + App\{Module}\Entity\Enum) — value-типы,
+            # в маппинге не участвуют.
+            SharedEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Shared/Entity'
+                prefix: 'App\Shared\Entity'
+                alias: SharedEntity
+            IamEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Iam/Entity'
+                prefix: 'App\Iam\Entity'
+                alias: IamEntity
+            TenderEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Tender/Entity'
+                prefix: 'App\Tender\Entity'
+                alias: TenderEntity
+            BidEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Bid/Entity'
+                prefix: 'App\Bid\Entity'
+                alias: BidEntity
+            AuctionEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Auction/Entity'
+                prefix: 'App\Auction\Entity'
+                alias: AuctionEntity
+            ContractEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Contract/Entity'
+                prefix: 'App\Contract\Entity'
+                alias: ContractEntity
+            DocumentEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Document/Entity'
+                prefix: 'App\Document\Entity'
+                alias: DocumentEntity
+            PlatformEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Platform/Entity'
+                prefix: 'App\Platform\Entity'
+                alias: PlatformEntity
+            NotificationEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Notification/Entity'
+                prefix: 'App\Notification\Entity'
+                alias: NotificationEntity
+            FavoriteEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Favorite/Entity'
+                prefix: 'App\Favorite\Entity'
+                alias: FavoriteEntity
+            SavedSearchEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/SavedSearch/Entity'
+                prefix: 'App\SavedSearch\Entity'
+                alias: SavedSearchEntity
+            AnalyticsEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Analytics/Entity'
+                prefix: 'App\Analytics\Entity'
+                alias: AnalyticsEntity
+            ExportEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Export/Entity'
+                prefix: 'App\Export\Entity'
+                alias: ExportEntity
+        dql:
+            string_functions:
+                STRING_AGG: App\Infrastructure\Doctrine\ORM\Query\StringAggFunction
+                TO_CHAR: App\Infrastructure\Doctrine\ORM\Query\ToCharFunction
+                TO_TEXT: App\Infrastructure\Doctrine\ORM\Query\ToTextFunction
+
+when@test:
+    doctrine:
+        dbal:
+            # "TEST_TOKEN" is typically set by ParaTest
+            dbname_suffix: '_test%env(default::TEST_TOKEN)%'
+
+when@prod:
+    doctrine:
+        orm:
+            query_cache_driver:
+                type: pool
+                pool: doctrine.system_cache_pool
+            result_cache_driver:
+                type: pool
+                pool: doctrine.result_cache_pool
+
+    framework:
+        cache:
+            pools:
+                doctrine.result_cache_pool:
+                    adapter: cache.app
+                doctrine.system_cache_pool:
+                    adapter: cache.system

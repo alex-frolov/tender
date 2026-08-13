@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "auction.finished",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "auction.finished" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "auction" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["auction_id", "final_price_minor", "rounds_count"],
+      "properties": {
+        "auction_id": { "type": "string", "format": "uuid" },
+        "winner_bid_id": { "type": ["string", "null"], "format": "uuid" },
+        "final_price_minor": { "type": ["integer", "null"], "minimum": 0 },
+        "price_basis": { "type": "string", "enum": ["net", "gross"] },
+        "rounds_count": { "type": "integer", "minimum": 0 },
+        "auction_type": { "type": "string", "enum": ["reduction", "free_price", "price_request"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

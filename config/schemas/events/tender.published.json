@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "tender.published",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "tender.published" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "tender" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["tender_id", "number", "status"],
+      "properties": {
+        "tender_id": { "type": "string", "format": "uuid" },
+        "number": { "type": "string" },
+        "title": { "type": "string" },
+        "status": { "const": "published" },
+        "procedure_type": { "type": "string", "enum": ["auction", "competition", "rfq", "rfp", "direct"] },
+        "law_type": { "type": "string", "enum": ["fz44", "fz223", "commercial"] },
+        "access_type": { "type": "string", "enum": ["open", "contract_holders"] },
+        "nmck_minor": { "type": ["integer", "null"], "minimum": 0 },
+        "currency": { "type": "string", "minLength": 3, "maxLength": 3 },
+        "no_start_price": { "type": "boolean", "default": false },
+        "bids_end_at": { "type": ["string", "null"], "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

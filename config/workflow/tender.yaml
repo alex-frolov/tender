@@ -1,0 +1,93 @@
+framework:
+    workflows:
+        tender:
+            type: state_machine
+            marking_store:
+                type: method
+                property: status
+            supports:
+                - App\Tender\Entity\Tender
+            initial_marking: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::DRAFT->value
+            places:
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::DRAFT->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::WITHDRAWN->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::ACCEPTING_BIDS->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::BIDDING->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::EVALUATION->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::AWARDING->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CONTRACT->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CLOSED->value
+                - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CANCELLED->value
+            transitions:
+                # Публикация черновика: draft → published.
+                # Таймлайн рассчитывается TimelineRules; авто-переходы по расписанию.
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::PUBLISH->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::DRAFT->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                # Авто-переход по таймлайну: published → accepting_bids.
+                # Инициируется TimelineMessage (Redis-transport, DelayStamp).
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_BID_ACCEPTANCE->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::ACCEPTING_BIDS->value
+                # Отзыв публикации: published → withdrawn.
+                # ТОЛЬКО до старта приёма заявок (до accepting_bids); после — только cancel.
+                # Не терминальный: withdrawn → published (перепубликация)
+                # или withdrawn → cancelled. Причина — свободный текст (в аудит/событие).
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::WITHDRAW->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::WITHDRAWN->value
+                # Отмена с причиной: любой активный/withdrawn статус → cancelled.
+                # Терминальный; каскад лотов/аукционов → CANCELLED.
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::CANCEL->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::WITHDRAWN->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::ACCEPTING_BIDS->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::BIDDING->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::EVALUATION->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::AWARDING->value
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CONTRACT->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CANCELLED->value
+                # Перепубликация после отзыва: withdrawn → published.
+                # Таймлайн пересчитывается TenderService; не терминальна.
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::REPUBLISH->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::WITHDRAWN->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                    guard: "subject.lotCount() > 0"
+                # ── Переходы агрегации при мультилоте ──
+                # Инициируются TenderStatusAggregator при изменении статусов лотов:
+                # отстающий лот определяет статус тендера. Guard'ы требуют, чтобы
+                # агрегированный статус лотов был НЕ РАНЬШЕ целевой фазы (>=). Это
+                # позволяет агрегатору продвигать тендер по фазам монотонно, пока
+                # лоты не догнали; ручной переход, не соответствующий лотам, блокируется.
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_TRADE->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::ACCEPTING_BIDS->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::BIDDING->value
+                    guard: "subject.aggregatedStatus().phase() >= 3"
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_EVALUATION->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::BIDDING->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::EVALUATION->value
+                    guard: "subject.aggregatedStatus().phase() >= 4"
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_AWARDING->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::EVALUATION->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::AWARDING->value
+                    guard: "subject.aggregatedStatus().phase() >= 5"
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_CONTRACT->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::AWARDING->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CONTRACT->value
+                    guard: "subject.aggregatedStatus().phase() >= 6"
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::CLOSE->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CONTRACT->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::CLOSED->value
+                    guard: "subject.aggregatedStatus().phase() >= 7"

@@ -1,0 +1,57 @@
+name: Load tests (nightly)
+
+# Нагрузочные сценарии: ставки, каталог, SSE, webhooks.
+# Против dev-стека docker compose с load-профилем (docker-compose.load.yml).
+#
+# ВАЖНО: абсолютные значения SLO (p95 < 100 мс / < 200 мс / < 5 сек) зависят от
+# железа; эталонные прогоны — на dev-машине (см. app/load/README.md). На CI-runner
+# цифры отличаются, поэтому job запускается по расписанию / вручную и работает
+# как контроль целостности load-харнеса (continue-on-error: true). Ручной запуск:
+#   gh workflow run load.yml
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # ночь UTC
+  workflow_dispatch:
+
+concurrency:
+  group: load-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  load:
+    name: k6 + SSE + webhooks load
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install k6
+        run: curl -sSL https://dl.k6.io/install.sh | bash
+
+      - name: Build and start load stack
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.load.yml up -d --build app worker webhooks loadreceiver
+          docker compose -f docker-compose.yml -f docker-compose.load.yml ps
+
+      - name: Run load scenarios
+        continue-on-error: true   # perf-SLO зависят от железа CI-runner
+        run: bash load/run.sh
+
+      - name: Upload k6 / SSE reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-results
+          path: |
+            load/results/**/*
+            load/receiver.log
+          if-no-files-found: ignore
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.load.yml down --remove-orphans

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "auction.bid",
+  "type": "object",
+  "required": ["event_id", "event_type", "occurred_at", "tenant_id", "aggregate_type", "aggregate_id", "payload"],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "const": "auction.bid" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "tenant_id": { "type": "string", "format": "uuid" },
+    "aggregate_type": { "const": "auction" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "payload": {
+      "type": "object",
+      "required": ["auction_id", "bid_id", "price_minor", "round"],
+      "properties": {
+        "auction_id": { "type": "string", "format": "uuid" },
+        "bid_id": { "type": "string", "format": "uuid" },
+        "price_minor": { "type": "integer", "minimum": 0 },
+        "price_display_minor": { "type": "integer", "minimum": 0 },
+        "price_basis": { "type": "string", "enum": ["net", "gross"] },
+        "start_price_minor": { "type": "integer", "minimum": 0 },
+        "round": { "type": "integer", "minimum": 1 },
+        "is_first_price": { "type": "boolean", "default": false },
+        "extended": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
