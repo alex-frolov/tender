@@ -31,7 +31,15 @@ jobs:
           node-version: '20'
 
       - name: Install k6
-        run: curl -sSL https://dl.k6.io/install.sh | bash
+        run: |
+          # dl.k6.io/install.sh (curl | bash) удалён k6 в 2026; ставим бинарь из GitHub Releases.
+          url="$(curl -fsSL https://api.github.com/repos/grafana/k6/releases/latest \
+            | grep -o '"browser_download_url": *"[^"]*linux-amd64.tar.gz"' \
+            | head -1 | cut -d'"' -f4)"
+          curl -fsSL "$url" -o /tmp/k6.tar.gz
+          tar -xzf /tmp/k6.tar.gz -C /tmp
+          sudo mv /tmp/k6-*/k6 /usr/local/bin/k6
+          k6 version
 
       - name: Build and start load stack
         run: |
