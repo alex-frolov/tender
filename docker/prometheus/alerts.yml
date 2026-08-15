@@ -98,3 +98,56 @@ groups:
         annotations:
           summary: "php-fpm не отвечает"
           description: "php-fpm (app:9000) не отдал статус за последние 2 минуты (phpfpm_up == 0). Контейнер app мог упасть или перезапуститься; проверить docker compose ps и логи app."
+
+      - alert: PhpFpmPoolSaturation
+        # Истощение FPM-пула (observability-roadmap.md #2): active/max_children > 0.8.
+        # phpfpm_total_processes — текущий размер пула (max_children при насыщении),
+        # active_processes — занятые воркеры. Shared-nothing PHP: истощение пула =
+        # отказ без исключений (запросы встают в listen queue).
+        # Замечание: phpfpm_max_children_reached (защёлка до рестарта) на алерт не
+        # вешаем — сработает один раз и будет висеть; используем отношение.
+        expr: phpfpm_active_processes / phpfpm_total_processes > 0.8
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "FPM-пул насыщен (> 80% воркеров)"
+          description: "php-fpm пул загружен более чем на 80% (active/total > 0.8) в течение 5 минут. Проверить max_children (дефолт 5, load-профиль 30), медленные запросы (phpfpm_slow_requests) и внешние блокировки."
+
+      - alert: PhpFpmListenQueue
+        # Очередь прослушивания FPM (observability-roadmap.md #2): запросы ждут
+        # свободного воркера. Кратковременные пики — норма при всплесках, поэтому
+        # for: 2m отсекает флапы.
+        expr: phpfpm_listen_queue > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "FPM: запросы в listen queue"
+          description: "phpfpm_listen_queue > 0 в течение 2 минут — запросы ожидают свободного FPM-воркера. Пул на грани насыщения; проверить active/max_children и длительность запросов."
+
+      - alert: OpcacheRestarted
+        # OPcache перезапущен (observability-roadmap.md #1). last_restart_time —
+        # unix-время последнего рестарта (ручного/oom/hash), 0 = никогда.
+        # Алерт активен 5 минут после рестарта (окно (now - last) < 300).
+        # Рестарт = сброс кэша байткода: деградация перфоманса без ошибок в логах.
+        expr: php_opcache_last_restart_time > 0 and (time() - php_opcache_last_restart_time) < 300
+        for: 1m
+        labels:
+          severity: medium
+        annotations:
+          summary: "OPcache перезапущен"
+          description: "OPcache был перезапущен (последний рестарт менее 5 минут назад). Кэш байткода сброшен — hit rate временно упадёт; при частых повторах увеличить opcache.memory_consumption (сейчас 128 MB) или проверить причину oom/hash-рестартов."
+
+      - alert: HealthReadyDown
+        # Внешний аптайм-чек (observability-roadmap.md #9): blackbox probe на
+        # /health/ready через nginx. probe_success == 0 — не 200/таймаут/
+        # connection refused: стек не принял запрос (app, db, redis, rabbitmq,
+        # mercure — см. реализацию /health/ready).
+        expr: probe_success{job="blackbox"} == 0
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Health-эндпоинт /health/ready не отвечает"
+          description: "Blackbox probe на http://web/health/ready возвращает ошибку в течение 5 минут. Проверить контейнеры (docker compose ps), логи nginx/app и health-зависимости (db, redis, rabbitmq, mercure)."

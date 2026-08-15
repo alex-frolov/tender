@@ -199,13 +199,46 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "write p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "write p90",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
           "legendFormat": "write p95",
           "range": true,
-          "refId": "A"
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "write p99",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Bid write p95 (NFR-1: <100 ms, alert 150 ms)",
+      "title": "Bid write latency percentiles (NFR-1: p95 < 100 ms, alert 150 ms)",
       "type": "timeseries"
     },
     {

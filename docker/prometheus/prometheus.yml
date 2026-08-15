@@ -65,3 +65,25 @@ scrape_configs:
         labels:
           environment: "dev"
           service: "mercure"
+
+  # Внешний аптайм-чек (observability-roadmap.md #9): blackbox-exporter probe
+  # на /health/ready через nginx (web:80). probe_success == 1 — стек принял
+  # запрос и отдал 200 (app+db+redis+rabbitmq+mercure — см. /health/ready).
+  # Алерт HealthReadyDown (alerts.yml).
+  - job_name: "blackbox"
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - "http://web/health/ready"
+        labels:
+          environment: "dev"
+          service: "app"
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115

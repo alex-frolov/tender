@@ -250,6 +250,15 @@ services:
       # nginx location = /status (default.conf) остаётся для ручной проверки.
       PHP_FPM_SCRAPE_URI: tcp://app:9000/status
 
+  # Внешний аптайм-чек (observability-roadmap.md #9): probe на /health/ready
+  # через web:80. Алерт HealthReadyDown (docker/prometheus/alerts.yml).
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.26.0
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./docker/prometheus/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+
 ###> doctrine/doctrine-bundle ###
   database:
     image: postgres:${POSTGRES_VERSION:-16}-alpine

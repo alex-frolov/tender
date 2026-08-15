@@ -25,6 +25,9 @@
 
 ### Infrastructure
 - PG: connections, slow queries, partition sizes; Redis: memory, evictions; disk.
+- FPM pool (php-fpm-exporter): `phpfpm_active_processes`, `phpfpm_total_processes`, `phpfpm_listen_queue`, `phpfpm_slow_requests` — насыщение пула (alerts `PhpFpmPoolSaturation` / `PhpFpmListenQueue`);
+- OPcache (app /metrics, `OpcacheMetricsCollector`): `php_opcache_hit_rate`, `php_opcache_memory_{used,free,wasted}_bytes`, `php_opcache_cached_scripts`, `php_opcache_cached_keys`, `php_opcache_manual_restarts`, `php_opcache_last_restart_time` (alert `OpcacheRestarted`). Источник — `opcache_get_status()` web-пула; у worker/scheduler свои инстансы (не экспортируются, см. observability-roadmap.md #1);
+- External uptime (blackbox-exporter, job `blackbox`): `probe_success` на `http://web/health/ready` (alert `HealthReadyDown`).
 
 ## 2. Logs (structured JSON)
 
@@ -39,9 +42,9 @@
 
 ## 4. Dashboards (Grafana)
 
-1. **Auction live** — bids/sec, write p95, extensions, pauses, active TRADE, no_bids alert;
-2. **Platform** — RPS, errors, rate limit, webhooks, queues;
-3. **Growth** — partition sizes (audit/auction_bids), catalog latency (p95), retention progress.
+1. **Auction live** — bids/sec, write latency percentiles (p50/p90/p95/p99), extensions, pauses, active TRADE, no_bids alert;
+2. **Platform** — RPS, errors, rate limit, webhooks, queues, HTTP latency percentiles (p50/p90/p95/p99), OPcache hit rate/memory;
+3. **Growth** — partition sizes (audit/auction_bids), catalog latency percentiles (p50/p90/p95/p99), retention progress.
 
 ## 5. Alerts (baseline)
 
@@ -53,8 +56,16 @@
 | Outbox lag | outbox_pending age > 1 min | medium |
 | 429 storm | rate_limit_exceeded > threshold | medium |
 | Disk/partition | usage > 80% | medium |
+| FPM pool saturation | phpfpm active/total > 0.8 (5 min) | high |
+| FPM listen queue | phpfpm_listen_queue > 0 (2 min) | medium |
+| OPcache restarted | last_restart_time < 5 min ago | medium |
+| Health /ready down | blackbox probe_success == 0 (5 min) | high |
+
+Полный список правил — `docker/prometheus/alerts.yml` (проверяется promtool в CI).
+SLO/burn-rate алерты — observability-roadmap.md #3 (запланированы).
 
 ## 6. Collection points
 
-- Prometheus (pull) + exporters (php-fpm, PG, Redis, RabbitMQ); Mercure — its own metrics;
-- Loki (logs) / Sentry (exceptions) — simplified in dev; prod — optional (Grafana Cloud / self-hosted).
+- Prometheus (pull) + exporters (php-fpm, PG, Redis, RabbitMQ, blackbox); Mercure — its own metrics;
+- Loki (logs) / Sentry (exceptions) — simplified in dev; prod — optional (Grafana Cloud / self-hosted); Sentry wiring — observability-roadmap.md #7b;
+- External uptime — blackbox-exporter внутри стека (dev); UptimeRobot для публичного URL — prod-шаг (roadmap #9).

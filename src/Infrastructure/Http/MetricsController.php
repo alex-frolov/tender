@@ -6,6 +6,7 @@ namespace App\Infrastructure\Http;
 
 use App\Infrastructure\Metrics\GaugeMetricsUpdater;
 use App\Infrastructure\Metrics\MetricsRegistry;
+use App\Infrastructure\Metrics\OpcacheMetricsCollector;
 use Prometheus\RenderTextFormat;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
@@ -27,6 +28,7 @@ final class MetricsController extends AbstractController
     public function __construct(
         private readonly MetricsRegistry $metrics,
         private readonly GaugeMetricsUpdater $gauges,
+        private readonly OpcacheMetricsCollector $opcache,
     ) {
     }
 
@@ -34,6 +36,7 @@ final class MetricsController extends AbstractController
     public function index(): Response
     {
         $this->gauges->refreshIfDue();
+        $this->opcache->update();
 
         $renderer = new RenderTextFormat();
         $body = $renderer->render($this->metrics->getCollectorRegistry()->getMetricFamilySamples());
