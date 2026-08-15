@@ -79,7 +79,7 @@ final readonly class AuctionMetricsCollector
 
     /**
      * Число аукционов, застрявших в TRADE без ставок дольше порога.
-     * Gauge без лейблов (observability-roadmap.md #5, вариант A): прежняя
+     * Gauge без лейблов (вариант A): прежняя
      * серия auction_no_bids_alert{auction_id} давала кардинальность по числу
      * аукционов, когда-либо входивших в TRADE (Redis хранит серию навсегда).
      * @throws MetricsRegistrationException

@@ -1118,7 +1118,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Docker VM (node-exporter, roadmap #8). Диск — алерт DiskSpaceLow.",
+      "description": "Docker VM (node-exporter). Диск — алерт DiskSpaceLow.",
       "fieldConfig": {
         "defaults": {
           "color": {

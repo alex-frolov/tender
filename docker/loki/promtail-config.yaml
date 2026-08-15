@@ -1,4 +1,4 @@
-# Tender Platform — Promtail (observability-roadmap.md #7a)
+# Tender Platform — Promtail
 # Собирает логи всех контейнеров стека через docker.sock и шлёт в Loki.
 # Лейблы: container (имя контейнера), service (app-<name>-1 → <name>),
 # stream (stdout/stderr). JSON-логи приложения содержат request_id/trace-id

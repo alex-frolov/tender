@@ -1,4 +1,4 @@
-# Tender Platform — Grafana: datasource Loki (observability-roadmap.md #7a)
+# Tender Platform — Grafana: datasource Loki
 apiVersion: 1
 
 datasources:

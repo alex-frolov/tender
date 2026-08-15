@@ -428,9 +428,9 @@ URLs:
 | postgres-exporter | `http://localhost:9187/metrics` |
 | redis-exporter | `http://localhost:9121/metrics` |
 | php-fpm-exporter | `http://localhost:9253/metrics` |
-| node-exporter | `http://localhost:9100/metrics` (host disk/CPU/RAM, roadmap #8) |
-| blackbox-exporter | `http://localhost:9115/metrics` (uptime probe `/health/ready`, roadmap #9) |
-| Loki | `http://localhost:3100` (logs, roadmap #7a) |
+| node-exporter | `http://localhost:9100/metrics` (host disk/CPU/RAM) |
+| blackbox-exporter | `http://localhost:9115/metrics` (uptime probe `/health/ready`) |
+| Loki | `http://localhost:3100` (logs) |
 | php-fpm status (via nginx) | `http://localhost:8080/status` |
 | RabbitMQ prometheus | `http://localhost:55672` (management UI; metrics — `rabbitmq:15692/metrics`) |
 | app `/metrics` | `http://localhost:8080/metrics` |
@@ -450,7 +450,7 @@ native hub metrics via the locally patched v0.16.3 image, see below), **node-exp
 (host disk/CPU/RAM, alert `DiskSpaceLow`) and **blackbox-exporter** (external uptime
 check on `/health/ready`, alert `HealthReadyDown`).
 
-**Logs (roadmap #7a):** Loki + promtail collect structured JSON logs of the stack
+**Logs:** Loki + promtail collect structured JSON logs of the stack
 containers (docker.sd, `app-*` only); datasource `Loki` in Grafana; search by
 trace-id: `{service="app"} | json`.
 

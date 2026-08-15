@@ -568,7 +568,7 @@
       ],
       "title": "Stalled auctions (no bids)",
       "type": "stat",
-      "description": "auction_stalled_now — текущее число застрявших TRADE-аукционов без ставок; stall events — переходы в stalled (алерт AuctionStalled). Метрики без лейбла auction_id (roadmap #5, вариант A)."
+      "description": "auction_stalled_now — текущее число застрявших TRADE-аукционов без ставок; stall events — переходы в stalled (алерт AuctionStalled). Метрики без лейбла auction_id (вариант A)."
     }
   ],
   "refresh": "15s",

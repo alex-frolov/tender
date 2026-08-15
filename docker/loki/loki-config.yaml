@@ -1,4 +1,4 @@
-# Tender Platform — Loki (observability-roadmap.md #7a)
+# Tender Platform — Loki (сбор логов стека)
 # Dev-профиль: single-binary, filesystem storage, retention 168h.
 # В prod — объектное хранилище + HA (вне scope dev-стека).
 

@@ -12,7 +12,7 @@ use Symfony\Component\Console\Event\ConsoleTerminateEvent;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 
 /**
- * Метрики console-команд (observability-roadmap.md #6).
+ * Метрики console-команд (scheduler/worker/webhooks).
  *
  * Покрывает scheduler (auctions:heartbeat, analytics:counters:snapshot,
  * idempotency:cleanup, notifications:digest:schedule — docker/

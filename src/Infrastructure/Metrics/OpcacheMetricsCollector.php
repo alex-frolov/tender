@@ -7,13 +7,13 @@ namespace App\Infrastructure\Metrics;
 use Prometheus\CollectorRegistry;
 
 /**
- * Метрики OPcache (ops/observability.md §1, observability-roadmap.md #1).
+ * Метрики OPcache (ops/observability.md §1).
  *
  * Источник — opcache_get_status(false) в контексте FPM-процесса web-пула:
  * /metrics отдаёт app (php-fpm), поэтому читаем кэш байткода того же пула,
  * который обслуживает трафик. У worker/scheduler/webhooks — собственные
  * инстансы OPcache (shared-nothing PHP), они не экспортируются: для dev это
- * осознанный компромисс (см. roadmap).
+ * осознанный компромисс.
  *
  * Тонкости реализации:
  * - чтение дешёвое (память процесса), вызывается на каждый скрейп /metrics —

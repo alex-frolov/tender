@@ -251,7 +251,7 @@ services:
       # nginx location = /status (default.conf) остаётся для ручной проверки.
       PHP_FPM_SCRAPE_URI: tcp://app:9000/status
 
-  # Внешний аптайм-чек (observability-roadmap.md #9): probe на /health/ready
+  # Внешний аптайм-чек : probe на /health/ready
   # через web:80. Алерт HealthReadyDown (docker/prometheus/alerts.yml).
   blackbox-exporter:
     image: prom/blackbox-exporter:v0.26.0
@@ -260,7 +260,7 @@ services:
     volumes:
       - ./docker/prometheus/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
 
-  # Host-метрики (observability-roadmap.md #8): честный диск/CPU/RAM вместо
+  # Host-метрики : честный диск/CPU/RAM вместо
   # эвристики по партициям PG. В Docker Desktop это метрики VM, на которой
   # живут volume'ы приложения — то, что нужно для DiskSpaceLow.
   node-exporter:
@@ -272,7 +272,7 @@ services:
     command:
       - '--path.rootfs=/host'
 
-  # Loki (observability-roadmap.md #7a): сбор structured JSON-логов с trace-id.
+  # Loki : сбор structured JSON-логов с trace-id.
   # Dev-профиль: filesystem storage, retention 168h (7 дней).
   loki:
     image: grafana/loki:3.3.2

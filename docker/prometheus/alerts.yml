@@ -7,7 +7,7 @@
 groups:
   - name: tender-slo
     rules:
-      # SLO/burn-rate (observability-roadmap.md #3; recording rules — slo-rules.yml).
+      # SLO/burn-rate (recording rules — slo-rules.yml).
       # Таргеты: 99% ставок ≤ 100 мс; 99.9% HTTP без 5xx.
       # Пороги: (1-0.99)*14.4 = 0.144; (1-0.99)*6 = 0.06; (1-0.999)*14.4 = 0.0144;
       # (1-0.999)*6 = 0.006. Dual-window: длинное окно + короткое (отсечка флапов).
@@ -52,7 +52,7 @@ groups:
   - name: tender-auction
     rules:
       - alert: AuctionStalled
-        # Аукцион застрял (observability-roadmap.md #5, вариант A): счётчик
+        # Аукцион застрял (вариант A): счётчик
         # переходов в stalled без лейбла auction_id (кардинальность не растёт).
         # increase > 0 за 15м = как минимум один аукцион перешёл в «без ставок
         # дольше порога». Порог времени — AuctionNoBidEvaluator (шаг ставки).
@@ -115,7 +115,7 @@ groups:
   - name: tender-infra
     rules:
       - alert: DiskSpaceLow
-        # Честный диск (observability-roadmap.md #8): node-exporter. В Docker
+        # Честный диск : node-exporter. В Docker
         # Desktop VM volume'ы живут на /var/lib/docker (ext4) — цель именно она
         # (mountpoint "/" — erofs/overlay, не настоящий диск). < 20% свободно.
         expr: (node_filesystem_avail_bytes{mountpoint="/var/lib/docker"} / node_filesystem_size_bytes{mountpoint="/var/lib/docker"}) < 0.2
@@ -127,7 +127,7 @@ groups:
           description: "На разделе /var/lib/docker (volume'ы Docker Desktop) осталось меньше 20% (node_filesystem_avail_bytes/size). Проверить docker system df, размеры volume'ов (prometheus_data, grafana_data, db_data) и retention."
 
       - alert: TenderPartitionSizeHigh
-        # Рост таблиц/партиций PG (observability-roadmap.md #8, отдельно от диска):
+        # Рост таблиц/партиций PG (отдельно от диска):
         # эвристика без pg_stat_statements — суммарный размер таблиц
         # audit_log/auction_bids (tender_partition_size_bytes из pg-queries.yaml)
         # от ориентира 5 ГБ. Это про рост БД, а не про диск (DiskSpaceLow).
@@ -154,7 +154,7 @@ groups:
           description: "php-fpm (app:9000) не отдал статус за последние 2 минуты (phpfpm_up == 0). Контейнер app мог упасть или перезапуститься; проверить docker compose ps и логи app."
 
       - alert: PhpFpmPoolSaturation
-        # Истощение FPM-пула (observability-roadmap.md #2): active/max_children > 0.8.
+        # Истощение FPM-пула : active/max_children > 0.8.
         # phpfpm_total_processes — текущий размер пула (max_children при насыщении),
         # active_processes — занятые воркеры. Shared-nothing PHP: истощение пула =
         # отказ без исключений (запросы встают в listen queue).
@@ -169,7 +169,7 @@ groups:
           description: "php-fpm пул загружен более чем на 80% (active/total > 0.8) в течение 5 минут. Проверить max_children (дефолт 5, load-профиль 30), медленные запросы (phpfpm_slow_requests) и внешние блокировки."
 
       - alert: PhpFpmListenQueue
-        # Очередь прослушивания FPM (observability-roadmap.md #2): запросы ждут
+        # Очередь прослушивания FPM : запросы ждут
         # свободного воркера. Кратковременные пики — норма при всплесках, поэтому
         # for: 2m отсекает флапы.
         expr: phpfpm_listen_queue > 0
@@ -181,7 +181,7 @@ groups:
           description: "phpfpm_listen_queue > 0 в течение 2 минут — запросы ожидают свободного FPM-воркера. Пул на грани насыщения; проверить active/max_children и длительность запросов."
 
       - alert: OpcacheRestarted
-        # OPcache перезапущен (observability-roadmap.md #1). last_restart_time —
+        # OPcache перезапущен . last_restart_time —
         # unix-время последнего рестарта (ручного/oom/hash), 0 = никогда.
         # Алерт активен 5 минут после рестарта (окно (now - last) < 300).
         # Рестарт = сброс кэша байткода: деградация перфоманса без ошибок в логах.
@@ -194,7 +194,7 @@ groups:
           description: "OPcache был перезапущен (последний рестарт менее 5 минут назад). Кэш байткода сброшен — hit rate временно упадёт; при частых повторах увеличить opcache.memory_consumption (сейчас 128 MB) или проверить причину oom/hash-рестартов."
 
       - alert: ConsoleCommandFailed
-        # Сбой console-команды (observability-roadmap.md #6): scheduler/worker/
+        # Сбой console-команды : scheduler/worker/
         # webhooks. Счётчик контракта — console_commands_failed_total{command};
         # increase > 0 за 15м = как минимум один неудачный запуск (exit != 0
         # или исключение). Дубли TERMINATE+ERROR невозможны (см. подписчик).
@@ -207,7 +207,7 @@ groups:
           description: "console_commands_failed_total за 15м > 0 — scheduler/worker/webhooks команда завершилась с ошибкой или исключением. Проверить docker logs scheduler/worker/webhooks и детали по лейблу command."
 
       - alert: HealthReadyDown
-        # Внешний аптайм-чек (observability-roadmap.md #9): blackbox probe на
+        # Внешний аптайм-чек : blackbox probe на
         # /health/ready через nginx. probe_success == 0 — не 200/таймаут/
         # connection refused: стек не принял запрос (app, db, redis, rabbitmq,
         # mercure — см. реализацию /health/ready).

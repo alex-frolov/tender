@@ -1,4 +1,4 @@
-# Tender Platform — SLO/SLI recording rules (observability-roadmap.md #3)
+# Tender Platform — SLO/SLI recording rules
 # Multi-window burn-rate (Google SRE Workbook, гл. 5): алерт срабатывает,
 # когда error_ratio превышает (1-SLO)*burn_rate на ОБОИХ окнах (длинное +
 # короткое) — это отсекает флапы и ловит только устойчивое выгорание бюджета.

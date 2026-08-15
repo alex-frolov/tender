@@ -80,7 +80,7 @@ final class AuctionMetricsCollectorTest extends TestCase
         $collector->stallEvents(2);
 
         $body = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
-        // Без лейбла auction_id (roadmap #5, вариант A) — кардинальность не растёт.
+        // Без лейбла auction_id (вариант A) — кардинальность не растёт.
         self::assertStringContainsString('auction_stalled_now 3', $body);
         self::assertStringContainsString('auction_stall_events_total 2', $body);
         self::assertStringNotContainsString('auction_no_bids_alert', $body);

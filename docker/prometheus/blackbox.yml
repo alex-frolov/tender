@@ -1,4 +1,4 @@
-# Tender Platform — blackbox-exporter (observability-roadmap.md #9)
+# Tender Platform — blackbox-exporter
 # Внешний (относительно app-контейнеров) аптайм-чек: probe ходит через nginx
 # (web:80) на /health/ready — «взгляд снаружи» на полный стек HTTP.
 # /health/ready исключён из auth/rate-limit/идемпотентности (см. src), поэтому
