@@ -33,6 +33,7 @@ with retries and integer-only money arithmetic.
 - [Documentation](#documentation)
 - [API](#api)
 - [Quality & testing](#quality--testing)
+- [Observability (dev)](#observability-dev)
 - [Contributing](#contributing)
 - [Security](#security)
 - [License](#license)
@@ -405,6 +406,63 @@ subscriptions. See [`load/README.md`](load/README.md) for scenarios and SLOs.
 ./load/run.sh               # full suite
 ./load/run.sh bids          # one scenario: bids | catalog | sse | webhooks
 ```
+
+## Observability (dev)
+
+Prometheus + Grafana stack for local development. Metric, dashboard and alert
+specification — [`operations/observability.md`](operations/observability.md).
+
+```bash
+make observability-up     # prometheus, grafana, postgres/redis/php-fpm exporters
+make observability-down   # stop (volumes are preserved)
+make observability-logs   # service logs
+make observability-ps     # status
+```
+
+URLs:
+
+| Service | URL |
+|---|---|
+| Prometheus | `http://localhost:9090` (targets/rules: `/targets`, `/rules`) |
+| Grafana | `http://localhost:3000` (admin/admin, dev) |
+| postgres-exporter | `http://localhost:9187/metrics` |
+| redis-exporter | `http://localhost:9121/metrics` |
+| php-fpm-exporter | `http://localhost:9253/metrics` |
+| php-fpm status (via nginx) | `http://localhost:8080/status` |
+| RabbitMQ prometheus | `http://localhost:55672` (management UI; metrics — `rabbitmq:15692/metrics`) |
+| app `/metrics` | `http://localhost:8080/metrics` |
+| Mercure `/metrics` | `http://localhost:3008/metrics` (patched v0.16.3 image) |
+
+**What is collected:** PostgreSQL (connections, slow queries, table/partition sizes
+of `audit_log`/`auction_bids` via `docker/prometheus/pg-queries.yaml`), Redis
+(memory/evictions), RabbitMQ (queues via `rabbitmq_prometheus`, port 15692),
+php-fpm (`pm.status_path=/status`, `docker/php/zz-status.conf`; the exporter
+connects directly over FastCGI `tcp://app:9000/status`), the application
+(`web:80/metrics` — `src/Infrastructure/Http/MetricsController`, contract metrics
+`ops/observability.md` §1: `auction_*`, `http_requests_total`,
+`http_request_duration_seconds`, `rate_limit_exceeded_total`,
+`webhook_deliveries_total`, `outbox_pending`) and **Mercure** (`mercure:80/metrics`,
+native hub metrics via the locally patched v0.16.3 image, see below).
+
+**Mercure:** the image is built locally from the `v0.16.3` sources with a minimal
+patch (`docker/mercure/Dockerfile` + `docker/mercure/caddy_metrics.patch`):
+v0.16 already collects `mercure_subscribers_connected` / `mercure_subscribers_total` /
+`mercure_updates_total`, but the Caddy module does not register `/metrics` (404 in
+the official image). The patch serves the metrics at `/metrics` for Prometheus. The
+version is **deliberately not upgraded** to 2.x (breaks symfony/mercure 0.7.x:
+publish → 401, SSE broken). The recording rule `sse_connections = mercure_subscribers_connected`
+(`docker/prometheus/rules.yml`) feeds the dashboard; `sse_delivery_latency` is
+unavailable in v0.16 (the hub has no latency metrics) — the panel is kept for the
+future and will light up after a Mercure 2.x upgrade.
+
+**Dashboards:** **Auction live** (`tender-auction-live`), **Platform**
+(`tender-platform`), **Growth** (`tender-growth`) — provisioned from
+`docker/grafana/dashboards/*.json` (read-only).
+
+**Alertmanager:** out of scope for the dev stack. To enable notifications, add the
+`prom/alertmanager` service to compose, point `alerting:`/`alertmanagers:` in
+`docker/prometheus/prometheus.yml` at it and add routing rules (see the Prometheus
+Alertmanager documentation).
 
 ## Contributing
 

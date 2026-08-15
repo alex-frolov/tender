@@ -1,59 +1,60 @@
-# Наблюдаемость (operations/observability.md)
+# Observability (operations/observability.md)
 
-- **Дата:** 2026-08-08
+- **Date:** 2026-08-08
 
 ---
 
-## 1. Метрики (Prometheus)
+## 1. Metrics (Prometheus)
 
-### Домен аукциона (критичные)
-- `auction_bids_total` — ставки/сек (rate);
-- `auction_bid_latency_seconds` (histogram) — p95 записи ставки < 100 мс;
-- `auction_extensions_total` — продления (антиснайпинг);
-- `auction_pauses_total` — паузы/возобновления;
-- `auction_active_trades` — активные аукционы в TRADE;
-- `auction_no_bids_alert` — **alerting: активный TRADE без ставок N минут (возможный сбой)** — настраиваемый порог (напр. 15 мин при step_duration=10 мин).
+### Auction domain (critical)
+- `auction_bids_total` — bids/sec (rate);
+- `auction_bid_latency_seconds` (histogram) — bid write p95 < 100 ms;
+- `auction_extensions_total` — extensions (anti-sniping);
+- `auction_pauses_total` — pauses/resumes;
+- `auction_active_trades` — auctions currently in TRADE;
+- `auction_no_bids_alert` — **alerting: active TRADE with no bids for N minutes (possible failure)** — configurable threshold (e.g. 15 min at step_duration=10 min).
 
-### Платформа
-- `http_requests_total` / `http_request_duration` (по маршрутам, статусам);
-- `rate_limit_exceeded_total` — срабатывания 429;
-- `webhook_deliveries_total{status}` — доставки/фейлы/дед;
-- `rabbitmq_*` — глубина очередей, dead-letter;
-- `outbox_pending` — задержка публикации outbox (лаг);
-- `sse_connections` — коннекты Mercure (hub-метрики), `sse_delivery_latency` (p95 < 1 сек).
+### Platform
+- `http_requests_total` / `http_request_duration_seconds` (by route, status);
+- `rate_limit_exceeded_total` — 429 hits;
+- `webhook_deliveries_total{status}` — delivered/failed/dead;
+- `rabbitmq_*` — queue depth, dead-letter;
+- `outbox_pending` — outbox publish lag;
+- `sse_connections` — Mercure hub connections (hub metrics), `sse_delivery_latency` (p95 < 1 sec).
+- **Mercure /metrics:** the `mercure` job scrapes the hub at `mercure:80/metrics` (local patch `docker/mercure/caddy_metrics.patch`; native metrics `mercure_subscribers_connected` / `mercure_subscribers_total` / `mercure_updates_total`). ⚠️ The compose file sets `SERVER_NAME: "http://localhost http://mercure"` for the hub — the Caddy module serves /metrics only for the matching hostname (without `mercure` the scrape would return an empty body), see docker-compose.yml.
 
-### Инфраструктура
-- PG: соединения, slow queries, размер партиций; Redis: память, evictions; диск.
+### Infrastructure
+- PG: connections, slow queries, partition sizes; Redis: memory, evictions; disk.
 
-## 2. Логи (structured JSON)
+## 2. Logs (structured JSON)
 
-- Формат: JSON (app), request-id/trace-id во всех записях;
-- Без ПДн в логах (email, ИНН — маскировать/не логировать);
-- Уровни: debug (dev), info (бизнес-события), warning (429, ретраи), error (исключения), critical (dead-letter, сбой аукциона).
+- Format: JSON (app), request-id/trace-id in every record;
+- No PII in logs (email, INN — mask or do not log);
+- Levels: debug (dev), info (business events), warning (429, retries), error (exceptions), critical (dead-letter, auction failure).
 
-## 3. Трейсинг
+## 3. Tracing
 
-- trace-id через заголовки (X-Request-Id / traceparent), сквозной: API → домен → outbox → RabbitMQ → консьюмер → webhook/Mercure;
-- Ключевые цепочки: ставка → событие → webhook; ставка → Redis → Mercure.
+- trace-id via headers (X-Request-Id / traceparent), end-to-end: API → domain → outbox → RabbitMQ → consumer → webhook/Mercure;
+- Key chains: bid → event → webhook; bid → Redis → Mercure.
 
-## 4. Дашборды (Grafana)
+## 4. Dashboards (Grafana)
 
-1. **Аукцион live** — ставки/сек, p95 записи, продления, паузы, активные TRADE, alert no_bids;
-2. **Платформа** — RPS, ошибки, rate limit, webhooks, очереди;
-3. **Рост** — размер партиций (audit/auction_bids), latency каталога (p95), retention-прогресс.
+1. **Auction live** — bids/sec, write p95, extensions, pauses, active TRADE, no_bids alert;
+2. **Platform** — RPS, errors, rate limit, webhooks, queues;
+3. **Growth** — partition sizes (audit/auction_bids), catalog latency (p95), retention progress.
 
-## 5. Алерты (базовые)
+## 5. Alerts (baseline)
 
-| Алерт | Условие | Критичность |
+| Alert | Condition | Severity |
 |---|---|---|
-| Auction stalled | TRADE без ставок > порога | high |
-| Bid latency | p95 записи > 150 мс (5 мин) | high |
+| Auction stalled | TRADE without bids > threshold | high |
+| Bid latency | write p95 > 150 ms (5 min) | high |
 | Dead-letter webhook | webhook_deliveries dead > 0 | medium |
-| Outbox lag | outbox_pending возраст > 1 мин | medium |
-| 429 storm | rate_limit_exceeded > порога | medium |
-| Disk/partition | заполнение > 80% | medium |
+| Outbox lag | outbox_pending age > 1 min | medium |
+| 429 storm | rate_limit_exceeded > threshold | medium |
+| Disk/partition | usage > 80% | medium |
 
-## 6. Места сбора
+## 6. Collection points
 
-- Prometheus (pull) + exporters (php-fpm, PG, Redis, RabbitMQ); Mercure — свои метрики;
-- Loki (логи) / Sentry (исключения) — упрощённо в dev; prod — по выбору (Grafana Cloud / self-hosted).
+- Prometheus (pull) + exporters (php-fpm, PG, Redis, RabbitMQ); Mercure — its own metrics;
+- Loki (logs) / Sentry (exceptions) — simplified in dev; prod — optional (Grafana Cloud / self-hosted).
