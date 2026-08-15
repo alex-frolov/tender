@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Platform;
 
+use App\Infrastructure\Metrics\WebhookMetricsCollector;
 use App\Platform\Entity\Enum\WebhookDeliveryStatusEnum;
 use App\Platform\Entity\Enum\WebhookStatusEnum;
 use App\Platform\Entity\Webhook;
@@ -57,6 +58,7 @@ final readonly class WebhookDeliveryService
         private HttpClientInterface $http,
         private MessageBusInterface $bus,
         private LoggerInterface $logger,
+        private WebhookMetricsCollector $webhookMetrics,
         #[Autowire(param: 'webhook_max_attempts')]
         private int $maxAttempts,
         #[Autowire(param: 'webhook_delivery_timeout')]
@@ -148,6 +150,9 @@ final readonly class WebhookDeliveryService
                 'attempt' => $attempt,
             ]);
 
+            // Доставка успешна (webhook_deliveries_total{status="delivered"}).
+            $this->webhookMetrics->delivery('delivered');
+
             return;
         } catch (\Throwable $e) {
             if ($e instanceof TransportExceptionInterface) {
@@ -222,6 +227,9 @@ final readonly class WebhookDeliveryService
 
         $delivery->markFailed($attempt, $httpStatus, $error, $nextRetryAt);
         $this->em->flush();
+
+        // Провал промежуточной попытки (webhook_deliveries_total{status="failed"}).
+        $this->webhookMetrics->delivery('failed');
     }
 
     /**
@@ -275,6 +283,9 @@ final readonly class WebhookDeliveryService
             'attempts' => $attempt,
             'error' => $error,
         ]);
+
+        // Dead-letter (webhook_deliveries_total{status="dead"} — алерт WebhookDeadLetter).
+        $this->webhookMetrics->delivery('dead');
     }
 
     /**

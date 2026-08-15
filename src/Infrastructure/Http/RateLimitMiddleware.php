@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Http;
 
+use App\Infrastructure\Metrics\RateLimitMetricsCollector;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -29,6 +30,7 @@ final class RateLimitMiddleware implements EventSubscriberInterface
     public function __construct(
         #[Autowire(service: 'limiter.api_global')]
         private readonly RateLimiterFactory $apiGlobalLimiter,
+        private readonly RateLimitMetricsCollector $rateLimitMetrics,
     ) {
     }
 
@@ -82,6 +84,13 @@ final class RateLimitMiddleware implements EventSubscriberInterface
         $headers = $this->rateLimitHeaders($hit);
 
         if (!$hit->isAccepted()) {
+            // 429 (rate_limit_exceeded_total, ops/observability.md §1).
+            $route = $request->attributes->get('_route');
+            $this->rateLimitMetrics->exceeded(
+                'api_global',
+                \is_string($route) ? $route : null,
+            );
+
             $event->setResponse(new JsonResponse(
                 [
                     'type' => 'https://tools.ietf.org/html/rfc6585#section-4',

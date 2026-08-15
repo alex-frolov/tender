@@ -1,0 +1,13 @@
+# Tender Platform — записывающие правила (recording rules, ops/observability.md §1)
+# Подключаются в rule_files прометеуса вместе с alerts.yml (docker/prometheus/prometheus.yml).
+# Отдельный файл — чтобы не смешивать recording- и alert-правила.
+
+groups:
+  - name: tender-mercure
+    rules:
+      # SSE-подключения к Mercure-хабу. Алиас на нативную метрику хаба
+      # (mercure_subscribers_connected из docker/mercure/Dockerfile патча):
+      # сохраняет все лейблы источника (environment/service/instance/job),
+      # дашборд использует sum(sse_connections).
+      - record: sse_connections
+        expr: mercure_subscribers_connected

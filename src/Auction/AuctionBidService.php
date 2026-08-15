@@ -14,6 +14,7 @@ use App\Auction\Service\BidTransaction;
 use App\Auction\State\AuctionStateService;
 use App\Auction\Step\BidStepCalculator;
 use App\Bid\BidReadService;
+use App\Infrastructure\Metrics\AuctionMetricsCollector;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
 
@@ -66,6 +67,7 @@ final readonly class AuctionBidService
         private BidReadService $bids,
         private AuctionStateService $state,
         private BidTransaction $transaction,
+        private AuctionMetricsCollector $auctionMetrics,
     ) {
     }
 
@@ -440,42 +442,49 @@ final readonly class AuctionBidService
         ?string $ip,
         \Closure $validateAndCommit,
     ): AuctionBid {
-        $bid = $this->em->wrapInTransaction(function () use (
-            $auction,
-            $bidderId,
-            $idempotencyKey,
-            $validateAndCommit,
-        ): AuctionBid {
-            $locked = $this->transaction->lockAuction($auction->getId());
+        // NFR-1: замер времени записи ставки (auction_bid_latency_seconds,
+        // ops/observability.md §1) — весь путь: транзакция + Redis-снапшот.
+        $start = hrtime(true);
+        try {
+            $bid = $this->em->wrapInTransaction(function () use (
+                $auction,
+                $bidderId,
+                $idempotencyKey,
+                $validateAndCommit,
+            ): AuctionBid {
+                $locked = $this->transaction->lockAuction($auction->getId());
 
-            // ARCH-6: повторная доставка (at-least-once) с тем же Idempotency-Key
-            // → возвращаем уже принятую ставку, дубль не создаётся (replay).
-            $replay = $this->transaction->replayBid($locked, $idempotencyKey);
-            if (null !== $replay) {
-                return $replay;
-            }
+                // ARCH-6: повторная доставка (at-least-once) с тем же Idempotency-Key
+                // → возвращаем уже принятую ставку, дубль не создаётся (replay).
+                $replay = $this->transaction->replayBid($locked, $idempotencyKey);
+                if (null !== $replay) {
+                    return $replay;
+                }
 
-            if (!$locked->getStatus()->acceptsBids()) {
-                throw new BidRejectedException('Bids are accepted only in TRADE', 'auction_not_trade');
-            }
+                if (!$locked->getStatus()->acceptsBids()) {
+                    throw new BidRejectedException('Bids are accepted only in TRADE', 'auction_not_trade');
+                }
 
-            $rules = $locked->getRulesSnapshot();
-            if (null === $rules) {
-                throw new BidRejectedException('Rules snapshot is not captured (auction not started)');
-            }
-            $snapshot = RulesSnapshot::fromArray($rules);
+                $rules = $locked->getRulesSnapshot();
+                if (null === $rules) {
+                    throw new BidRejectedException('Rules snapshot is not captured (auction not started)');
+                }
+                $snapshot = RulesSnapshot::fromArray($rules);
 
-            // FR-1.3.2: ставки только от допущенных участников.
-            if (!$this->bids->isAdmitted($locked->getTenderId(), $locked->getLotId(), $bidderId)) {
-                throw new BidRejectedException('Only admitted participants can place bids');
-            }
+                // FR-1.3.2: ставки только от допущенных участников.
+                if (!$this->bids->isAdmitted($locked->getTenderId(), $locked->getLotId(), $bidderId)) {
+                    throw new BidRejectedException('Only admitted participants can place bids');
+                }
 
-            return $validateAndCommit($locked, $snapshot);
-        });
+                return $validateAndCommit($locked, $snapshot);
+            });
 
-        // FR-1.3.6: Redis-снапшот live-состояния — после коммита.
-        $this->state->write($bid->getAuction(), $bid);
+            // FR-1.3.6: Redis-снапшот live-состояния — после коммита.
+            $this->state->write($bid->getAuction(), $bid);
 
-        return $bid;
+            return $bid;
+        } finally {
+            $this->auctionMetrics->bidLatency((hrtime(true) - $start) / 1e9);
+        }
     }
 }

@@ -11,6 +11,7 @@ use App\Auction\Repository\AuctionRepository;
 use App\Auction\Rules\RulesSnapshot;
 use App\Auction\Rules\RulesSnapshotFactory;
 use App\Auction\State\AuctionStateService;
+use App\Infrastructure\Metrics\AuctionMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use App\Shared\Exception\StateTransitionException;
@@ -50,6 +51,7 @@ final readonly class AuctionService
         private AuctionStateService $state,
         private AuctionRepository $auctions,
         private TenderReadService $tenders,
+        private AuctionMetricsCollector $auctionMetrics,
         #[Autowire(service: 'state_machine.auction')]
         private WorkflowInterface $auctionWorkflow,
     ) {
@@ -198,6 +200,9 @@ final readonly class AuctionService
         // Redis-снапшот live-состояния (PAUSED) — query path/SSE.
         $this->state->write($auction);
 
+        // Пауза/возобновление (auction_pauses_total, ops/observability.md §1).
+        $this->auctionMetrics->pauseOrResume();
+
         return $auction;
     }
 
@@ -258,6 +263,9 @@ final readonly class AuctionService
 
         // Redis-снапшот live-состояния (TRADE + обновлённый planned_end_at).
         $this->state->write($auction);
+
+        // Пауза/возобновление (auction_pauses_total, ops/observability.md §1).
+        $this->auctionMetrics->pauseOrResume();
 
         return $auction;
     }

@@ -6,6 +6,7 @@ namespace App\Iam\Service;
 
 use App\Iam\Entity\PasswordResetToken;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\RateLimitMetricsCollector;
 use App\Shared\Audit\AuditService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Clock\ClockInterface;
@@ -40,6 +41,7 @@ final readonly class PasswordResetService
         private AuditService $audit,
         #[Autowire(service: 'limiter.email_send')]
         private RateLimiterFactory $emailLimiter,
+        private RateLimitMetricsCollector $rateLimitMetrics,
         private Environment $twig,
         private TranslatorInterface $translator,
         private int $tokenTtl,
@@ -63,6 +65,9 @@ final readonly class PasswordResetService
 
         $hit = $this->emailLimiter->create($email)->consume(1);
         if (!$hit->isAccepted()) {
+            // Лимит email_send исчерпан (rate_limit_exceeded_total, §1).
+            $this->rateLimitMetrics->exceeded('email_send');
+
             return [
                 'status' => 'rate_limited',
                 'retry_after' => max(0, $hit->getRetryAfter()->getTimestamp() - time()),

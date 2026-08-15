@@ -12,6 +12,7 @@ APP_SERVICE  := app
         lint cs-fixer phpstan arkitect test test-unit test-parallel test-smoke test-coverage quality \
         load load-prepare load-bids load-catalog load-sse load-webhooks \
         prod-up prod-down prod-migrate prod-smoke deploy \
+        observability-up observability-down observability-logs observability-ps \
         cache-clear
 
 help: ## Показать список доступных команд
@@ -20,7 +21,7 @@ help: ## Показать список доступных команд
 
 # ---------- Окружение ----------
 
-up: ## Поднять весь dev-стек (app, web:8080, db:54329, redis:56379, rabbitmq, mercure, mailpit, worker, webhooks, scheduler)
+up: ## Поднять весь dev-стек (app, web:8080, db:54329, redis:56379, rabbitmq, mercure, mailpit, worker, webhooks, scheduler) + observability (prometheus:9090, grafana:3000, exporters)
 	$(COMPOSE) up -d
 
 down: ## Остановить и удалить контейнеры
@@ -119,6 +120,22 @@ load-sse: ## Сценарий «SSE»
 
 load-webhooks: ## Сценарий «webhooks»
 	bash load/run.sh webhooks
+
+# ---------- Observability (Prometheus + Grafana, см. README §Observability) ----------
+
+OBSERVABILITY_SERVICES := prometheus grafana postgres-exporter redis-exporter php-fpm-exporter
+
+observability-up: ## Поднять Observability-стек (prometheus:9090, grafana:3000 admin/admin, postgres/redis/php-fpm exporters)
+	$(COMPOSE) up -d $(OBSERVABILITY_SERVICES)
+
+observability-down: ## Остановить Observability-стек (контейнеры удаляются, volumes сохраняются)
+	$(COMPOSE) rm -sf $(OBSERVABILITY_SERVICES)
+
+observability-logs: ## Логи Observability-сервисов (--follow)
+	$(COMPOSE) logs -f $(OBSERVABILITY_SERVICES)
+
+observability-ps: ## Статус Observability-контейнеров
+	$(COMPOSE) ps $(OBSERVABILITY_SERVICES)
 
 # ---------- Прод-развёртывание ----------
 

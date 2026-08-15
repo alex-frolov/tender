@@ -2,6 +2,8 @@
 # Состав: app (php:8.5-fpm), web (nginx), db (postgres:17), redis:7,
 #        rabbitmq:4-management, mercure (dunglas/mercure), mailpit,
 #        worker, webhooks, scheduler
+# Observability (ops/observability.md): prometheus, grafana,
+#        postgres-exporter, redis-exporter, php-fpm-exporter
 # Профили: dev (default), test (app+db+redis без внешних), prod (multi-stage)
 
 services:
@@ -34,6 +36,9 @@ services:
       RATE_LIMIT_GLOBAL_PER_MIN: "600"
     volumes:
       - ./:/var/www
+      # php-fpm status endpoint (pm.status_path) для php-fpm-exporter —
+      # см. docker/php/zz-status.conf и ops/observability.md §1.
+      - ./docker/php/zz-status.conf:/usr/local/etc/php-fpm.d/zz-status.conf:ro
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -97,7 +102,15 @@ services:
     # symfony/mercure 0.7.x с легаси-claims (mercure.publish/subscribe, FR-1.3.4/ADR-003).
     # На v2-хабе легаси-claims не работают (publish → 401), SSE-стримы аукционов
     # сломаны. v0.16 — последняя ветка с прежним API.
-    image: dunglas/mercure:v0.16.3
+    #
+    # Собираем из исходников v0.16.3 + локальный патч /metrics (docker/mercure/):
+    # v0.16 уже собирает mercure_* метрики в DefaultRegisterer, но Caddy-модуль
+    # не регистрирует /metrics (404 в официальном образе) — патч отдаёт рендер
+    # реестра по /metrics (ops/observability.md §1, Prometheus job "mercure").
+    build:
+      context: .
+      dockerfile: docker/mercure/Dockerfile
+    image: tender-mercure:dev
     environment:
       MERCURE_URL: http://mercure/.well-known/mercure
       MERCURE_PUBLIC_URL: http://localhost:3008/.well-known/mercure
@@ -107,7 +120,7 @@ services:
       # Dev: hub без TLS — форсируем plain HTTP (Caddy по умолчанию включает
       # auto-HTTPS и 308-редирект на https://localhost, что делает SSE-хаб
       # недоступным по http:// в dev). Требуется для SSE-нагрузки (k6).
-      SERVER_NAME: "http://localhost"
+      SERVER_NAME: "http://localhost http://mercure"
       MERCURE_EXTRA_DIRECTIVES: |
         cors_origins http://localhost:8080
         anonymous 0
@@ -173,6 +186,70 @@ services:
     depends_on:
       app: { condition: service_started }
 
+  # ---------- Observability (ops/observability.md) ----------
+  # Все сервисы — dev-профиль по умолчанию; поднимаются отдельно через
+  # make observability-up (или docker compose up -d prometheus grafana ...).
+
+  prometheus:
+    # v2.x — стабильная ветка (v3 вышла, но стек рассчитан на v2-совместимые
+    # конфигурации/дашборды; тег запинен).
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./docker/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - ./docker/prometheus/pg-queries.yaml:/etc/prometheus/pg-queries.yaml:ro
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      web: { condition: service_started }
+
+  grafana:
+    image: grafana/grafana:11.6.16
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin   # только dev; в prod — секрет из env
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    ports:
+      - "9187:9187"
+    environment:
+      DATA_SOURCE_NAME: postgresql://tender:tender@db:5432/tender?sslmode=disable
+      # Кастомные query (размер партиций audit_log/auction_bids, долгие запросы) —
+      # флаг --extend.query-path (PG_EXPORTER_EXTEND_QUERY_PATH), см. pg-queries.yaml.
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres_exporter/queries.yaml
+    volumes:
+      - ./docker/prometheus/pg-queries.yaml:/etc/postgres_exporter/queries.yaml:ro
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.89.0
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: redis:6379
+
+  php-fpm-exporter:
+    image: hipages/php-fpm_exporter:2.2.0
+    ports:
+      - "9253:9253"
+    environment:
+      # hipages/php-fpm_exporter подключается напрямую по FastCGI (не HTTP!):
+      # tcp://app:9000/status → pm.status_path=/status (docker/php/zz-status.conf).
+      # nginx location = /status (default.conf) остаётся для ручной проверки.
+      PHP_FPM_SCRAPE_URI: tcp://app:9000/status
+
 ###> doctrine/doctrine-bundle ###
   database:
     image: postgres:${POSTGRES_VERSION:-16}-alpine
@@ -197,3 +274,5 @@ volumes:
 ###> doctrine/doctrine-bundle ###
   database_data:
 ###< doctrine/doctrine-bundle ###
+  prometheus_data:
+  grafana_data:

@@ -1,0 +1,32 @@
+diff --git a/caddy/caddy.go b/caddy/caddy.go
+index 9b0249f..cdc78da 100644
+--- a/caddy/caddy.go
++++ b/caddy/caddy.go
+@@ -18,6 +18,7 @@ import (
+ 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+ 	"github.com/dunglas/mercure"
+ 	"github.com/prometheus/client_golang/prometheus"
++	"github.com/prometheus/client_golang/prometheus/promhttp"
+ 	"go.uber.org/zap"
+ 	"go.uber.org/zap/zapcore"
+ )
+@@ -276,6 +277,19 @@ func (m *Mercure) Cleanup() error {
+ }
+ 
+ func (m Mercure) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
++	if r.URL.Path == "/metrics" {
++		// Tender Platform (локальный патч): в v0.16 метрики mercure_* уже
++		// собираются в prometheus.DefaultRegisterer (metrics.go), но Caddy-модуль
++		// не регистрирует HTTP-роут /metrics (Register() deprecated) → в
++		// официальном образе /metrics отдаёт 404. Отдаём рендер реестра здесь,
++		// чтобы Prometheus мог скрейпить хаб (см. docker/prometheus/prometheus.yml).
++		if registry, ok := prometheus.DefaultRegisterer.(*prometheus.Registry); ok {
++			promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(w, r)
++		}
++
++		return nil
++	}
++
+ 	if !strings.HasPrefix(r.URL.Path, defaultHubURL) {
+ 		return next.ServeHTTP(w, r) //nolint:wrapcheck
+ 	}

@@ -115,3 +115,40 @@ jobs:
 
       - name: Build prod web image (nginx)
         run: docker build -f docker/web.Dockerfile -t tender-web:ci .
+
+      - name: Build Mercure hub image (v0.16.3 + /metrics patch)
+        # Кастомный образ хаба: исходники тега v0.16.3 + локальный патч
+        # /metrics (docker/mercure/caddy_metrics.patch). Пин в Dockerfile —
+        # НЕ апгрейдить на 2.x (ломает symfony/mercure 0.7.x).
+        run: docker build -f docker/mercure/Dockerfile -t tender-mercure:ci .
+
+  observability:
+    # Валидация observability-артефактов (docker-compose, prometheus, grafana).
+    # ВАЖНО: env из docker-compose в CI не проходит — тестовое окружение
+    # декларируется в .env.test, connection-переменные (DATABASE_URL/REDIS_URL/
+    # RABBITMQ_URL) задаются явно в шагах quality-джобы. Поэтому здесь стек НЕ
+    # поднимается (compose-env недоступен), проверяются только конфиги.
+    name: Observability config (compose · promtool · dashboards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose (dev + override)
+        run: docker compose config -q
+
+      - name: Validate Prometheus config and alert rules (promtool)
+        # Тег прометеуса запинен и совпадает с docker-compose.yml (v2.55.1).
+        run: |
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/docker/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/docker/prometheus:/etc/prometheus:ro" \
+            prom/prometheus:v2.55.1 check rules /etc/prometheus/alerts.yml
+
+      - name: Validate Grafana dashboards (JSON)
+        run: |
+          for f in docker/grafana/dashboards/*.json; do
+            jq -e . "$f" >/dev/null || { echo "INVALID JSON: $f"; exit 1; }
+          done
+          echo "Dashboards OK"

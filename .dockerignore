@@ -60,6 +60,9 @@ docker/*
 !docker/web.Dockerfile
 !docker/nginx/
 !docker/nginx/prod.conf
+!docker/mercure/
+!docker/mercure/Dockerfile
+!docker/mercure/caddy_metrics.patch
 
 # OS junk
 .DS_Store
