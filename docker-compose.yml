@@ -201,6 +201,7 @@ services:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - ./docker/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - ./docker/prometheus/slo-rules.yml:/etc/prometheus/slo-rules.yml:ro
       - ./docker/prometheus/pg-queries.yaml:/etc/prometheus/pg-queries.yaml:ro
     depends_on:
       db: { condition: service_healthy }

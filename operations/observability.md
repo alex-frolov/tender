@@ -65,9 +65,13 @@
 | OPcache restarted | last_restart_time < 5 min ago | medium |
 | Console command failed | console_commands_failed_total за 15м > 0 | medium |
 | Health /ready down | blackbox probe_success == 0 (5 min) | high |
+| SLO bid write fast/slow burn | error_ratio > 14.4x/6x (dual-window) | high/medium |
+| SLO HTTP fast/slow burn | error_ratio > 14.4x/6x (dual-window) | high/medium |
 
 Полный список правил — `docker/prometheus/alerts.yml` (проверяется promtool в CI).
-SLO/burn-rate алерты — observability-roadmap.md #3 (запланированы).
+SLO/burn-rate: таргеты 99% ставок ≤ 100 мс и 99.9% HTTP без 5xx (подтверждены
+владельцем 2026-08-15); recording rules — `docker/prometheus/slo-rules.yml`
+(roadmap #3). NaN при нулевом трафике алерты не поднимает.
 
 ## 6. Collection points
 

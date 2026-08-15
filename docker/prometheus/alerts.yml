@@ -5,6 +5,50 @@
 # и «оживут» вместе с метриками.
 
 groups:
+  - name: tender-slo
+    rules:
+      # SLO/burn-rate (observability-roadmap.md #3; recording rules — slo-rules.yml).
+      # Таргеты: 99% ставок ≤ 100 мс; 99.9% HTTP без 5xx.
+      # Пороги: (1-0.99)*14.4 = 0.144; (1-0.99)*6 = 0.06; (1-0.999)*14.4 = 0.0144;
+      # (1-0.999)*6 = 0.006. Dual-window: длинное окно + короткое (отсечка флапов).
+      # NaN при нулевом трафике (деление на 0) сравнение не проходит — молчит.
+
+      - alert: SLOBidWriteFastBurn
+        expr: slo:bid_write:error_ratio_1h > 0.144 and slo:bid_write:error_ratio_5m > 0.144
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "SLO bid write: быстрое выгорание бюджета (14.4x)"
+          description: "Более 14.4% ставок медленнее 100 мс за 5м и час (SLO 99% ≤ 100 мс). При таком темпе месячный бюджет ошибок сгорит за ~2 дня. Проверить блокировки БД, Redis, перегрузку FPM (алерты PhpFpm*)."
+
+      - alert: SLOBidWriteSlowBurn
+        expr: slo:bid_write:error_ratio_6h > 0.06 and slo:bid_write:error_ratio_30m > 0.06
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "SLO bid write: медленное выгорание бюджета (6x)"
+          description: "Более 6% ставок медленнее 100 мс за 30м и 6 часов (SLO 99% ≤ 100 мс). Устойчивая деградация; бюджет сгорит за ~5 дней. Начать разбор до того, как станет быстро."
+
+      - alert: SLOHttpFastBurn
+        expr: slo:http:error_ratio_1h > 0.0144 and slo:http:error_ratio_5m > 0.0144
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "SLO HTTP: быстрое выгорание бюджета (14.4x)"
+          description: "Более 1.44% 5xx за 5м и час (SLO 99.9% без 5xx). Бюджет сгорит за ~2 дня. Проверить 5xx по маршрутам (дашборд Platform), rate limit, health зависимостей."
+
+      - alert: SLOHttpSlowBurn
+        expr: slo:http:error_ratio_6h > 0.006 and slo:http:error_ratio_30m > 0.006
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "SLO HTTP: медленное выгорание бюджета (6x)"
+          description: "Более 0.6% 5xx за 30м и 6 часов (SLO 99.9% без 5xx). Устойчивая деградация; бюджет сгорит за ~5 дней."
+
   - name: tender-auction
     rules:
       - alert: AuctionStalled

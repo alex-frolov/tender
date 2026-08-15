@@ -8,6 +8,7 @@ global:
 rule_files:
   - "alerts.yml"
   - "rules.yml"
+  - "slo-rules.yml"
 
 scrape_configs:
   # Приложение (Symfony): /metrics — app-эндпоинт (src/Infrastructure/Http/

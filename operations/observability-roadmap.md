@@ -9,7 +9,7 @@
 |---|---|---|---|---|
 | 1 | OPcache-метрики (hit rate, restarts) | делаем | S | ✅ |
 | 2 | Алерт насыщения FPM-пула + listen queue | делаем | S | ✅ |
-| 3 | SLO/burn-rate алерты | таргеты: 99% ставок ≤100 мс, 99.9% HTTP | SLO | ⬜ |
+| 3 | SLO/burn-rate алерты | таргеты: 99% ставок ≤100 мс, 99.9% HTTP | SLO | ✅ |
 | 4 | p50/p90/p99 панели на дашбордах | делаем | S | ✅ |
 | 5 | Кардинальность auction_no_bids_alert | **Вариант A**: counter событий + count-gauge без auction_id | M | ✅ |
 | 6 | Метрики console-команд (scheduler) | делаем | M | ✅ |
