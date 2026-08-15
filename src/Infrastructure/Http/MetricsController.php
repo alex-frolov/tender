@@ -14,7 +14,6 @@ use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
-use Throwable;
 
 /**
  * Prometheus-эндпоинт приложения (ops/observability.md §1, /metrics).
@@ -40,7 +39,7 @@ final class MetricsController extends AbstractController
 
     /**
      * @throws MetricsRegistrationException
-     * @throws Throwable
+     * @throws \Throwable
      */
     #[Route(self::URL, name: 'metrics', methods: [Request::METHOD_GET])]
     public function index(): Response
