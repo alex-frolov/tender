@@ -37,7 +37,8 @@
 
 - Format: JSON (app), request-id/trace-id in every record;
 - No PII in logs (email, INN — mask or do not log);
-- Levels: debug (dev), info (business events), warning (429, retries), error (exceptions), critical (dead-letter, auction failure).
+- Levels: debug (dev), info (business events), warning (429, retries), error (exceptions), critical (dead-letter, auction failure);
+- **Collection (roadmap #7a):** Loki + promtail (docker.sd, только контейнеры стека app-*), datasource Loki в Grafana (uid `loki`), панель логов на Platform. Поиск по trace-id: `{service="app"} | json | line_format "{{.trace_id}} {{.__line__}}"`.
 
 ## 3. Tracing
 
@@ -75,6 +76,6 @@ SLO/burn-rate: таргеты 99% ставок ≤ 100 мс и 99.9% HTTP без
 
 ## 6. Collection points
 
-- Prometheus (pull) + exporters (php-fpm, PG, Redis, RabbitMQ, blackbox); Mercure — its own metrics;
-- Loki (logs) / Sentry (exceptions) — simplified in dev; prod — optional (Grafana Cloud / self-hosted); Sentry wiring — observability-roadmap.md #7b;
+- Prometheus (pull) + exporters (php-fpm, PG, Redis, RabbitMQ, blackbox, node-exporter); Mercure — its own metrics;
+- Loki (logs) — в dev-стеке (roadmap #7a); Sentry (exceptions) — prod, подключение описано в roadmap #7b;
 - External uptime — blackbox-exporter внутри стека (dev); UptimeRobot для публичного URL — prod-шаг (roadmap #9).

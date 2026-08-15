@@ -1,0 +1,32 @@
+# Tender Platform — Promtail (observability-roadmap.md #7a)
+# Собирает логи всех контейнеров стека через docker.sock и шлёт в Loki.
+# Лейблы: container (имя контейнера), service (app-<name>-1 → <name>),
+# stream (stdout/stderr). JSON-логи приложения содержат request_id/trace-id
+# (NFR-12) — связка метрика → лог по одному id (поиск в Grafana Explore).
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      # Только контейнеры стека tender (app-*): не тащим логи чужих проектов
+      # (languagetool и пр.) в dev-Loki.
+      - source_labels: ["__meta_docker_container_name"]
+        regex: /app-.*
+        action: keep
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: "container"
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/app-(.*)-[0-9]+"
+        target_label: "service"
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: "stream"

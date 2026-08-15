@@ -114,12 +114,23 @@ groups:
 
   - name: tender-infra
     rules:
-      - alert: DiskPartitionHigh
-        # Заполнение таблиц/партиций > 80% (observability.md §5, «диск/партиции»).
-        # Допущение (dev): точной метрики диска нет (нет node-exporter), поэтому
-        # считаем долю суммарного размера таблиц audit_log/auction_bids
-        # (tender_partition_size_bytes из pg-queries.yaml) от ориентира 5 ГБ.
-        # В prod заменить на node_filesystem_avail_bytes.
+      - alert: DiskSpaceLow
+        # Честный диск (observability-roadmap.md #8): node-exporter. В Docker
+        # Desktop VM volume'ы живут на /var/lib/docker (ext4) — цель именно она
+        # (mountpoint "/" — erofs/overlay, не настоящий диск). < 20% свободно.
+        expr: (node_filesystem_avail_bytes{mountpoint="/var/lib/docker"} / node_filesystem_size_bytes{mountpoint="/var/lib/docker"}) < 0.2
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Мало места на диске (< 20%)"
+          description: "На разделе /var/lib/docker (volume'ы Docker Desktop) осталось меньше 20% (node_filesystem_avail_bytes/size). Проверить docker system df, размеры volume'ов (prometheus_data, grafana_data, db_data) и retention."
+
+      - alert: TenderPartitionSizeHigh
+        # Рост таблиц/партиций PG (observability-roadmap.md #8, отдельно от диска):
+        # эвристика без pg_stat_statements — суммарный размер таблиц
+        # audit_log/auction_bids (tender_partition_size_bytes из pg-queries.yaml)
+        # от ориентира 5 ГБ. Это про рост БД, а не про диск (DiskSpaceLow).
         expr: (sum(tender_partition_size_bytes) / 5e9) * 100 > 80
         for: 5m
         labels:

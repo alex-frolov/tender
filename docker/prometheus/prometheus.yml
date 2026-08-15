@@ -88,3 +88,13 @@ scrape_configs:
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+
+  # Host-метрики (observability-roadmap.md #8): диск/CPU/RAM VM, где живут
+  # volume'ы. Алерт DiskSpaceLow и панели Platform-дашборда (node_filesystem_*,
+  # node_cpu_*, node_memory_*).
+  - job_name: "node"
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          environment: "dev"
+          service: "host"

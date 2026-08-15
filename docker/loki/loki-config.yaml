@@ -1,0 +1,41 @@
+# Tender Platform — Loki (observability-roadmap.md #7a)
+# Dev-профиль: single-binary, filesystem storage, retention 168h.
+# В prod — объектное хранилище + HA (вне scope dev-стека).
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    # from раньше старых логов dev-контейнеров (2026-08-08+), иначе push
+    # батчей со старыми записями падает «no schema config found».
+    - from: 2026-08-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 168h
+  # Старые записи (до 7 дней) не режем на push — иначе первый батч promtail
+  # со старыми логами контейнеров вечно падает с 400. Retention вычистит.
+  reject_old_samples: false
+
+compactor:
+  working_directory: /loki/compactor
+  compaction_interval: 15m

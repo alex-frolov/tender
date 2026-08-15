@@ -260,6 +260,40 @@ services:
     volumes:
       - ./docker/prometheus/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
 
+  # Host-метрики (observability-roadmap.md #8): честный диск/CPU/RAM вместо
+  # эвристики по партициям PG. В Docker Desktop это метрики VM, на которой
+  # живут volume'ы приложения — то, что нужно для DiskSpaceLow.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro
+    command:
+      - '--path.rootfs=/host'
+
+  # Loki (observability-roadmap.md #7a): сбор structured JSON-логов с trace-id.
+  # Dev-профиль: filesystem storage, retention 168h (7 дней).
+  loki:
+    image: grafana/loki:3.3.2
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  # Promtail: docker_sd — подписка на логи всех контейнеров стека через
+  # docker.sock (label service из имени контейнера app-<name>-1).
+  promtail:
+    image: grafana/promtail:3.3.2
+    volumes:
+      - ./docker/loki/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      loki: { condition: service_started }
+
 ###> doctrine/doctrine-bundle ###
   database:
     image: postgres:${POSTGRES_VERSION:-16}-alpine
@@ -286,3 +320,4 @@ volumes:
 ###< doctrine/doctrine-bundle ###
   prometheus_data:
   grafana_data:
+  loki_data:
