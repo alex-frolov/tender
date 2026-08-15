@@ -1,0 +1,46 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Infrastructure\Http;
+
+use App\Infrastructure\Metrics\GaugeMetricsUpdater;
+use App\Infrastructure\Metrics\MetricsRegistry;
+use Prometheus\RenderTextFormat;
+use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\Routing\Attribute\Route;
+
+/**
+ * Prometheus-эндпоинт приложения (ops/observability.md §1, /metrics).
+ *
+ * Отдаёт метрики в text-формате Prometheus. Скрейп: nginx location = /metrics
+ * (docker/nginx/default.conf) → app:9000 → этот контроллер. Gauge-метрики,
+ * требующие вычислений (active_trades / no_bids / outbox_pending), обновляются
+ * лениво с кэшированием через GaugeMetricsUpdater (не чаще раза в 15 c).
+ */
+final class MetricsController extends AbstractController
+{
+    public const string URL = '/metrics';
+
+    public function __construct(
+        private readonly MetricsRegistry $metrics,
+        private readonly GaugeMetricsUpdater $gauges,
+    ) {
+    }
+
+    #[Route(self::URL, name: 'metrics', methods: [Request::METHOD_GET])]
+    public function index(): Response
+    {
+        $this->gauges->refreshIfDue();
+
+        $renderer = new RenderTextFormat();
+        $body = $renderer->render($this->metrics->getCollectorRegistry()->getMetricFamilySamples());
+
+        $response = new Response($body, Response::HTTP_OK);
+        $response->headers->set('Content-Type', RenderTextFormat::MIME_TYPE);
+
+        return $response;
+    }
+}

@@ -11,6 +11,7 @@ use App\Auction\Exception\AuctionNotFoundException;
 use App\Auction\Repository\AuctionRepository;
 use App\Auction\Rules\RulesSnapshot;
 use App\Auction\Timer\AuctionTimer;
+use App\Infrastructure\Metrics\AuctionMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use App\Tender\TenderReadService;
@@ -41,6 +42,7 @@ final readonly class BidTransaction
         private AuctionTimer $timer,
         private TenderReadService $tenders,
         private AuctionRepository $auctions,
+        private AuctionMetricsCollector $auctionMetrics,
     ) {
     }
 
@@ -115,6 +117,8 @@ final readonly class BidTransaction
             if (null !== $newEnd) {
                 $auction->setPlannedEndAt($newEnd);
                 $auction->setExtensionsCount($auction->getExtensionsCount() + 1);
+                // Антиснайпинг: продление таймера (auction_extensions_total, §1).
+                $this->auctionMetrics->extensionHappened();
             }
         }
 
@@ -169,6 +173,10 @@ final readonly class BidTransaction
         // Один flush на ставку (ставка + аудит + outbox) — меньше round trips
         // на запись, критерий 4.10 «100–200 ставок/сек» (NFR-1).
         $this->em->flush();
+
+        // Принятая ставка записана (auction_bids_total, ops/observability.md §1).
+        // Replay по Idempotency-Key до commitBid не доходит — не считается.
+        $this->auctionMetrics->bidPlaced();
 
         return $bid;
     }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tests\Integration\Platform;
 
+use App\Infrastructure\Metrics\WebhookMetricsCollector;
 use App\Platform\Entity\Enum\WebhookDeliveryStatusEnum;
 use App\Platform\Entity\Webhook;
 use App\Platform\Entity\WebhookDelivery;
@@ -77,6 +78,7 @@ final class WebhookDeliveryServiceTest extends KernelTestCase
             http: new MockHttpClient($responses),
             bus: $this->bus,
             logger: $this->logger,
+            webhookMetrics: self::getContainer()->get(WebhookMetricsCollector::class),
             maxAttempts: self::MAX_ATTEMPTS,
             timeout: 1.0,
         );

@@ -15,6 +15,7 @@
         "lcobucci/jwt": "^5.6",
         "openspout/openspout": "^5.10",
         "opis/json-schema": "^2",
+        "promphp/prometheus_client_php": "^2.15",
         "symfony/amqp-messenger": "8.1.*",
         "symfony/console": "8.1.*",
         "symfony/dotenv": "8.1.*",

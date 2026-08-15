@@ -22,3 +22,8 @@ services:
         factory: ['App\Infrastructure\Amqp\AmqpConnectionFactory', 'create']
         arguments:
             - '%env(RABBITMQ_URL)%'
+
+    # Prometheus-реестр метрик (Redis-хранилище, префикс tender_prometheus_).
+    # Коллекторы/подписчики (App\Infrastructure\Metrics) autowire'ят этот сервис.
+    Prometheus\CollectorRegistry:
+        factory: ['@App\Infrastructure\Metrics\MetricsRegistry', 'getCollectorRegistry']
