@@ -428,6 +428,9 @@ URLs:
 | postgres-exporter | `http://localhost:9187/metrics` |
 | redis-exporter | `http://localhost:9121/metrics` |
 | php-fpm-exporter | `http://localhost:9253/metrics` |
+| node-exporter | `http://localhost:9100/metrics` (host disk/CPU/RAM, roadmap #8) |
+| blackbox-exporter | `http://localhost:9115/metrics` (uptime probe `/health/ready`, roadmap #9) |
+| Loki | `http://localhost:3100` (logs, roadmap #7a) |
 | php-fpm status (via nginx) | `http://localhost:8080/status` |
 | RabbitMQ prometheus | `http://localhost:55672` (management UI; metrics — `rabbitmq:15692/metrics`) |
 | app `/metrics` | `http://localhost:8080/metrics` |
@@ -437,12 +440,19 @@ URLs:
 of `audit_log`/`auction_bids` via `docker/prometheus/pg-queries.yaml`), Redis
 (memory/evictions), RabbitMQ (queues via `rabbitmq_prometheus`, port 15692),
 php-fpm (`pm.status_path=/status`, `docker/php/zz-status.conf`; the exporter
-connects directly over FastCGI `tcp://app:9000/status`), the application
-(`web:80/metrics` — `src/Infrastructure/Http/MetricsController`, contract metrics
-`ops/observability.md` §1: `auction_*`, `http_requests_total`,
-`http_request_duration_seconds`, `rate_limit_exceeded_total`,
-`webhook_deliveries_total`, `outbox_pending`) and **Mercure** (`mercure:80/metrics`,
-native hub metrics via the locally patched v0.16.3 image, see below).
+connects directly over FastCGI `tcp://app:9000/status`; pool saturation alerts),
+the application (`web:80/metrics` — `src/Infrastructure/Http/MetricsController`, contract metrics
+`ops/observability.md` §1: `auction_*` incl. `auction_stalled_now`/`auction_stall_events_total`,
+`http_requests_total`, `http_request_duration_seconds`, `rate_limit_exceeded_total`,
+`webhook_deliveries_total`, `outbox_pending`, `php_opcache_*` via `OpcacheMetricsCollector`,
+`console_commands_*` via `ConsoleMetricsSubscriber`), **Mercure** (`mercure:80/metrics`,
+native hub metrics via the locally patched v0.16.3 image, see below), **node-exporter**
+(host disk/CPU/RAM, alert `DiskSpaceLow`) and **blackbox-exporter** (external uptime
+check on `/health/ready`, alert `HealthReadyDown`).
+
+**Logs (roadmap #7a):** Loki + promtail collect structured JSON logs of the stack
+containers (docker.sd, `app-*` only); datasource `Loki` in Grafana; search by
+trace-id: `{service="app"} | json`.
 
 **Mercure:** the image is built locally from the `v0.16.3` sources with a minimal
 patch (`docker/mercure/Dockerfile` + `docker/mercure/caddy_metrics.patch`):
