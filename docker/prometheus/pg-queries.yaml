@@ -1,0 +1,49 @@
+# Tender Platform — кастомные query для postgres-exporter (ops/observability.md §1, §4)
+# Подключаются через PG_EXPORTER_QUERIES_PATH (/etc/postgres_exporter/queries.yaml).
+# Формат: map { namespace: { query, metrics } } — метрика называется <namespace>_<column>.
+#
+# Покрытие §1 «PG: соединения, slow queries, размер партиций»:
+#   - соединения: дефолтные метрики pg_stat_database_numbackends, pg_stat_activity_*;
+#   - размер партиций: кастомный query ниже (tender_partition_size_*);
+#   - slow queries: pg_stat_statements вне скоупа (нужно расширение в БД),
+#     добавлена аппроксимация по долгим активным запросам (tender_long_queries_*).
+
+# Размер таблиц/партиций audit_log и auction_bids (дашборд Growth, §4).
+# Партиции ещё не созданы (задача на вырост) — матчим базовые таблицы и
+# любые будущие партиции по префиксу (audit_log_%, auction_bids_%).
+tender_partition_size:
+  query: >
+    SELECT
+      n.nspname AS schemaname,
+      c.relname AS relname,
+      pg_total_relation_size(c.oid) AS bytes
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relkind IN ('r', 'p')
+      AND (c.relname LIKE 'audit_log%' OR c.relname LIKE 'auction_bids%')
+  metrics:
+    - schemaname:
+        usage: "LABEL"
+        description: "Схема таблицы"
+    - relname:
+        usage: "LABEL"
+        description: "Имя таблицы или партиции"
+    - bytes:
+        usage: "GAUGE"
+        description: "Полный размер таблицы/партиции (данные + индексы) в байтах"
+
+# Активные запросы дольше 2 сек — аппроксимация slow queries без
+# pg_stat_statements (расширение вне скоупа). Значение > 0 = есть
+# «зависшие»/долгие запросы.
+tender_long_queries:
+  query: >
+    SELECT
+      count(*) AS count
+    FROM pg_stat_activity
+    WHERE state = 'active'
+      AND now() - query_start > interval '2 seconds'
+  metrics:
+    - count:
+        usage: "GAUGE"
+        description: "Число активных запросов, выполняющихся дольше 2 сек"

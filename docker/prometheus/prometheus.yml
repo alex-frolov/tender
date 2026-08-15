@@ -1,0 +1,67 @@
+# Tender Platform — конфигурация Prometheus (dev, ops/observability.md)
+# Сервис монтируется в docker-compose.yml (service prometheus).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerts.yml"
+  - "rules.yml"
+
+scrape_configs:
+  # Приложение (Symfony): /metrics — app-эндпоинт (src/Infrastructure/Http/
+  # MetricsController, ops/observability.md §1); nginx location = /metrics
+  # (docker/nginx/default.conf) проксирует на app:9000.
+  - job_name: "app"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["web:80"]
+        labels:
+          environment: "dev"
+          service: "app"
+
+  # php-fpm: экспортёр тянет /status через nginx (pm.status_path=/status).
+  - job_name: "php-fpm"
+    static_configs:
+      - targets: ["php-fpm-exporter:9253"]
+        labels:
+          environment: "dev"
+          service: "php-fpm"
+
+  # PostgreSQL (порт 5432 — внутренний, наружу не публикуется).
+  - job_name: "postgres"
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          environment: "dev"
+          service: "postgres"
+
+  # Redis.
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          environment: "dev"
+          service: "redis"
+
+  # RabbitMQ: rabbitmq_prometheus (встроен в образы 4.x, порт 15692).
+  - job_name: "rabbitmq"
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+        labels:
+          environment: "dev"
+          service: "rabbitmq"
+
+  # Mercure-хаб (docker/mercure/Dockerfile, v0.16.3 + локальный патч /metrics):
+  # native метрики mercure_subscribers_connected / mercure_subscribers_total /
+  # mercure_updates_total. Recording-правило sse_connections (rules.yml) алиасит
+  # mercure_subscribers_connected для дашборда. sse_delivery_latency в v0.16
+  # недоступен (нет latency-метрик хаба) — см. ops/observability.md §1.
+  - job_name: "mercure"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["mercure:80"]
+        labels:
+          environment: "dev"
+          service: "mercure"

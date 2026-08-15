@@ -1,0 +1,100 @@
+# Tender Platform — алерты (ops/observability.md §5)
+# Все выражения — на именах метрик из спецификации. Метрики приложения
+# (auction_*, webhook_*, outbox_*, rate_limit_*) появятся только после
+# инструментирования app /metrics (отдельная задача); правила готовы заранее
+# и «оживут» вместе с метриками.
+
+groups:
+  - name: tender-auction
+    rules:
+      - alert: AuctionStalled
+        # Активный TRADE без ставок N минут → возможный сбой аукциона
+        # (observability.md §1: auction_no_bids_alert — настраиваемый порог,
+        # напр. 15 мин при step_duration=10 мин).
+        # Допущение: приложение инкрементирует счётчик при превышении порога;
+        # значение > 0 = «аукцион застрял».
+        expr: auction_no_bids_alert > 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "Аукцион без ставок (stalled)"
+          description: "Активный аукцион в TRADE превысил порог времени без новых ставок (auction_no_bids_alert > 0). Проверить Redis live-state, консьюмеры событий и heartbeat аукциона."
+
+      - alert: BidLatencyHigh
+        # p95 записи ставки > 150 мс (NFR-1; observability.md §5: 150 мс за 5 мин).
+        expr: histogram_quantile(0.95, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le)) > 0.15
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "p95 записи ставки > 150 мс"
+          description: "p95 времени записи ставки превысил 150 мс (цель NFR-1 — p95 < 100 мс). Возможны проблемы БД (блокировки), Redis или перегрузка."
+
+  - name: tender-platform
+    rules:
+      - alert: WebhookDeadLetter
+        # Доставки webhook со статусом dead (observability.md §5).
+        expr: rate(webhook_deliveries_total{status="dead"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Webhook-доставки в dead-letter"
+          description: "Появились webhook-доставки со статусом dead (rate > 0 за 5м). Подписчики перестали получать события; проверить URL подписок и ретраи."
+
+      - alert: OutboxLag
+        # Отставание outbox (observability.md §5: «возраст > 1 мин»).
+        # Допущение: outbox_pending — Gauge, возраст (сек) самой старой
+        # неопубликованной записи outbox (лаг публикации). Порог 60 c = 1 мин.
+        # Если после инструментирования семантика окажется иной (число записей),
+        # порог скорректировать.
+        expr: outbox_pending > 60
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Отставание outbox > 1 мин"
+          description: "Задержка публикации событий outbox превысила 1 минуту (outbox_pending > 60 с). Проверить outbox:relay, очередь и соединение с RabbitMQ."
+
+      - alert: RateLimitStorm429
+        # Шторм 429 (observability.md §5).
+        # Допущение (dev): RATE_LIMIT_GLOBAL_PER_MIN=600 → до 10/сек на IP;
+        # суммарно 50/сек за 5м — аномальный всплеск. В prod порог уточнить.
+        expr: rate(rate_limit_exceeded_total[5m]) > 50
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Шторм 429 (rate limit)"
+          description: "Срабатывания rate_limit_exceeded_total > 50/сек (среднее за 5м). Возможны атака/некорректный клиент/слишком жёсткий лимит."
+
+  - name: tender-infra
+    rules:
+      - alert: DiskPartitionHigh
+        # Заполнение таблиц/партиций > 80% (observability.md §5, «диск/партиции»).
+        # Допущение (dev): точной метрики диска нет (нет node-exporter), поэтому
+        # считаем долю суммарного размера таблиц audit_log/auction_bids
+        # (tender_partition_size_bytes из pg-queries.yaml) от ориентира 5 ГБ.
+        # В prod заменить на node_filesystem_avail_bytes.
+        expr: (sum(tender_partition_size_bytes) / 5e9) * 100 > 80
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Размер партиций > 80% от ориентира"
+          description: "Суммарный размер таблиц/партиций audit_log и auction_bids превысил 80% ориентира (5 ГБ). Оценить retention, архивирование или расширение диска."
+
+      - alert: PhpFpmDown
+        # php-fpm не отвечает на :9000 (phpfpm_up из php-fpm-exporter; метрика
+        # есть у hipages/php-fpm_exporter, см. README §Observability).
+        # phpfpm_up — 0 при отказе FastCGI-скрейпа (connection refused / timeout),
+        # 1 — при успехе. Это liveness FPM-процесса, НЕ бизнес-здоровье app
+        # (для него — /health/live, /health/ready).
+        expr: phpfpm_up == 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "php-fpm не отвечает"
+          description: "php-fpm (app:9000) не отдал статус за последние 2 минуты (phpfpm_up == 0). Контейнер app мог упасть или перезапуститься; проверить docker compose ps и логи app."

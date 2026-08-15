@@ -1,0 +1,15 @@
+# Tender Platform — Grafana: provisioning дашбордов (dev)
+# Дашборды лежат в ./docker/grafana/dashboards (read-only для Grafana).
+apiVersion: 1
+
+providers:
+  - name: tender
+    orgId: 1
+    folder: Tender
+    folderUid: tender
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 15
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
