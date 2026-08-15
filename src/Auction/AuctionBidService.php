@@ -15,7 +15,9 @@ use App\Auction\State\AuctionStateService;
 use App\Auction\Step\BidStepCalculator;
 use App\Bid\BidReadService;
 use App\Infrastructure\Metrics\AuctionMetricsCollector;
+use DateMalformedStringException;
 use Doctrine\ORM\EntityManagerInterface;
+use Prometheus\Exception\MetricsRegistrationException;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -150,13 +152,14 @@ final readonly class AuctionBidService
      * FREE_PRICE/PRICE_REQUEST) — при отсутствии стартовой цены ставка
      * отклоняется.
      *
-     * @param Uuid        $bidderId       компания-участник (supplier_id)
-     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
+     * @param Uuid $bidderId компания-участник (supplier_id)
+     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
      * @throws BidRejectedException если ставка отклонена (код: auction_not_trade
      *                              | bid_rejected)
+     * @throws MetricsRegistrationException|DateMalformedStringException
      */
     public function placeReductionFixedBid(
         Auction $auction,
@@ -221,13 +224,14 @@ final readonly class AuctionBidService
      * ставки (B5, FR-1.4.1; модуль securities): сумма обеспечения
      * = % × первая_ставка.
      *
-     * @param Uuid        $bidderId       компания-участник (supplier_id)
-     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
+     * @param Uuid $bidderId компания-участник (supplier_id)
+     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
      * @throws BidRejectedException если ставка отклонена (код: auction_not_trade
      *                              | bid_rejected)
+     * @throws MetricsRegistrationException|DateMalformedStringException
      */
     public function placeReductionFreeBid(
         Auction $auction,
@@ -295,13 +299,13 @@ final readonly class AuctionBidService
      * обязательного понижения нет, поэтому ставка выше текущей принимается,
      * но не понижает current_price.
      *
-     * @param Uuid        $bidderId       компания-участник (supplier_id)
-     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
+     * @param Uuid $bidderId компания-участник (supplier_id)
+     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
-     * @throws BidRejectedException если ставка отклонена (код: auction_not_trade
-     *                              | bid_rejected)
+     * @throws BidRejectedException если ставка отклонена (код: auction_not_trade| bid_rejected)
+     * @throws MetricsRegistrationException|DateMalformedStringException
      */
     public function placeFreePriceBid(
         Auction $auction,
@@ -365,12 +369,13 @@ final readonly class AuctionBidService
      * no_start_price (FR-1.1.9): единственное предложение участника фиксирует
      * start_price_minor (price discovery, is_first_price=true).
      *
-     * @param Uuid        $bidderId       компания-участник (supplier_id)
-     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
+     * @param Uuid $bidderId компания-участник (supplier_id)
+     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
      * @throws BidRejectedException если предложение отклонено (код:
+     * @throws MetricsRegistrationException|DateMalformedStringException
      *                              auction_not_trade | bid_rejected | duplicate_bid)
      */
     public function placePriceRequestBid(
@@ -431,7 +436,14 @@ final readonly class AuctionBidService
      * Тип-специфичную валидацию и запись ставки поставляет $validateAndCommit
      * (замыкание в place*): возвращает принятую ставку AuctionBid.
      *
+     * Метрики (NFR-1/RED, ops/observability.md §1): принятая ставка —
+     * bidPlaced() + bidAttempt('accepted') + bidLatency() строго после
+     * коммита; отклонённая (BidRejectedException) — bidAttempt('rejected')
+     * + bidRejected(причина) и проброс исключения. Replay метрики не
+     * обновляет (ставка уже посчитана при первом принятии).
+     *
      * @param \Closure(Auction, RulesSnapshot): AuctionBid $validateAndCommit
+     * @throws MetricsRegistrationException
      */
     private function transactionalBid(
         Auction $auction,
@@ -444,13 +456,18 @@ final readonly class AuctionBidService
     ): AuctionBid {
         // NFR-1: замер времени записи ставки (auction_bid_latency_seconds,
         // ops/observability.md §1) — весь путь: транзакция + Redis-снапшот.
+        // Пишется ТОЛЬКО для принятых (не-replay) ставок: гистограмма кормит
+        // SLI bid-write (slo-rules.yml, «99% ставок ≤ 100 мс») — отклонённые
+        // попытки и replay не должны раздувать бакет le="0.1".
         $start = hrtime(true);
+        $isReplay = false;
         try {
             $bid = $this->em->wrapInTransaction(function () use (
                 $auction,
                 $bidderId,
                 $idempotencyKey,
                 $validateAndCommit,
+                &$isReplay,
             ): AuctionBid {
                 $locked = $this->transaction->lockAuction($auction->getId());
 
@@ -458,6 +475,8 @@ final readonly class AuctionBidService
                 // → возвращаем уже принятую ставку, дубль не создаётся (replay).
                 $replay = $this->transaction->replayBid($locked, $idempotencyKey);
                 if (null !== $replay) {
+                    $isReplay = true;
+
                     return $replay;
                 }
 
@@ -478,13 +497,40 @@ final readonly class AuctionBidService
 
                 return $validateAndCommit($locked, $snapshot);
             });
+        } catch (BidRejectedException $e) {
+            // RED (практика Prometheus): отклонённая попытка — исход rejected и
+            // причина (код исключения: bid_rejected|auction_not_trade|duplicate_bid).
+            $this->auctionMetrics->bidAttempt('rejected');
+            $this->auctionMetrics->bidRejected($e->getErrorCode());
 
-            // FR-1.3.6: Redis-снапшот live-состояния — после коммита.
+            throw $e;
+        }
+
+        if ($isReplay) {
+            // Replay: ставка уже была принята и посчитана ранее — метрики
+            // (auction_bids_total, auction_bid_latency_seconds) НЕ обновляем.
+            // Redis-снапшот освежаем (прежнее поведение).
             $this->state->write($bid->getAuction(), $bid);
 
             return $bid;
-        } finally {
-            $this->auctionMetrics->bidLatency((hrtime(true) - $start) / 1e9);
         }
+
+        // Принятая и закоммиченная НОВАЯ ставка (auction_bids_total,
+        // ops/observability.md §1, NFR-1). Счётчик и latency — строго ПОСЛЕ
+        // коммита транзакции: откат не учитывается. Replay до этого места
+        // не доходит (ветка выше) — не считается. Вызов здесь (а не в
+        // commitBid) гарантирует, что метрика не сработает на ставке,
+        // у которой транзакция не прошла.
+        $this->auctionMetrics->bidPlaced();
+        // RED (практика Prometheus): попытка с исходом — база для
+        // acceptance/rejection ratio (счётчик отказов + общий счётчик попыток).
+        $this->auctionMetrics->bidAttempt('accepted');
+
+        // FR-1.3.6: Redis-снапшот live-состояния — после коммита.
+        $this->state->write($bid->getAuction(), $bid);
+
+        $this->auctionMetrics->bidLatency((hrtime(true) - $start) / 1e9);
+
+        return $bid;
     }
 }

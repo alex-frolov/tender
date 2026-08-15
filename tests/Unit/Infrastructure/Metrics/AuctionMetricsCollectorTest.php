@@ -46,6 +46,26 @@ final class AuctionMetricsCollectorTest extends TestCase
         self::assertStringContainsString('auction_bid_latency_seconds_count 2', $body);
     }
 
+    public function testBidAttemptAndRejectionCounters(): void
+    {
+        $registry = new CollectorRegistry(new InMemory(), false);
+        $collector = new AuctionMetricsCollector($registry);
+
+        $collector->bidAttempt('accepted');
+        $collector->bidAttempt('rejected');
+        $collector->bidAttempt('rejected');
+        $collector->bidRejected('auction_not_trade');
+        $collector->bidRejected('duplicate_bid');
+
+        $body = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+        self::assertStringContainsString('# TYPE auction_bid_attempts_total counter', $body);
+        self::assertStringContainsString('auction_bid_attempts_total{outcome="accepted"} 1', $body);
+        self::assertStringContainsString('auction_bid_attempts_total{outcome="rejected"} 2', $body);
+        self::assertStringContainsString('# TYPE auction_bid_rejections_total counter', $body);
+        self::assertStringContainsString('auction_bid_rejections_total{reason="auction_not_trade"} 1', $body);
+        self::assertStringContainsString('auction_bid_rejections_total{reason="duplicate_bid"} 1', $body);
+    }
+
     public function testExtensionsAndPausesCounters(): void
     {
         $registry = new CollectorRegistry(new InMemory(), false);

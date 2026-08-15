@@ -21,6 +21,8 @@ use App\Tests\Factory\BidFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use Prometheus\CollectorRegistry;
+use Prometheus\RenderTextFormat;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Workflow\WorkflowInterface;
@@ -536,5 +538,160 @@ final class AuctionBidServiceTest extends KernelTestCase
     private function at(string $iso): \DateTimeImmutable
     {
         return new \DateTimeImmutable($iso);
+    }
+
+    // --- Метрики ставок (NFR-1/RED, ops/observability.md §1): контракт
+    // auction_bids_total / auction_bid_attempts_total{outcome} /
+    // auction_bid_rejections_total{reason} / auction_bid_latency_seconds.
+    //
+    // Redis-хранилище метрик общее для всех тестов, поэтому сравниваются
+    // ДЕЛЬТЫ до/после действия. В параллельном прогоне (ParaTest, TEST_TOKEN)
+    // воркеры делят Redis — точные дельты ненадёжны, ассерты смягчаются до
+    // монотонности; сильные проверки выполняются в последовательном прогоне
+    // (composer test) — там же гоняется quality-конвейер.
+
+    public function testMetricsAcceptedBidIncrementsCounters(): void
+    {
+        $auction = $this->tradingAuction();
+        $supplierId = Uuid::v4();
+        $this->admittedBid($auction, $supplierId);
+
+        $deltas = $this->metricDeltas(fn () => $this->bidService->placeReductionFixedBid(
+            $auction,
+            $supplierId,
+            self::START_MINOR - self::STEP_MINOR,
+        ));
+
+        $this->assertCounterDelta('auction_bids_total', [], 1, $deltas);
+        $this->assertCounterDelta('auction_bid_attempts_total', ['outcome' => 'accepted'], 1, $deltas);
+        $this->assertCounterDelta('auction_bid_attempts_total', ['outcome' => 'rejected'], 0, $deltas);
+        $this->assertCounterDelta('auction_bid_latency_seconds_count', [], 1, $deltas);
+    }
+
+    public function testMetricsRejectedBidIncrementsRejectionCounters(): void
+    {
+        // Аукцион вне TRADE → auction_not_trade (FR-1.3.2).
+        $tender = TenderFactory::createOne(['nmckMinor' => self::START_MINOR]);
+        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
+        $auction = AuctionFactory::new()
+            ->forTender($tender, $lot)
+            ->with(['type' => AuctionTypeEnum::REDUCTION, 'stepMode' => AuctionStepModeEnum::FIXED])
+            ->create();
+
+        $deltas = $this->metricDeltas(function () use ($auction): void {
+            try {
+                $this->bidService->placeReductionFixedBid($auction, Uuid::v4(), self::START_MINOR - self::STEP_MINOR);
+                self::fail('Expected BidRejectedException');
+            } catch (BidRejectedException) {
+                // ожидаемый отказ
+            }
+        });
+
+        // Отказ НЕ считается принятой ставкой и НЕ пишет latency (SLI чист).
+        $this->assertCounterDelta('auction_bids_total', [], 0, $deltas);
+        $this->assertCounterDelta('auction_bid_attempts_total', ['outcome' => 'rejected'], 1, $deltas);
+        $this->assertCounterDelta('auction_bid_rejections_total', ['reason' => 'auction_not_trade'], 1, $deltas);
+        $this->assertCounterDelta('auction_bid_latency_seconds_count', [], 0, $deltas);
+    }
+
+    public function testMetricsReplayIsNotCounted(): void
+    {
+        $auction = $this->tradingAuction();
+        $supplierId = Uuid::v4();
+        $this->admittedBid($auction, $supplierId);
+        $idempotencyKey = 'metrics-replay-'.Uuid::v4();
+        $price = self::START_MINOR - self::STEP_MINOR;
+
+        // Первая подача принята (дельта 1); повтор с тем же Idempotency-Key —
+        // replay: ставка не создаётся, метрики не инкрементятся (ARCH-6).
+        $deltas = $this->metricDeltas(function () use ($auction, $supplierId, $price, $idempotencyKey): void {
+            $this->bidService->placeReductionFixedBid($auction, $supplierId, $price, $idempotencyKey);
+            $this->bidService->placeReductionFixedBid($auction, $supplierId, $price, $idempotencyKey);
+        });
+
+        $this->assertCounterDelta('auction_bids_total', [], 1, $deltas);
+        $this->assertCounterDelta('auction_bid_attempts_total', ['outcome' => 'accepted'], 1, $deltas);
+        $this->assertCounterDelta('auction_bid_attempts_total', ['outcome' => 'rejected'], 0, $deltas);
+    }
+
+    /**
+     * Дельты прометеус-серий вокруг $action. Ключ серии: 'name' или
+     * 'name{label="value",...}' (порядок лейблов — как при регистрации).
+     *
+     * @return array<string, float>
+     */
+    private function metricDeltas(\Closure $action): array
+    {
+        $before = $this->metricValues();
+        $action();
+        $after = $this->metricValues();
+
+        $deltas = [];
+        foreach ($after as $series => $value) {
+            $deltas[$series] = $value - ($before[$series] ?? 0.0);
+        }
+
+        return $deltas;
+    }
+
+    /**
+     * @return array<string, float> серия → значение (рендер текущего хранилища)
+     */
+    private function metricValues(): array
+    {
+        $registry = self::getContainer()->get(CollectorRegistry::class);
+        if (!$registry instanceof CollectorRegistry) {
+            throw new \LogicException('CollectorRegistry not resolvable');
+        }
+        $body = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+
+        $values = [];
+        foreach (explode("\n", $body) as $line) {
+            if ('' === $line || str_starts_with($line, '#')) {
+                continue;
+            }
+            $parts = explode(' ', $line, 2);
+            if (2 !== \count($parts)) {
+                continue;
+            }
+            $values[$parts[0]] = (float) $parts[1];
+        }
+
+        return $values;
+    }
+
+    /**
+     * @param array<string, string> $labels
+     * @param array<string, float>  $deltas
+     */
+    private function assertCounterDelta(string $name, array $labels, float $expected, array $deltas): void
+    {
+        $series = $name;
+        if ([] !== $labels) {
+            $labelPart = implode(',', array_map(
+                static fn (string $k, string $v): string => $k.'="'.$v.'"',
+                array_keys($labels),
+                $labels,
+            ));
+            $series = $name.'{'.$labelPart.'}';
+        }
+        $actual = $deltas[$series] ?? 0.0;
+
+        if ($this->exactMetricAssertions()) {
+            self::assertSame($expected, $actual, \sprintf('Delta of %s', $series));
+        } else {
+            // Параллельный прогон: чужие воркеры могут инкрементить те же
+            // серии — проверяем только нижнюю границу/монотонность.
+            self::assertGreaterThanOrEqual($expected, $actual, \sprintf('Delta of %s', $series));
+        }
+    }
+
+    /**
+     * Точные дельты только в последовательном прогоне: под ParaTest
+     * (test:parallel) воркеры делят Redis-хранилище метрик.
+     */
+    private function exactMetricAssertions(): bool
+    {
+        return false === getenv('TEST_TOKEN');
     }
 }
