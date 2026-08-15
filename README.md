@@ -444,7 +444,7 @@ connects directly over FastCGI `tcp://app:9000/status`; pool saturation alerts),
 the application (`web:80/metrics` — `src/Infrastructure/Http/MetricsController`, contract metrics
 `ops/observability.md` §1: `auction_*` incl. `auction_stalled_now`/`auction_stall_events_total`,
 `http_requests_total`, `http_request_duration_seconds`, `rate_limit_exceeded_total`,
-`webhook_deliveries_total`, `outbox_pending`, `php_opcache_*` via `OpcacheMetricsCollector`,
+`webhook_deliveries_total`, `outbox_pending_seconds`, `php_opcache_*` via `OpcacheMetricsCollector`,
 `console_commands_*` via `ConsoleMetricsSubscriber`), **Mercure** (`mercure:80/metrics`,
 native hub metrics via the locally patched v0.16.3 image, see below), **node-exporter**
 (host disk/CPU/RAM, alert `DiskSpaceLow`) and **blackbox-exporter** (external uptime

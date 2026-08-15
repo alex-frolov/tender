@@ -15,11 +15,16 @@ use Psr\Log\LoggerInterface;
 /**
  * Ленивое обновление «дорогих» gauge-метрик перед рендером /metrics
  * (ops/observability.md §1): auction_active_trades, auction_stalled_now
- * (+ счётчик переходов auction_stall_events_total), outbox_pending.
+ * (+ счётчик переходов auction_stall_events_total), outbox_pending_seconds.
  * Вычисления требуют обращения к БД, поэтому выполняются
  * не чаще раза в CACHE_TTL_SECONDS (15 c — при скрейпе 15s это даёт ~1
  * вычисление на скрейп) через Redis-флаг; остальные скрейпы читают уже
  * сохранённые значения из Prometheus-хранилища.
+ *
+ * Сбои пересчёта не роняют /metrics, но видны в метриках здоровья
+ * (InfrastructureMetricsCollector: metrics_gauge_refresh_errors_total,
+ * metrics_gauge_refresh_duration_seconds) и алерте MetricsGaugeRefreshFailed
+ * — иначе /metrics молча отдавал бы протухшие значения (только warning в лог).
  *
  * Детекция переходов в stalled (вариант A):
  * diff текущего множества stalled-id с сохранённым в Redis-состоянии;
@@ -42,6 +47,7 @@ final class GaugeMetricsUpdater
         private readonly EntityManagerInterface $em,
         private readonly AuctionMetricsCollector $auctionMetrics,
         private readonly OutboxMetricsCollector $outboxMetrics,
+        private readonly InfrastructureMetricsCollector $infraMetrics,
         private readonly AuctionNoBidEvaluator $noBidEvaluator,
         private readonly \Redis $redis,
         private readonly LoggerInterface $logger,
@@ -58,10 +64,14 @@ final class GaugeMetricsUpdater
             if (false !== $this->redis->get(self::FRESH_KEY)) {
                 return;
             }
+            $start = hrtime(true);
             $this->update();
+            $this->infraMetrics->gaugeRefreshDuration((hrtime(true) - $start) / 1e9);
         } catch (\RedisException $e) {
+            $this->infraMetrics->gaugeRefreshError();
             $this->logger->warning('Metrics gauge refresh failed (Redis)', ['error' => $e->getMessage()]);
         } catch (\Throwable $e) {
+            $this->infraMetrics->gaugeRefreshError();
             $this->logger->warning('Metrics gauge refresh failed', [
                 'error' => $e->getMessage(),
                 'exception' => $e::class,

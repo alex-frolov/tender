@@ -63,7 +63,7 @@ final class MetricsControllerTest extends WebTestCase
         self::assertStringContainsString('rate_limit_exceeded_total{limiter="email_send",route="unknown"}', $body);
         self::assertStringContainsString('# TYPE webhook_deliveries_total counter', $body);
         self::assertStringContainsString('# TYPE http_request_duration_seconds histogram', $body);
-        self::assertStringContainsString('# TYPE outbox_pending gauge', $body);
+        self::assertStringContainsString('# TYPE outbox_pending_seconds gauge', $body);
     }
 
     public function testHttpRequestsCounterCountsOwnScrapes(): void

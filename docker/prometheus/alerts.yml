@@ -88,17 +88,17 @@ groups:
 
       - alert: OutboxLag
         # Отставание outbox (observability.md §5: «возраст > 1 мин»).
-        # Допущение: outbox_pending — Gauge, возраст (сек) самой старой
+        # Допущение: outbox_pending_seconds — Gauge, возраст (сек) самой старой
         # неопубликованной записи outbox (лаг публикации). Порог 60 c = 1 мин.
         # Если после инструментирования семантика окажется иной (число записей),
         # порог скорректировать.
-        expr: outbox_pending > 60
+        expr: outbox_pending_seconds > 60
         for: 2m
         labels:
           severity: medium
         annotations:
           summary: "Отставание outbox > 1 мин"
-          description: "Задержка публикации событий outbox превысила 1 минуту (outbox_pending > 60 с). Проверить outbox:relay, очередь и соединение с RabbitMQ."
+          description: "Задержка публикации событий outbox превысила 1 минуту (outbox_pending_seconds > 60 с). Проверить outbox:relay, очередь и соединение с RabbitMQ."
 
       - alert: RateLimitStorm429
         # Шторм 429 (observability.md §5).
@@ -205,6 +205,20 @@ groups:
         annotations:
           summary: "Console-команда упала"
           description: "console_commands_failed_total за 15м > 0 — scheduler/worker/webhooks команда завершилась с ошибкой или исключением. Проверить docker logs scheduler/worker/webhooks и детали по лейблу command."
+
+      - alert: MetricsGaugeRefreshFailed
+        # Сбой пересчёта gauge-метрик (GaugeMetricsUpdater, практика Prometheus:
+        # «экспортируй ошибки сбора»). Без этого алерта /metrics молча отдаёт
+        # устаревшие значения (сбой БД/Redis виден только warning'ом в логе).
+        # increase > 0 за 15м — пересчёт падал минимум раз (при кэше 15 c это
+        # много кратных сбоев за окно).
+        expr: increase(metrics_gauge_refresh_errors_total[15m]) > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Сбой пересчёта gauge-метрик"
+          description: "metrics_gauge_refresh_errors_total за 15м > 0 — GaugeMetricsUpdater не может пересчитать auction_active_trades/stalled/outbox (БД или Redis недоступны). Значения на /metrics могли протухнуть; проверить соединения и логи app."
 
       - alert: HealthReadyDown
         # Внешний аптайм-чек : blackbox probe на

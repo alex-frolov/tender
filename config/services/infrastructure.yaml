@@ -3,6 +3,11 @@
 # Фреймворк-клей (App\Infrastructure): внешние ресурсы, общие для всех модулей.
 # Нижний слой — на него не ссылаются контроллеры/UseCase (phparkitect, правило 1/7).
 
+parameters:
+    # Фолбэк версии сборки для app_build_info{version}, когда APP_VERSION не задан
+    # (синтаксис env(default:...) требует ИМЯ параметра, не литерал).
+    app_version_default: 'dev'
+
 services:
     _defaults:
         autowire: true
@@ -27,3 +32,9 @@ services:
     # Коллекторы/подписчики (App\Infrastructure\Metrics) autowire'ят этот сервис.
     Prometheus\CollectorRegistry:
         factory: ['@App\Infrastructure\Metrics\MetricsRegistry', 'getCollectorRegistry']
+
+    # Версия сборки для app_build_info{version} (см. MetricsController).
+    # Значение по умолчанию — параметр app_version_default (APP_VERSION не задан).
+    App\Infrastructure\Http\MetricsController:
+        arguments:
+            $version: '%env(default:app_version_default:APP_VERSION)%'
