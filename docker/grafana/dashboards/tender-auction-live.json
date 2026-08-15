@@ -549,14 +549,26 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(auction_no_bids_alert)",
-          "legendFormat": "no_bids",
+          "expr": "auction_stalled_now",
+          "legendFormat": "stalled now",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(auction_stall_events_total[15m])",
+          "legendFormat": "stall events (15m)",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Alert: auction with no bids (no_bids)",
-      "type": "stat"
+      "title": "Stalled auctions (no bids)",
+      "type": "stat",
+      "description": "auction_stalled_now — текущее число застрявших TRADE-аукционов без ставок; stall events — переходы в stalled (алерт AuctionStalled). Метрики без лейбла auction_id (roadmap #5, вариант A)."
     }
   ],
   "refresh": "15s",
@@ -576,6 +588,6 @@
   "timezone": "",
   "title": "Auction live",
   "uid": "tender-auction-live",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

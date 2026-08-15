@@ -8,18 +8,17 @@ groups:
   - name: tender-auction
     rules:
       - alert: AuctionStalled
-        # Активный TRADE без ставок N минут → возможный сбой аукциона
-        # (observability.md §1: auction_no_bids_alert — настраиваемый порог,
-        # напр. 15 мин при step_duration=10 мин).
-        # Допущение: приложение инкрементирует счётчик при превышении порога;
-        # значение > 0 = «аукцион застрял».
-        expr: auction_no_bids_alert > 0
+        # Аукцион застрял (observability-roadmap.md #5, вариант A): счётчик
+        # переходов в stalled без лейбла auction_id (кардинальность не растёт).
+        # increase > 0 за 15м = как минимум один аукцион перешёл в «без ставок
+        # дольше порога». Порог времени — AuctionNoBidEvaluator (шаг ставки).
+        expr: increase(auction_stall_events_total[15m]) > 0
         for: 2m
         labels:
           severity: high
         annotations:
           summary: "Аукцион без ставок (stalled)"
-          description: "Активный аукцион в TRADE превысил порог времени без новых ставок (auction_no_bids_alert > 0). Проверить Redis live-state, консьюмеры событий и heartbeat аукциона."
+          description: "Аукцион перешёл в состояние no-bids (auction_stall_events_total за 15м > 0). Проверить Redis live-state, консьюмеры событий и heartbeat аукциона. Текущее число застрявших — auction_stalled_now."
 
       - alert: BidLatencyHigh
         # p95 записи ставки > 150 мс (NFR-1; observability.md §5: 150 мс за 5 мин).
@@ -138,6 +137,19 @@ groups:
         annotations:
           summary: "OPcache перезапущен"
           description: "OPcache был перезапущен (последний рестарт менее 5 минут назад). Кэш байткода сброшен — hit rate временно упадёт; при частых повторах увеличить opcache.memory_consumption (сейчас 128 MB) или проверить причину oom/hash-рестартов."
+
+      - alert: ConsoleCommandFailed
+        # Сбой console-команды (observability-roadmap.md #6): scheduler/worker/
+        # webhooks. Счётчик контракта — console_commands_failed_total{command};
+        # increase > 0 за 15м = как минимум один неудачный запуск (exit != 0
+        # или исключение). Дубли TERMINATE+ERROR невозможны (см. подписчик).
+        expr: increase(console_commands_failed_total[15m]) > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Console-команда упала"
+          description: "console_commands_failed_total за 15м > 0 — scheduler/worker/webhooks команда завершилась с ошибкой или исключением. Проверить docker logs scheduler/worker/webhooks и детали по лейблу command."
 
       - alert: HealthReadyDown
         # Внешний аптайм-чек (observability-roadmap.md #9): blackbox probe на
