@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Metrics;
 
-use Prometheus\CollectorRegistry;
-use Prometheus\Exception\MetricsRegistrationException;
+use Psr\Log\LoggerInterface;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\Console\Event\ConsoleErrorEvent;
@@ -33,14 +32,24 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  *
  * Агрегация — Redis-адаптер MetricsRegistry (общий для всех контейнеров),
  * поэтому /metrics web-пула видит команды scheduler/worker/webhooks.
+ *
+ * Устойчивость: метрики НЕ должны ронять команды. Подписчик инжектит
+ * MetricsRegistry (а не CollectorRegistry) и получает реестр лениво внутри
+ * методов: соединение с Redis (сервис Redis — lazy) происходит только при
+ * реальной записи метрики. Сбой Redis/хранилища логируется и пропускается —
+ * иначе диспетчер событий инстанцировал бы подписчика (и тянул бы Redis)
+ * при КАЖДОМ bin/console, и команды падали бы при недоступном Redis
+ * (например, cache:clear в CI).
  */
 final class ConsoleMetricsSubscriber implements EventSubscriberInterface
 {
     /** @var array<string, int> имя команды → hrtime старта */
     private static array $starts = [];
 
-    public function __construct(private readonly CollectorRegistry $registry)
-    {
+    public function __construct(
+        private readonly MetricsRegistry $metrics,
+        private readonly LoggerInterface $logger,
+    ) {
     }
 
     public static function getSubscribedEvents(): array
@@ -63,9 +72,6 @@ final class ConsoleMetricsSubscriber implements EventSubscriberInterface
         self::$starts[$name] = (int) hrtime(true);
     }
 
-    /**
-     * @throws MetricsRegistrationException
-     */
     public function onTerminate(ConsoleTerminateEvent $event): void
     {
         $command = $event->getCommand();
@@ -74,25 +80,30 @@ final class ConsoleMetricsSubscriber implements EventSubscriberInterface
             $name = 'unknown';
         }
 
-        $this->registry->getOrRegisterCounter('', 'console_commands_total', 'Total console command runs.', ['command'])
+        try {
+            $registry = $this->metrics->getCollectorRegistry();
+        } catch (\Throwable $e) {
+            $this->logMetricsFailure($e);
+
+            return;
+        }
+
+        $registry->getOrRegisterCounter('', 'console_commands_total', 'Total console command runs.', ['command'])
             ->inc([$name]);
 
         if (0 !== $event->getExitCode()) {
-            $this->registry->getOrRegisterCounter('', 'console_commands_failed_total', 'Total failed console command runs (exit code != 0).', ['command'])
+            $registry->getOrRegisterCounter('', 'console_commands_failed_total', 'Total failed console command runs (exit code != 0).', ['command'])
                 ->inc([$name]);
         }
 
         if (isset(self::$starts[$name])) {
             $duration = (hrtime(true) - self::$starts[$name]) / 1e9;
             unset(self::$starts[$name]);
-            $this->registry->getOrRegisterHistogram('', 'console_command_duration_seconds', 'Console command duration in seconds.', ['command'])
+            $registry->getOrRegisterHistogram('', 'console_command_duration_seconds', 'Console command duration in seconds.', ['command'])
                 ->observe($duration, [$name]);
         }
     }
 
-    /**
-     * @throws MetricsRegistrationException
-     */
     public function onError(ConsoleErrorEvent $event): void
     {
         $command = $event->getCommand();
@@ -101,7 +112,23 @@ final class ConsoleMetricsSubscriber implements EventSubscriberInterface
             $name = 'unknown';
         }
 
-        $this->registry->getOrRegisterCounter('', 'console_commands_failed_total', 'Total failed console command runs (exit code != 0).', ['command'])
+        try {
+            $registry = $this->metrics->getCollectorRegistry();
+        } catch (\Throwable $e) {
+            $this->logMetricsFailure($e);
+
+            return;
+        }
+
+        $registry->getOrRegisterCounter('', 'console_commands_failed_total', 'Total failed console command runs (exit code != 0).', ['command'])
             ->inc([$name]);
+    }
+
+    private function logMetricsFailure(\Throwable $e): void
+    {
+        $this->logger->warning('Console metrics unavailable, command metrics skipped', [
+            'error' => $e->getMessage(),
+            'exception' => $e::class,
+        ]);
     }
 }

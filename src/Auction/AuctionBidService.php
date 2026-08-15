@@ -15,7 +15,6 @@ use App\Auction\State\AuctionStateService;
 use App\Auction\Step\BidStepCalculator;
 use App\Bid\BidReadService;
 use App\Infrastructure\Metrics\AuctionMetricsCollector;
-use DateMalformedStringException;
 use Doctrine\ORM\EntityManagerInterface;
 use Prometheus\Exception\MetricsRegistrationException;
 use Symfony\Component\Uid\Uuid;
@@ -152,14 +151,14 @@ final readonly class AuctionBidService
      * FREE_PRICE/PRICE_REQUEST) — при отсутствии стартовой цены ставка
      * отклоняется.
      *
-     * @param Uuid $bidderId компания-участник (supplier_id)
-     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
+     * @param Uuid        $bidderId       компания-участник (supplier_id)
+     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
-     * @throws BidRejectedException если ставка отклонена (код: auction_not_trade
-     *                              | bid_rejected)
-     * @throws MetricsRegistrationException|DateMalformedStringException
+     * @throws BidRejectedException         если ставка отклонена (код: auction_not_trade
+     *                                      | bid_rejected)
+     * @throws MetricsRegistrationException
      */
     public function placeReductionFixedBid(
         Auction $auction,
@@ -224,14 +223,14 @@ final readonly class AuctionBidService
      * ставки (B5, FR-1.4.1; модуль securities): сумма обеспечения
      * = % × первая_ставка.
      *
-     * @param Uuid $bidderId компания-участник (supplier_id)
-     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
+     * @param Uuid        $bidderId       компания-участник (supplier_id)
+     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
-     * @throws BidRejectedException если ставка отклонена (код: auction_not_trade
-     *                              | bid_rejected)
-     * @throws MetricsRegistrationException|DateMalformedStringException
+     * @throws BidRejectedException         если ставка отклонена (код: auction_not_trade
+     *                                      | bid_rejected)
+     * @throws MetricsRegistrationException
      */
     public function placeReductionFreeBid(
         Auction $auction,
@@ -299,13 +298,13 @@ final readonly class AuctionBidService
      * обязательного понижения нет, поэтому ставка выше текущей принимается,
      * но не понижает current_price.
      *
-     * @param Uuid $bidderId компания-участник (supplier_id)
-     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
+     * @param Uuid        $bidderId       компания-участник (supplier_id)
+     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
-     * @throws BidRejectedException если ставка отклонена (код: auction_not_trade| bid_rejected)
-     * @throws MetricsRegistrationException|DateMalformedStringException
+     * @throws BidRejectedException         если ставка отклонена (код: auction_not_trade| bid_rejected)
+     * @throws MetricsRegistrationException
      */
     public function placeFreePriceBid(
         Auction $auction,
@@ -369,14 +368,14 @@ final readonly class AuctionBidService
      * no_start_price (FR-1.1.9): единственное предложение участника фиксирует
      * start_price_minor (price discovery, is_first_price=true).
      *
-     * @param Uuid $bidderId компания-участник (supplier_id)
-     * @param int $priceMinor цена в канонической базе (PR-1/PR-6)
+     * @param Uuid        $bidderId       компания-участник (supplier_id)
+     * @param int         $priceMinor     цена в канонической базе (PR-1/PR-6)
      * @param string|null $idempotencyKey ключ идемпотентности (AR-4; полная
      *                                    обработка)
      *
-     * @throws BidRejectedException если предложение отклонено (код:
-     * @throws MetricsRegistrationException|DateMalformedStringException
-     *                              auction_not_trade | bid_rejected | duplicate_bid)
+     * @throws BidRejectedException         если предложение отклонено (код:
+     * @throws MetricsRegistrationException
+     *                                      auction_not_trade | bid_rejected | duplicate_bid)
      */
     public function placePriceRequestBid(
         Auction $auction,
@@ -443,6 +442,9 @@ final readonly class AuctionBidService
      * обновляет (ставка уже посчитана при первом принятии).
      *
      * @param \Closure(Auction, RulesSnapshot): AuctionBid $validateAndCommit
+     *
+     * @throws BidRejectedException         ставка отклонена (метрики попытки
+     *                                      записаны, исключение пробрасывается)
      * @throws MetricsRegistrationException
      */
     private function transactionalBid(

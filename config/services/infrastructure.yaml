@@ -15,11 +15,17 @@ services:
 
     # Redis-клиент: live-состояние, rate limit, кэш
     # (явный аргумент REDIS_URL — autowire не подставляет string)
+    # lazy: true — соединение откладывается до ПЕРВОГО реального использования:
+    # иначе любой сервис с \Redis/CollectorRegistry в конструкторе (напр.
+    # ConsoleMetricsSubscriber, инстанцируемый диспетчером при каждом
+    # bin/console) коннектится к Redis при буте ядра, и команды падают,
+    # если Redis недоступен (cache:clear в CI без redis-хостнейма и т.п.).
     Redis:
         class: Redis
         factory: ['App\Infrastructure\Redis\RedisFactory', 'create']
         arguments:
             - '%env(REDIS_URL)%'
+        lazy: true
 
     # AMQP-соединение (RabbitMQ; messenger async-транспорт)
     AMQPConnection:
