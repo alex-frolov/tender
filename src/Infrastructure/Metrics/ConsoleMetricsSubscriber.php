@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Infrastructure\Metrics;
 
 use Prometheus\CollectorRegistry;
+use Prometheus\Exception\MetricsRegistrationException;
 use Symfony\Component\Console\ConsoleEvents;
 use Symfony\Component\Console\Event\ConsoleCommandEvent;
 use Symfony\Component\Console\Event\ConsoleErrorEvent;
@@ -54,13 +55,17 @@ final class ConsoleMetricsSubscriber implements EventSubscriberInterface
     public function onCommand(ConsoleCommandEvent $event): void
     {
         $command = $event->getCommand();
-        if (null === $command || '' === $command->getName()) {
+        $name = $command?->getName();
+        if (null === $name || '' === $name) {
             return;
         }
 
-        self::$starts[$command->getName()] = hrtime(true);
+        self::$starts[$name] = (int) hrtime(true);
     }
 
+    /**
+     * @throws MetricsRegistrationException
+     */
     public function onTerminate(ConsoleTerminateEvent $event): void
     {
         $command = $event->getCommand();
@@ -85,6 +90,9 @@ final class ConsoleMetricsSubscriber implements EventSubscriberInterface
         }
     }
 
+    /**
+     * @throws MetricsRegistrationException
+     */
     public function onError(ConsoleErrorEvent $event): void
     {
         $command = $event->getCommand();
