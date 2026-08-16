@@ -5,21 +5,64 @@
 # и «оживут» вместе с метриками.
 
 groups:
+  - name: tender-slo
+    rules:
+      # SLO/burn-rate (recording rules — slo-rules.yml).
+      # Таргеты: 99% ставок ≤ 100 мс; 99.9% HTTP без 5xx.
+      # Пороги: (1-0.99)*14.4 = 0.144; (1-0.99)*6 = 0.06; (1-0.999)*14.4 = 0.0144;
+      # (1-0.999)*6 = 0.006. Dual-window: длинное окно + короткое (отсечка флапов).
+      # NaN при нулевом трафике (деление на 0) сравнение не проходит — молчит.
+
+      - alert: SLOBidWriteFastBurn
+        expr: slo:bid_write:error_ratio_1h > 0.144 and slo:bid_write:error_ratio_5m > 0.144
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "SLO bid write: быстрое выгорание бюджета (14.4x)"
+          description: "Более 14.4% ставок медленнее 100 мс за 5м и час (SLO 99% ≤ 100 мс). При таком темпе месячный бюджет ошибок сгорит за ~2 дня. Проверить блокировки БД, Redis, перегрузку FPM (алерты PhpFpm*)."
+
+      - alert: SLOBidWriteSlowBurn
+        expr: slo:bid_write:error_ratio_6h > 0.06 and slo:bid_write:error_ratio_30m > 0.06
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "SLO bid write: медленное выгорание бюджета (6x)"
+          description: "Более 6% ставок медленнее 100 мс за 30м и 6 часов (SLO 99% ≤ 100 мс). Устойчивая деградация; бюджет сгорит за ~5 дней. Начать разбор до того, как станет быстро."
+
+      - alert: SLOHttpFastBurn
+        expr: slo:http:error_ratio_1h > 0.0144 and slo:http:error_ratio_5m > 0.0144
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "SLO HTTP: быстрое выгорание бюджета (14.4x)"
+          description: "Более 1.44% 5xx за 5м и час (SLO 99.9% без 5xx). Бюджет сгорит за ~2 дня. Проверить 5xx по маршрутам (дашборд Platform), rate limit, health зависимостей."
+
+      - alert: SLOHttpSlowBurn
+        expr: slo:http:error_ratio_6h > 0.006 and slo:http:error_ratio_30m > 0.006
+        for: 5m
+        labels:
+          severity: medium
+        annotations:
+          summary: "SLO HTTP: медленное выгорание бюджета (6x)"
+          description: "Более 0.6% 5xx за 30м и 6 часов (SLO 99.9% без 5xx). Устойчивая деградация; бюджет сгорит за ~5 дней."
+
   - name: tender-auction
     rules:
       - alert: AuctionStalled
-        # Активный TRADE без ставок N минут → возможный сбой аукциона
-        # (observability.md §1: auction_no_bids_alert — настраиваемый порог,
-        # напр. 15 мин при step_duration=10 мин).
-        # Допущение: приложение инкрементирует счётчик при превышении порога;
-        # значение > 0 = «аукцион застрял».
-        expr: auction_no_bids_alert > 0
+        # Аукцион застрял (вариант A): счётчик
+        # переходов в stalled без лейбла auction_id (кардинальность не растёт).
+        # increase > 0 за 15м = как минимум один аукцион перешёл в «без ставок
+        # дольше порога». Порог времени — AuctionNoBidEvaluator (шаг ставки).
+        expr: increase(auction_stall_events_total[15m]) > 0
         for: 2m
         labels:
           severity: high
         annotations:
           summary: "Аукцион без ставок (stalled)"
-          description: "Активный аукцион в TRADE превысил порог времени без новых ставок (auction_no_bids_alert > 0). Проверить Redis live-state, консьюмеры событий и heartbeat аукциона."
+          description: "Аукцион перешёл в состояние no-bids (auction_stall_events_total за 15м > 0). Проверить Redis live-state, консьюмеры событий и heartbeat аукциона. Текущее число застрявших — auction_stalled_now."
 
       - alert: BidLatencyHigh
         # p95 записи ставки > 150 мс (NFR-1; observability.md §5: 150 мс за 5 мин).
@@ -45,17 +88,17 @@ groups:
 
       - alert: OutboxLag
         # Отставание outbox (observability.md §5: «возраст > 1 мин»).
-        # Допущение: outbox_pending — Gauge, возраст (сек) самой старой
+        # Допущение: outbox_pending_seconds — Gauge, возраст (сек) самой старой
         # неопубликованной записи outbox (лаг публикации). Порог 60 c = 1 мин.
         # Если после инструментирования семантика окажется иной (число записей),
         # порог скорректировать.
-        expr: outbox_pending > 60
+        expr: outbox_pending_seconds > 60
         for: 2m
         labels:
           severity: medium
         annotations:
           summary: "Отставание outbox > 1 мин"
-          description: "Задержка публикации событий outbox превысила 1 минуту (outbox_pending > 60 с). Проверить outbox:relay, очередь и соединение с RabbitMQ."
+          description: "Задержка публикации событий outbox превысила 1 минуту (outbox_pending_seconds > 60 с). Проверить outbox:relay, очередь и соединение с RabbitMQ."
 
       - alert: RateLimitStorm429
         # Шторм 429 (observability.md §5).
@@ -71,12 +114,23 @@ groups:
 
   - name: tender-infra
     rules:
-      - alert: DiskPartitionHigh
-        # Заполнение таблиц/партиций > 80% (observability.md §5, «диск/партиции»).
-        # Допущение (dev): точной метрики диска нет (нет node-exporter), поэтому
-        # считаем долю суммарного размера таблиц audit_log/auction_bids
-        # (tender_partition_size_bytes из pg-queries.yaml) от ориентира 5 ГБ.
-        # В prod заменить на node_filesystem_avail_bytes.
+      - alert: DiskSpaceLow
+        # Честный диск : node-exporter. В Docker
+        # Desktop VM volume'ы живут на /var/lib/docker (ext4) — цель именно она
+        # (mountpoint "/" — erofs/overlay, не настоящий диск). < 20% свободно.
+        expr: (node_filesystem_avail_bytes{mountpoint="/var/lib/docker"} / node_filesystem_size_bytes{mountpoint="/var/lib/docker"}) < 0.2
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Мало места на диске (< 20%)"
+          description: "На разделе /var/lib/docker (volume'ы Docker Desktop) осталось меньше 20% (node_filesystem_avail_bytes/size). Проверить docker system df, размеры volume'ов (prometheus_data, grafana_data, db_data) и retention."
+
+      - alert: TenderPartitionSizeHigh
+        # Рост таблиц/партиций PG (отдельно от диска):
+        # эвристика без pg_stat_statements — суммарный размер таблиц
+        # audit_log/auction_bids (tender_partition_size_bytes из pg-queries.yaml)
+        # от ориентира 5 ГБ. Это про рост БД, а не про диск (DiskSpaceLow).
         expr: (sum(tender_partition_size_bytes) / 5e9) * 100 > 80
         for: 5m
         labels:
@@ -98,3 +152,83 @@ groups:
         annotations:
           summary: "php-fpm не отвечает"
           description: "php-fpm (app:9000) не отдал статус за последние 2 минуты (phpfpm_up == 0). Контейнер app мог упасть или перезапуститься; проверить docker compose ps и логи app."
+
+      - alert: PhpFpmPoolSaturation
+        # Истощение FPM-пула : active/max_children > 0.8.
+        # phpfpm_total_processes — текущий размер пула (max_children при насыщении),
+        # active_processes — занятые воркеры. Shared-nothing PHP: истощение пула =
+        # отказ без исключений (запросы встают в listen queue).
+        # Замечание: phpfpm_max_children_reached (защёлка до рестарта) на алерт не
+        # вешаем — сработает один раз и будет висеть; используем отношение.
+        expr: phpfpm_active_processes / phpfpm_total_processes > 0.8
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "FPM-пул насыщен (> 80% воркеров)"
+          description: "php-fpm пул загружен более чем на 80% (active/total > 0.8) в течение 5 минут. Проверить max_children (дефолт 5, load-профиль 30), медленные запросы (phpfpm_slow_requests) и внешние блокировки."
+
+      - alert: PhpFpmListenQueue
+        # Очередь прослушивания FPM : запросы ждут
+        # свободного воркера. Кратковременные пики — норма при всплесках, поэтому
+        # for: 2m отсекает флапы.
+        expr: phpfpm_listen_queue > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "FPM: запросы в listen queue"
+          description: "phpfpm_listen_queue > 0 в течение 2 минут — запросы ожидают свободного FPM-воркера. Пул на грани насыщения; проверить active/max_children и длительность запросов."
+
+      - alert: OpcacheRestarted
+        # OPcache перезапущен . last_restart_time —
+        # unix-время последнего рестарта (ручного/oom/hash), 0 = никогда.
+        # Алерт активен 5 минут после рестарта (окно (now - last) < 300).
+        # Рестарт = сброс кэша байткода: деградация перфоманса без ошибок в логах.
+        expr: php_opcache_last_restart_time > 0 and (time() - php_opcache_last_restart_time) < 300
+        for: 1m
+        labels:
+          severity: medium
+        annotations:
+          summary: "OPcache перезапущен"
+          description: "OPcache был перезапущен (последний рестарт менее 5 минут назад). Кэш байткода сброшен — hit rate временно упадёт; при частых повторах увеличить opcache.memory_consumption (сейчас 128 MB) или проверить причину oom/hash-рестартов."
+
+      - alert: ConsoleCommandFailed
+        # Сбой console-команды : scheduler/worker/
+        # webhooks. Счётчик контракта — console_commands_failed_total{command};
+        # increase > 0 за 15м = как минимум один неудачный запуск (exit != 0
+        # или исключение). Дубли TERMINATE+ERROR невозможны (см. подписчик).
+        expr: increase(console_commands_failed_total[15m]) > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Console-команда упала"
+          description: "console_commands_failed_total за 15м > 0 — scheduler/worker/webhooks команда завершилась с ошибкой или исключением. Проверить docker logs scheduler/worker/webhooks и детали по лейблу command."
+
+      - alert: MetricsGaugeRefreshFailed
+        # Сбой пересчёта gauge-метрик (GaugeMetricsUpdater, практика Prometheus:
+        # «экспортируй ошибки сбора»). Без этого алерта /metrics молча отдаёт
+        # устаревшие значения (сбой БД/Redis виден только warning'ом в логе).
+        # increase > 0 за 15м — пересчёт падал минимум раз (при кэше 15 c это
+        # много кратных сбоев за окно).
+        expr: increase(metrics_gauge_refresh_errors_total[15m]) > 0
+        for: 2m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Сбой пересчёта gauge-метрик"
+          description: "metrics_gauge_refresh_errors_total за 15м > 0 — GaugeMetricsUpdater не может пересчитать auction_active_trades/stalled/outbox (БД или Redis недоступны). Значения на /metrics могли протухнуть; проверить соединения и логи app."
+
+      - alert: HealthReadyDown
+        # Внешний аптайм-чек : blackbox probe на
+        # /health/ready через nginx. probe_success == 0 — не 200/таймаут/
+        # connection refused: стек не принял запрос (app, db, redis, rabbitmq,
+        # mercure — см. реализацию /health/ready).
+        expr: probe_success{job="blackbox"} == 0
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: "Health-эндпоинт /health/ready не отвечает"
+          description: "Blackbox probe на http://web/health/ready возвращает ошибку в течение 5 минут. Проверить контейнеры (docker compose ps), логи nginx/app и health-зависимости (db, redis, rabbitmq, mercure)."

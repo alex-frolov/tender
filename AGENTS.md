@@ -14,6 +14,11 @@ Tender Platform — B2B-платформа закупок (тендеры, ау�
 - **Mailpit** (dev-почта: UI http://localhost:8025)
 - Доп.: symfony/lock, symfony/workflow, symfony/rate-limiter, symfony/validator, lcobucci/jwt, zenstruck/foundry (dev)
 
+## Git: коммиты и пуши
+
+- **Коммитить и пушить — только с явного подтверждения владельца.** Подготовить изменение, показать состав (что будет закоммичено), дождаться одобрения — в том числе на feature-ветках.
+- Не делать `git commit`/`git push` как промежуточный шаг «по ходу работы» без отдельного подтверждения на конкретный коммит.
+
 ## Запуск и окружение
 
 ```bash

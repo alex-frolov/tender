@@ -199,13 +199,46 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "write p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "write p90",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
           "legendFormat": "write p95",
           "range": true,
-          "refId": "A"
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum(rate(auction_bid_latency_seconds_bucket[5m])) by (le))",
+          "legendFormat": "write p99",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Bid write p95 (NFR-1: <100 ms, alert 150 ms)",
+      "title": "Bid write latency percentiles (NFR-1: p95 < 100 ms, alert 150 ms)",
       "type": "timeseries"
     },
     {
@@ -516,14 +549,126 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(auction_no_bids_alert)",
-          "legendFormat": "no_bids",
+          "expr": "auction_stalled_now",
+          "legendFormat": "stalled now",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(auction_stall_events_total[15m])",
+          "legendFormat": "stall events (15m)",
+          "range": true,
+          "refId": "B"
         }
       ],
-      "title": "Alert: auction with no bids (no_bids)",
-      "type": "stat"
+      "title": "Stalled auctions (no bids)",
+      "type": "stat",
+      "description": "auction_stalled_now — текущее число застрявших TRADE-аукционов без ставок; stall events — переходы в stalled (алерт AuctionStalled). Метрики без лейбла auction_id (вариант A)."
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "cps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(auction_bid_rejections_total[1m])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(auction_bid_attempts_total{outcome=\"rejected\"}[1m])) / clamp_min(sum(rate(auction_bid_attempts_total[1m])), 0.0001)",
+          "legendFormat": "rejection ratio",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Bid rejections (RED)",
+      "type": "timeseries"
     }
   ],
   "refresh": "15s",
@@ -543,6 +688,6 @@
   "timezone": "",
   "title": "Auction live",
   "uid": "tender-auction-live",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

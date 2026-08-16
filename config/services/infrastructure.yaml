@@ -3,6 +3,11 @@
 # Фреймворк-клей (App\Infrastructure): внешние ресурсы, общие для всех модулей.
 # Нижний слой — на него не ссылаются контроллеры/UseCase (phparkitect, правило 1/7).
 
+parameters:
+    # Фолбэк версии сборки для app_build_info{version}, когда APP_VERSION не задан
+    # (синтаксис env(default:...) требует ИМЯ параметра, не литерал).
+    app_version_default: 'dev'
+
 services:
     _defaults:
         autowire: true
@@ -10,11 +15,17 @@ services:
 
     # Redis-клиент: live-состояние, rate limit, кэш
     # (явный аргумент REDIS_URL — autowire не подставляет string)
+    # lazy: true — соединение откладывается до ПЕРВОГО реального использования:
+    # иначе любой сервис с \Redis/CollectorRegistry в конструкторе (напр.
+    # ConsoleMetricsSubscriber, инстанцируемый диспетчером при каждом
+    # bin/console) коннектится к Redis при буте ядра, и команды падают,
+    # если Redis недоступен (cache:clear в CI без redis-хостнейма и т.п.).
     Redis:
         class: Redis
         factory: ['App\Infrastructure\Redis\RedisFactory', 'create']
         arguments:
             - '%env(REDIS_URL)%'
+        lazy: true
 
     # AMQP-соединение (RabbitMQ; messenger async-транспорт)
     AMQPConnection:
@@ -27,3 +38,9 @@ services:
     # Коллекторы/подписчики (App\Infrastructure\Metrics) autowire'ят этот сервис.
     Prometheus\CollectorRegistry:
         factory: ['@App\Infrastructure\Metrics\MetricsRegistry', 'getCollectorRegistry']
+
+    # Версия сборки для app_build_info{version} (см. MetricsController).
+    # Значение по умолчанию — параметр app_version_default (APP_VERSION не задан).
+    App\Infrastructure\Http\MetricsController:
+        arguments:
+            $version: '%env(default:app_version_default:APP_VERSION)%'

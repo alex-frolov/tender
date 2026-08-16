@@ -9,7 +9,6 @@ use PHPUnit\Framework\TestCase;
 use Prometheus\CollectorRegistry;
 use Prometheus\RenderTextFormat;
 use Prometheus\Storage\InMemory;
-use Symfony\Component\Uid\Uuid;
 
 /**
  * AuctionMetricsCollector: имена/лейблы метрик домена аукциона — контракт
@@ -47,6 +46,26 @@ final class AuctionMetricsCollectorTest extends TestCase
         self::assertStringContainsString('auction_bid_latency_seconds_count 2', $body);
     }
 
+    public function testBidAttemptAndRejectionCounters(): void
+    {
+        $registry = new CollectorRegistry(new InMemory(), false);
+        $collector = new AuctionMetricsCollector($registry);
+
+        $collector->bidAttempt('accepted');
+        $collector->bidAttempt('rejected');
+        $collector->bidAttempt('rejected');
+        $collector->bidRejected('auction_not_trade');
+        $collector->bidRejected('duplicate_bid');
+
+        $body = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+        self::assertStringContainsString('# TYPE auction_bid_attempts_total counter', $body);
+        self::assertStringContainsString('auction_bid_attempts_total{outcome="accepted"} 1', $body);
+        self::assertStringContainsString('auction_bid_attempts_total{outcome="rejected"} 2', $body);
+        self::assertStringContainsString('# TYPE auction_bid_rejections_total counter', $body);
+        self::assertStringContainsString('auction_bid_rejections_total{reason="auction_not_trade"} 1', $body);
+        self::assertStringContainsString('auction_bid_rejections_total{reason="duplicate_bid"} 1', $body);
+    }
+
     public function testExtensionsAndPausesCounters(): void
     {
         $registry = new CollectorRegistry(new InMemory(), false);
@@ -72,17 +91,30 @@ final class AuctionMetricsCollectorTest extends TestCase
         self::assertStringContainsString('auction_active_trades 4', $body);
     }
 
-    public function testNoBidsGaugeSetsPerAuctionValue(): void
+    public function testStalledCountGaugeAndStallEventsCounter(): void
     {
         $registry = new CollectorRegistry(new InMemory(), false);
         $collector = new AuctionMetricsCollector($registry);
-        $auctionId = Uuid::v4();
 
-        $collector->setNoBids($auctionId, true);
-        $collector->setNoBids(Uuid::v4(), false);
+        $collector->setStalledCount(3);
+        $collector->stallEvents(2);
 
         $body = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
-        self::assertStringContainsString(\sprintf('auction_no_bids_alert{auction_id="%s"} 1', $auctionId), $body);
-        self::assertStringContainsString('auction_no_bids_alert{auction_id=', $body);
+        // Без лейбла auction_id (вариант A) — кардинальность не растёт.
+        self::assertStringContainsString('auction_stalled_now 3', $body);
+        self::assertStringContainsString('auction_stall_events_total 2', $body);
+        self::assertStringNotContainsString('auction_no_bids_alert', $body);
+    }
+
+    public function testStallEventsIgnoresNonPositiveCounts(): void
+    {
+        $registry = new CollectorRegistry(new InMemory(), false);
+        $collector = new AuctionMetricsCollector($registry);
+
+        $collector->stallEvents(0);
+        $collector->stallEvents(-1);
+
+        $body = (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+        self::assertStringNotContainsString('auction_stall_events_total', $body);
     }
 }

@@ -201,6 +201,7 @@ services:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./docker/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - ./docker/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - ./docker/prometheus/slo-rules.yml:/etc/prometheus/slo-rules.yml:ro
       - ./docker/prometheus/pg-queries.yaml:/etc/prometheus/pg-queries.yaml:ro
     depends_on:
       db: { condition: service_healthy }
@@ -250,6 +251,49 @@ services:
       # nginx location = /status (default.conf) остаётся для ручной проверки.
       PHP_FPM_SCRAPE_URI: tcp://app:9000/status
 
+  # Внешний аптайм-чек : probe на /health/ready
+  # через web:80. Алерт HealthReadyDown (docker/prometheus/alerts.yml).
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.26.0
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./docker/prometheus/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+
+  # Host-метрики : честный диск/CPU/RAM вместо
+  # эвристики по партициям PG. В Docker Desktop это метрики VM, на которой
+  # живут volume'ы приложения — то, что нужно для DiskSpaceLow.
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    ports:
+      - "9100:9100"
+    volumes:
+      - /:/host:ro
+    command:
+      - '--path.rootfs=/host'
+
+  # Loki : сбор structured JSON-логов с trace-id.
+  # Dev-профиль: filesystem storage, retention 168h (7 дней).
+  loki:
+    image: grafana/loki:3.3.2
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  # Promtail: docker_sd — подписка на логи всех контейнеров стека через
+  # docker.sock (label service из имени контейнера app-<name>-1).
+  promtail:
+    image: grafana/promtail:3.3.2
+    volumes:
+      - ./docker/loki/promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      loki: { condition: service_started }
+
 ###> doctrine/doctrine-bundle ###
   database:
     image: postgres:${POSTGRES_VERSION:-16}-alpine
@@ -276,3 +320,4 @@ volumes:
 ###< doctrine/doctrine-bundle ###
   prometheus_data:
   grafana_data:
+  loki_data:

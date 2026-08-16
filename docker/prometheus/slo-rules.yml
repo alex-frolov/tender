@@ -1,0 +1,38 @@
+# Tender Platform — SLO/SLI recording rules
+# Multi-window burn-rate (Google SRE Workbook, гл. 5): алерт срабатывает,
+# когда error_ratio превышает (1-SLO)*burn_rate на ОБОИХ окнах (длинное +
+# короткое) — это отсекает флапы и ловит только устойчивое выгорание бюджета.
+#
+# SLO (подтверждены владельцем 2026-08-15):
+# - bid write: 99% ставок записываются ≤ 100 мс (бакет le="0.1");
+# - HTTP: 99.9% запросов без 5xx.
+#
+# Слои: 14.4x (окна 1h/5m) — быстрое выгорание, 6x (окна 6h/30m) — медленное.
+# Окно 30 дней: при 14.4x бюджет сгорает за ~2 дня, при 6x — за ~5 дней.
+#
+# Третий слой (1x, окна 3d/6h) для dev-стека не добавляем: бюджет 99% (43 мин
+# в месяц для HTTP) медленно сгорает и без него ловится слоем 6x; при переходе
+# в prod — добавить.
+
+groups:
+  - name: tender-slo
+    rules:
+      # --- SLI: bid write, доля ошибок = доля ставок медленнее 100 мс ---
+      - record: slo:bid_write:error_ratio_5m
+        expr: 1 - sum(rate(auction_bid_latency_seconds_bucket{le="0.1"}[5m])) / sum(rate(auction_bid_latency_seconds_count[5m]))
+      - record: slo:bid_write:error_ratio_30m
+        expr: 1 - sum(rate(auction_bid_latency_seconds_bucket{le="0.1"}[30m])) / sum(rate(auction_bid_latency_seconds_count[30m]))
+      - record: slo:bid_write:error_ratio_1h
+        expr: 1 - sum(rate(auction_bid_latency_seconds_bucket{le="0.1"}[1h])) / sum(rate(auction_bid_latency_seconds_count[1h]))
+      - record: slo:bid_write:error_ratio_6h
+        expr: 1 - sum(rate(auction_bid_latency_seconds_bucket{le="0.1"}[6h])) / sum(rate(auction_bid_latency_seconds_count[6h]))
+
+      # --- SLI: HTTP, доля ошибок = доля 5xx ---
+      - record: slo:http:error_ratio_5m
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+      - record: slo:http:error_ratio_30m
+        expr: sum(rate(http_requests_total{status=~"5.."}[30m])) / sum(rate(http_requests_total[30m]))
+      - record: slo:http:error_ratio_1h
+        expr: sum(rate(http_requests_total{status=~"5.."}[1h])) / sum(rate(http_requests_total[1h]))
+      - record: slo:http:error_ratio_6h
+        expr: sum(rate(http_requests_total{status=~"5.."}[6h])) / sum(rate(http_requests_total[6h]))

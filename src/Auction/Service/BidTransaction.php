@@ -172,11 +172,10 @@ final readonly class BidTransaction
 
         // Один flush на ставку (ставка + аудит + outbox) — меньше round trips
         // на запись, критерий 4.10 «100–200 ставок/сек» (NFR-1).
+        // Счётчик принятых ставок (auction_bids_total) здесь НЕ инкрементится:
+        // он должен учитывать только закоммиченные ставки — вызов после
+        // коммита в AuctionBidService::transactionalBid (см. там).
         $this->em->flush();
-
-        // Принятая ставка записана (auction_bids_total, ops/observability.md §1).
-        // Replay по Idempotency-Key до commitBid не доходит — не считается.
-        $this->auctionMetrics->bidPlaced();
 
         return $bid;
     }

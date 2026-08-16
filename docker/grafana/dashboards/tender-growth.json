@@ -191,13 +191,46 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_seconds_bucket{route=~\"tender_list\"}[5m])) by (le))",
+          "legendFormat": "catalog p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.9, sum(rate(http_request_duration_seconds_bucket{route=~\"tender_list\"}[5m])) by (le))",
+          "legendFormat": "catalog p90",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route=~\"tender_list\"}[5m])) by (le))",
           "legendFormat": "catalog p95",
           "range": true,
-          "refId": "A"
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{route=~\"tender_list\"}[5m])) by (le))",
+          "legendFormat": "catalog p99",
+          "range": true,
+          "refId": "D"
         }
       ],
-      "title": "Catalog latency p95 (http_request_duration_seconds)",
+      "title": "Catalog latency percentiles (http_request_duration_seconds)",
       "type": "timeseries"
     },
     {
