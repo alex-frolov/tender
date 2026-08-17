@@ -9,7 +9,7 @@
         "ext-iconv": "*",
         "ext-redis": "*",
         "ext-sodium": "*",
-        "alex-frolov/scalar-symfony": "dev-main",
+        "alex-frolov/scalar-symfony": "^0.1",
         "doctrine/doctrine-bundle": "^3.3",
         "doctrine/doctrine-migrations-bundle": "^4.0",
         "doctrine/orm": "^3.6",

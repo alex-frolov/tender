@@ -4,20 +4,20 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "914b3a5b88d6932ec028f1773a1b72e7",
+    "content-hash": "5aa2277c332042504246e502db4654db",
     "packages": [
         {
             "name": "alex-frolov/scalar-symfony",
-            "version": "dev-main",
+            "version": "v0.1.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/alex-frolov/scalar-symfony.git",
-                "reference": "1263ca3ffcd128b40e56876f20c2cf216a603479"
+                "reference": "27b362228897c76d276db26bce5ae7a4d28734a1"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/alex-frolov/scalar-symfony/zipball/1263ca3ffcd128b40e56876f20c2cf216a603479",
-                "reference": "1263ca3ffcd128b40e56876f20c2cf216a603479",
+                "url": "https://api.github.com/repos/alex-frolov/scalar-symfony/zipball/27b362228897c76d276db26bce5ae7a4d28734a1",
+                "reference": "27b362228897c76d276db26bce5ae7a4d28734a1",
                 "shasum": ""
             },
             "require": {
@@ -42,7 +42,6 @@
             "suggest": {
                 "symfony/security-core": "Required for the attribute-based access control mode"
             },
-            "default-branch": true,
             "type": "symfony-bundle",
             "extra": {
                 "branch-alias": {
@@ -91,10 +90,10 @@
                 "symfony"
             ],
             "support": {
-                "source": "https://github.com/alex-frolov/scalar-symfony/tree/main",
+                "source": "https://github.com/alex-frolov/scalar-symfony/tree/v0.1.0",
                 "issues": "https://github.com/alex-frolov/scalar-symfony/issues"
             },
-            "time": "2026-08-17T09:50:33+00:00"
+            "time": "2026-08-17T10:51:20+00:00"
         },
         {
             "name": "doctrine/collections",
@@ -12452,9 +12451,7 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {
-        "alex-frolov/scalar-symfony": 20
-    },
+    "stability-flags": {},
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {
