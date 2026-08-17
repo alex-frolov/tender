@@ -1,0 +1,145 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}{{ 'welcome_title'|trans({}, 'welcome') }}{% endblock %}
+
+{% block body %}
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 24px;
+        }
+        .card {
+            max-width: 720px;
+            width: 100%;
+            padding: 48px 44px;
+            border-radius: 16px;
+            background: #1e293b;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, .4);
+        }
+        .card h1 {
+            margin: 0 0 8px;
+            font-size: 30px;
+            letter-spacing: -.02em;
+        }
+        .card p {
+            margin: 8px 0;
+            line-height: 1.6;
+            color: #94a3b8;
+        }
+        .card code {
+            background: #0f172a;
+            padding: 2px 6px;
+            border-radius: 6px;
+            font-size: .9em;
+            color: #7dd3fc;
+        }
+        .card .tech {
+            margin-top: 16px;
+            font-size: .9em;
+            color: #7dd3fc;
+        }
+        .card h2 {
+            margin: 28px 0 8px;
+            font-size: 18px;
+            letter-spacing: -.01em;
+        }
+        .card ul.caps {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+        .card ul.caps li {
+            margin: 6px 0;
+            padding-left: 22px;
+            position: relative;
+            line-height: 1.5;
+            color: #cbd5e1;
+        }
+        .card ul.caps li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #34d399;
+            font-weight: 700;
+        }
+        .card .author {
+            margin-top: 24px;
+            padding-top: 16px;
+            border-top: 1px solid #334155;
+            font-size: .9em;
+            color: #94a3b8;
+        }
+        .card .author a {
+            color: #7dd3fc;
+            text-decoration: none;
+        }
+        .card a.cta {
+            display: inline-block;
+            margin-top: 24px;
+            padding: 12px 24px;
+            border-radius: 10px;
+            background: #2563eb;
+            color: #fff;
+            text-decoration: none;
+            font-weight: 600;
+            transition: background .15s ease;
+        }
+        .card a.cta:hover {
+            background: #1d4ed8;
+        }
+        .card .health {
+            margin-top: 16px;
+            font-size: .9em;
+        }
+        .card .lang {
+            margin-top: 20px;
+            font-size: .85em;
+        }
+        .card .lang a {
+            color: #7dd3fc;
+            text-decoration: none;
+        }
+    </style>
+
+    <main class="card">
+        <h1>{{ 'welcome_title'|trans({}, 'welcome') }}</h1>
+        <p>{{ 'welcome_tagline'|trans({}, 'welcome') }}</p>
+        <p>{{ 'welcome_features'|trans({}, 'welcome') }}</p>
+
+        <p class="tech">{{ 'welcome_tech'|trans({}, 'welcome') }}</p>
+
+        <h2>{{ 'welcome_capabilities_title'|trans({}, 'welcome') }}</h2>
+        <ul class="caps">
+            <li>{{ 'welcome_capability_1'|trans({}, 'welcome') }}</li>
+            <li>{{ 'welcome_capability_2'|trans({}, 'welcome') }}</li>
+            <li>{{ 'welcome_capability_3'|trans({}, 'welcome') }}</li>
+            <li>{{ 'welcome_capability_4'|trans({}, 'welcome') }}</li>
+        </ul>
+
+        <p class="author">
+            {{ 'welcome_about_author'|trans({}, 'welcome') }} ·
+            {{ 'welcome_contact'|trans({}, 'welcome') }}
+            <a href="mailto:aleksander@frolov.guru">aleksander@frolov.guru</a>
+        </p>
+
+        <a class="cta" href="{{ path('scalar_symfony_reference') }}">{{ 'welcome_open_scalar'|trans({}, 'welcome') }}</a>
+
+        <p class="health">{{ 'welcome_health'|trans({}, 'welcome') }}
+            <code>/health/live</code> · <code>/health/ready</code>
+        </p>
+
+        <p class="lang">
+            <a href="{{ path('app_welcome', {_locale: 'ru'}) }}">RU</a>
+            ·
+            <a href="{{ path('app_welcome', {_locale: 'en'}) }}">EN</a>
+        </p>
+    </main>
+{% endblock %}
