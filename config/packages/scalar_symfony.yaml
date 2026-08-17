@@ -1,0 +1,12 @@
+# Scalar API References (alex-frolov/scalar-symfony) — dogfooding
+#
+# Спека: public/openapi.yaml — EN-версия (отдаётся на /openapi.yaml).
+# ВАЖНО: это НЕ копия api/openapi.yaml! Там — RU-версия (источник для
+# документации), здесь — EN-версия для публичного API Reference; вести
+# их независимо (решение владельца 2026-08-17).
+scalar_symfony:
+    url: '/openapi.yaml'
+
+    # Dev: открытый доступ; в prod закрыть по security-атрибуту (ROLE_ADMIN и т.п.)
+    access_control:
+        mode: public
