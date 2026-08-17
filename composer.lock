@@ -4,8 +4,98 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "f6d24e7e609a8a5672a1bef37176c970",
+    "content-hash": "914b3a5b88d6932ec028f1773a1b72e7",
     "packages": [
+        {
+            "name": "alex-frolov/scalar-symfony",
+            "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/alex-frolov/scalar-symfony.git",
+                "reference": "1263ca3ffcd128b40e56876f20c2cf216a603479"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/alex-frolov/scalar-symfony/zipball/1263ca3ffcd128b40e56876f20c2cf216a603479",
+                "reference": "1263ca3ffcd128b40e56876f20c2cf216a603479",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.2",
+                "symfony/config": "^6.4 || ^7.2 || ^8.0",
+                "symfony/dependency-injection": "^6.4 || ^7.2 || ^8.0",
+                "symfony/framework-bundle": "^6.4 || ^7.2 || ^8.0",
+                "symfony/http-foundation": "^6.4 || ^7.2 || ^8.0",
+                "symfony/http-kernel": "^6.4 || ^7.2 || ^8.0",
+                "symfony/routing": "^6.4 || ^7.2 || ^8.0",
+                "symfony/twig-bundle": "^6.4 || ^7.2 || ^8.0"
+            },
+            "require-dev": {
+                "friendsofphp/php-cs-fixer": "^3.64",
+                "phpstan/phpstan": "^2.1",
+                "phpunit/phpunit": "^10.5 || ^11.5",
+                "symfony/browser-kit": "^6.4 || ^7.2 || ^8.0",
+                "symfony/phpunit-bridge": "^6.4 || ^7.2 || ^8.0",
+                "symfony/security-bundle": "^6.4 || ^7.2 || ^8.0",
+                "symfony/security-core": "^6.4 || ^7.2 || ^8.0"
+            },
+            "suggest": {
+                "symfony/security-core": "Required for the attribute-based access control mode"
+            },
+            "default-branch": true,
+            "type": "symfony-bundle",
+            "extra": {
+                "branch-alias": {
+                    "dev-main": "0.1.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "FrolovGuru\\ScalarSymfony\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "FrolovGuru\\ScalarSymfony\\Tests\\": "tests/"
+                }
+            },
+            "scripts": {
+                "test": [
+                    "phpunit"
+                ],
+                "analyse": [
+                    "phpstan analyse"
+                ],
+                "fix": [
+                    "php-cs-fixer fix --allow-risky=yes"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Aleksander Frolov",
+                    "email": "aleksander@frolov.guru",
+                    "homepage": "https://frolov.guru"
+                }
+            ],
+            "description": "Render modern Scalar API References in Symfony from any OpenAPI document",
+            "keywords": [
+                "api-docs",
+                "api-reference",
+                "bundle",
+                "openapi",
+                "scalar",
+                "swagger",
+                "symfony"
+            ],
+            "support": {
+                "source": "https://github.com/alex-frolov/scalar-symfony/tree/main",
+                "issues": "https://github.com/alex-frolov/scalar-symfony/issues"
+            },
+            "time": "2026-08-17T09:50:33+00:00"
+        },
         {
             "name": "doctrine/collections",
             "version": "2.6.0",
@@ -12362,7 +12452,9 @@
     ],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "alex-frolov/scalar-symfony": 20
+    },
     "prefer-stable": true,
     "prefer-lowest": false,
     "platform": {

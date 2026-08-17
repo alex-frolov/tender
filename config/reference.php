@@ -1452,6 +1452,21 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         html_to_text_converter?: scalar|Param|null, // A service implementing the "Symfony\Component\Mime\HtmlToTextConverter\HtmlToTextConverterInterface". // Default: null
  *     },
  * }
+ * @psalm-type ScalarSymfonyConfig = array{
+ *     url?: scalar|Param|null, // Public absolute or relative URL of your OpenAPI document.
+ *     cdn?: scalar|Param|null, // URL of the Scalar API Reference standalone bundle. // Default: "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.65.1"
+ *     path?: scalar|Param|null, // Path of the API reference route. // Default: "/scalar"
+ *     configuration?: array{ // Well-known options merged into the Scalar.createApiReference() configuration.
+ *         theme?: scalar|Param|null, // Scalar theme: default, alternate, none, or any theme shipped with Scalar. // Default: "default"
+ *         _integration?: scalar|Param|null, // Integration identifier sent to Scalar (used for their usage stats). // Default: "symfony"
+ *         metaData?: list<mixed>,
+ *     },
+ *     scalar_options?: list<mixed>,
+ *     access_control?: array{ // Access control for the API reference route.
+ *         mode?: "public"|"attribute"|Param, // "public" — everyone may view the docs; "attribute" — require a security attribute. // Default: "public"
+ *         attribute?: scalar|Param|null, // Security attribute to check when mode is "attribute" (e.g. ROLE_ADMIN). // Default: null
+ *     },
+ * }
  * @psalm-type ConfigType = array{
  *     imports?: ImportsConfig,
  *     parameters?: ParametersConfig,
@@ -1462,6 +1477,7 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *     doctrine_migrations?: DoctrineMigrationsConfig,
  *     monolog?: MonologConfig,
  *     twig?: TwigConfig,
+ *     scalar_symfony?: ScalarSymfonyConfig,
  *     "when@dev"?: array{
  *         imports?: ImportsConfig,
  *         parameters?: ParametersConfig,
@@ -1473,6 +1489,7 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         monolog?: MonologConfig,
  *         zenstruck_foundry?: ZenstruckFoundryConfig,
  *         twig?: TwigConfig,
+ *         scalar_symfony?: ScalarSymfonyConfig,
  *     },
  *     "when@prod"?: array{
  *         imports?: ImportsConfig,
@@ -1484,6 +1501,7 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         doctrine_migrations?: DoctrineMigrationsConfig,
  *         monolog?: MonologConfig,
  *         twig?: TwigConfig,
+ *         scalar_symfony?: ScalarSymfonyConfig,
  *     },
  *     "when@test"?: array{
  *         imports?: ImportsConfig,
@@ -1497,6 +1515,7 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *         dama_doctrine_test?: DamaDoctrineTestConfig,
  *         zenstruck_foundry?: ZenstruckFoundryConfig,
  *         twig?: TwigConfig,
+ *         scalar_symfony?: ScalarSymfonyConfig,
  *     },
  *     ...<string, ExtensionType|array{ // extra keys must follow the when@%env% pattern or match an extension alias
  *         imports?: ImportsConfig,

@@ -348,7 +348,7 @@ Detailed documentation lives in [`docs/`](docs/README.md):
 | [`docs/auctions.md`](docs/auctions.md) | live trading, Redis state, SSE, timer, recovery |
 | [`docs/contracts.md`](docs/contracts.md) | contract lifecycle, signing, execution, claims |
 | [`docs/api.md`](docs/api.md) | API reference (endpoints, conventions, errors) |
-| [`docs/openapi.yaml`](docs/openapi.yaml) | machine-readable OpenAPI 3.1 API specification (English) |
+| [`public/openapi.yaml`](public/openapi.yaml) | machine-readable OpenAPI 3.1 API specification (English) |
 | [`docs/database.md`](docs/database.md) | entities, ER overview, enums |
 | [`docs/integrations.md`](docs/integrations.md) | webhooks, notifications, analytics, exports |
 
@@ -361,7 +361,7 @@ Detailed documentation lives in [`docs/`](docs/README.md):
 - Rate limiting: `X-RateLimit-Limit/Remaining/Reset` headers, `429` + `Retry-After`.
 - Money in API: integer minor units.
 - Full endpoint reference: [`docs/api.md`](docs/api.md).
-- OpenAPI 3.1 specification: [`docs/openapi.yaml`](docs/openapi.yaml) (English).
+- OpenAPI 3.1 specification: [`public/openapi.yaml`](public/openapi.yaml) (English).
 
 ## Quality & testing
 

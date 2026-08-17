@@ -9,6 +9,7 @@
         "ext-iconv": "*",
         "ext-redis": "*",
         "ext-sodium": "*",
+        "alex-frolov/scalar-symfony": "dev-main",
         "doctrine/doctrine-bundle": "^3.3",
         "doctrine/doctrine-migrations-bundle": "^4.0",
         "doctrine/orm": "^3.6",
@@ -140,5 +141,10 @@
         "symfony/browser-kit": "8.1.*",
         "symfony/css-selector": "8.1.*",
         "zenstruck/foundry": "^2.11"
-    }
+    },
+    "repositories": [{
+        "name": "scalar-symfony",
+        "type": "vcs",
+        "url": "https://github.com/alex-frolov/scalar-symfony.git"
+    }]
 }

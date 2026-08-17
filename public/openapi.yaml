@@ -1,0 +1,3448 @@
+openapi: 3.1.0
+info:
+    title: Tender Platform API
+    version: 1.0.0
+    description: |
+        API-first SaaS for a tender-trading company.
+        - Money: integer minor units only (amount_minor: int) + currency; formatting lives in the presentation layer.
+        - Idempotency: the Idempotency-Key header for mutations (auction bids, tender bids, subscriptions).
+        - Errors: RFC 9457 (Problem Details), see components.schemas.Error.
+        - Rate limiting: X-RateLimit-Limit/Remaining/Reset headers, 429 + Retry-After.
+        - Authorization: Bearer (OAuth2 / API key). The tenant is derived from the token.
+        Full domain model: see requirements.md, data-model.md, events.md.
+servers:
+    - url: http://localhost:8080/api/v1
+      description: Localhost
+    - url: https://api.tender-platform.example/api/v1
+      description: Production
+security:
+    - bearerAuth: []
+    - apiKeyAuth: []
+tags:
+    - name: auth
+      description: Authentication, registration, company users
+    - name: tenders
+      description: Tenders and lots
+    - name: bids
+      description: Bids
+    - name: auctions
+      description: Auctions and bids
+    - name: contracts
+      description: Contracts and claims
+    - name: documents
+      description: Documents and document types
+    - name: companies
+      description: Companies and suppliers
+    - name: notifications
+      description: Notifications and subscriptions
+    - name: analytics
+      description: Dashboard, statistics, export
+    - name: platform
+      description: Webhooks, limits, API keys
+
+paths:
+    # ================= AUTHENTICATION / REGISTRATION =================
+    /auth/token:
+        post:
+            tags: [auth]
+            summary: Obtain a token (email+password → access+refresh)
+            operationId: authToken
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [email, password]
+                            properties:
+                                email: { type: string, format: email }
+                                password: { type: string, format: password }
+                                totp_code: { type: string, pattern: '^\d{6}$', description: '6-digit TOTP code (required if 2FA is enabled)' }
+            responses:
+                '200':
+                    description: Tokens issued
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    access_token: { type: string }
+                                    refresh_token: { type: string }
+                                    expires_in: { type: integer, description: 'Access token lifetime in seconds' }
+                                    token_type: { type: string, example: Bearer }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403':
+                    description: Email not verified / user deleted / blocked
+                    $ref: '#/components/responses/Forbidden'
+
+    /auth/refresh:
+        post:
+            tags: [auth]
+            summary: Refresh the access token using a refresh token
+            operationId: authRefresh
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [refresh_token]
+                            properties:
+                                refresh_token: { type: string }
+            responses:
+                '200':
+                    description: New tokens (refresh rotation)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    access_token: { type: string }
+                                    refresh_token: { type: string }
+                                    expires_in: { type: integer }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+
+    /auth/logout:
+        post:
+            tags: [auth]
+            summary: Log out (revoke the refresh token)
+            operationId: authLogout
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [refresh_token]
+                            properties:
+                                refresh_token: { type: string }
+            responses:
+                '200':
+                    description: Token revoked (idempotently)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    status: { type: string, example: ok }
+
+    /auth/2fa/setup:
+        post:
+            tags: [auth]
+            summary: Enable 2FA — obtain the TOTP secret (QR). Requires authorization (Bearer)
+            operationId: auth2faSetup
+            security:
+                - bearerAuth: []
+            responses:
+                '200':
+                    description: Secret for the authenticator app
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    secret: { type: string, description: 'Base32 secret (RFC 6238)' }
+                                    otpauth_uri: { type: string, format: uri }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '409':
+                    description: 2FA already enabled
+                    $ref: '#/components/responses/Conflict'
+
+    /auth/2fa/confirm:
+        post:
+            tags: [auth]
+            summary: Confirm and enable 2FA (code from the app). Requires authorization (Bearer)
+            operationId: auth2faConfirm
+            security:
+                - bearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [secret, code]
+                            properties:
+                                secret: { type: string, description: 'Base32 secret from /auth/2fa/setup' }
+                                code: { type: string, pattern: '^\d{6}$', description: '6-digit TOTP code' }
+            responses:
+                '200':
+                    description: 2FA enabled
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    two_factor_enabled: { type: boolean, example: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/2fa/disable:
+        post:
+            tags: [auth]
+            summary: Disable 2FA (code confirmation). Requires authorization (Bearer)
+            operationId: auth2faDisable
+            security:
+                - bearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [code]
+                            properties:
+                                code: { type: string, pattern: '^\d{6}$', description: '6-digit TOTP code' }
+            responses:
+                '200':
+                    description: 2FA disabled
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    two_factor_enabled: { type: boolean, example: false }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/register:
+        post:
+            tags: [auth]
+            summary: Company registration (creates a pending company + the first admin user)
+            operationId: authRegister
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [company_name, inn, org_type, email, password, user_name]
+                            properties:
+                                company_name: { type: string, maxLength: 300 }
+                                inn: { type: string, pattern: '^\d{10}(\d{2})?$', description: 'INN (10 — legal entity, 12 — individual entrepreneur)' }
+                                org_type: { type: string, enum: [customer, supplier, both] }
+                                email: { type: string, format: email }
+                                password: { type: string, format: password, minLength: 8 }
+                                user_name: { type: string, maxLength: 200 }
+                                locale: { type: string, enum: [ru, en], default: ru, description: 'Language of emails and interface' }
+            responses:
+                '201':
+                    description: Company and admin created; verification email sent
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    company_id: { type: string, format: uuid }
+                                    user_id: { type: string, format: uuid }
+                                    verification_status: { type: string, enum: [pending] }
+                '409':
+                    description: A company with this INN already exists
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /auth/email/verify:
+        post:
+            tags: [auth]
+            summary: Verify email via token
+            operationId: verifyEmail
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [token]
+                            properties:
+                                token: { type: string }
+            responses:
+                '200':
+                    description: Email verified
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    email_verified: { type: boolean, example: true }
+                '401':
+                    description: Invalid/expired token
+                    $ref: '#/components/responses/Unauthorized'
+
+    /auth/email/resend:
+        tags: [auth]
+        post:
+            summary: Resend the verification email
+            operationId: resendVerification
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [email]
+                            properties:
+                                email: { type: string, format: email }
+            responses:
+                '202':
+                    description: Email sent (cooldown)
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auth/password/forgot:
+        tags: [auth]
+        post:
+            summary: Request password recovery
+            operationId: forgotPassword
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [email]
+                            properties:
+                                email: { type: string, format: email }
+            responses:
+                '202':
+                    description: If the email exists, a token is sent (we do not disclose existence)
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auth/password/reset:
+        tags: [auth]
+        post:
+            summary: Reset the password via token
+            operationId: resetPassword
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [token, new_password]
+                            properties:
+                                token: { type: string }
+                                new_password: { type: string, format: password, minLength: 8 }
+            responses:
+                '200':
+                    description: Password changed; the user's refresh tokens are revoked
+                '401':
+                    description: Invalid/expired token
+                    $ref: '#/components/responses/Unauthorized'
+
+    # ================= ROLE PERMISSIONS (SUPERADMIN) =================
+    /permissions:
+        get:
+            tags: [platform]
+            summary: Permission catalog (codes, groups)
+            operationId: listPermissions
+            responses:
+                '200':
+                    description: Catalog
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Permission' } }
+
+    /role-permissions:
+        get:
+            tags: [platform]
+            summary: Current permission sets for the manager/agent roles
+            operationId: getRolePermissions
+            responses:
+                '200':
+                    description: Per-role sets
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    roles:
+                                        type: object
+                                        additionalProperties:
+                                            type: array
+                                            items: { $ref: '#/components/schemas/RolePermission' }
+        put:
+            tags: [platform]
+            summary: Set the permission set for a role (superadmin; applied immediately)
+            operationId: updateRolePermissions
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [role, permissions]
+                            properties:
+                                role: { type: string, enum: [manager, agent] }
+                                permissions:
+                                    type: object
+                                    description: 'code → enabled (or an array of enabled codes)'
+                                    additionalProperties: { type: boolean }
+            responses:
+                '200':
+                    description: 'Permission set updated (audit: who, when, what)'
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    role: { type: string }
+                                    permissions: { type: array, items: { $ref: '#/components/schemas/RolePermission' } }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /platform/timezone:
+        get:
+            tags: [platform]
+            summary: Current domain timezone (tenants.timezone_default)
+            operationId: getPlatformTimezone
+            responses:
+                '200':
+                    description: Domain timezone
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    timezone_default: { type: string, example: Europe/Moscow }
+        put:
+            tags: [platform]
+            summary: Set the domain timezone (superadmin)
+            operationId: updatePlatformTimezone
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [timezone_default]
+                            properties:
+                                timezone_default: { type: string, example: Europe/Moscow, description: 'IANA identifier' }
+            responses:
+                '200':
+                    description: Timezone updated (applies to deadline calculations)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    timezone_default: { type: string }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    # ================= COMPANY USERS =================
+    /users:
+        get:
+            tags: [auth]
+            summary: List company users (admin)
+            operationId: listUsers
+            responses:
+                '200':
+                    description: List (no hashes/secrets)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/User' } }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [auth]
+            summary: Invite an employee (creates a user, default role agent)
+            operationId: inviteUser
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [email, name]
+                            properties:
+                                email: { type: string, format: email }
+                                name: { type: string, maxLength: 200 }
+                                role: { type: string, enum: [admin, manager, agent], default: agent }
+            responses:
+                '201':
+                    description: User created (status=invited; invitation email)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/User' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /users/{userId}:
+        patch:
+            tags: [auth]
+            summary: Update a user's profile (own data) or role/status (admin)
+            operationId: updateUser
+            parameters:
+                - name: userId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                name: { type: string, maxLength: 200 }
+                                role: { type: string, enum: [admin, manager, agent], description: 'Admin only' }
+                                status: { type: string, enum: [active, blocked], description: 'Admin only' }
+            responses:
+                '200':
+                    description: Updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/User' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409':
+                    description: Cannot demote/delete the last active admin
+                    $ref: '#/components/responses/Conflict'
+        delete:
+            tags: [auth]
+            summary: Soft-delete a user (email masking; admin; cannot delete the last admin)
+            operationId: deleteUser
+            parameters:
+                - name: userId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '204':
+                    description: Deleted (soft; email masked)
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /users/me:
+        get:
+            tags: [auth]
+            summary: Current user and their company
+            operationId: getMe
+            responses:
+                '200':
+                    description: Profile + company
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    user: { $ref: '#/components/schemas/User' }
+                                    company: { $ref: '#/components/schemas/Company' }
+        patch:
+            tags: [auth]
+            summary: Update own profile (name, password)
+            operationId: updateMe
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                name: { type: string, maxLength: 200 }
+                                current_password: { type: string, format: password }
+                                new_password: { type: string, format: password, minLength: 8 }
+            responses:
+                '200':
+                    description: Updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/User' }
+
+    # ================= COMPANIES =================
+    /companies:
+        get:
+            tags: [companies]
+            summary: Own company card
+            operationId: getMyCompany
+            responses:
+                '200':
+                    description: Company
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Company' }
+        patch:
+            tags: [companies]
+            summary: Update company details (admin)
+            operationId: updateCompany
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                legal_name: { type: string, maxLength: 300 }
+                                kpp: { type: string }
+                                ogrn: { type: string }
+                                address: { type: string }
+                                contacts: { type: object, additionalProperties: true }
+            responses:
+                '200':
+                    description: Updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Company' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /companies/{companyId}/verify:
+        post:
+            tags: [companies]
+            summary: Approve/reject a company (platform_admin)
+            operationId: verifyCompany
+            parameters:
+                - name: companyId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [action]
+                            properties:
+                                action: { type: string, enum: [approve, reject, suspend] }
+                                reason: { type: string, maxLength: 1000 }
+            responses:
+                '200':
+                    description: Company status changed
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Company' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403':
+                    description: No permissions (not platform_admin)
+                    $ref: '#/components/responses/Forbidden'
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: Invalid status transition (state_transition_forbidden)
+                    $ref: '#/components/responses/Conflict'
+                '422':
+                    description: Invalid action / missing reason on reject
+                    $ref: '#/components/responses/ValidationError'
+
+    # ================= TENDERS =================
+    /tenders:
+        get:
+            tags: [tenders]
+            summary: List tenders with filters
+            operationId: listTenders
+            parameters:
+                - $ref: '#/components/parameters/Q'
+                - $ref: '#/components/parameters/TenderStatus'
+                - $ref: '#/components/parameters/Region'
+                - $ref: '#/components/parameters/PriceMin'
+                - $ref: '#/components/parameters/PriceMax'
+                - $ref: '#/components/parameters/Okpd2'
+                - $ref: '#/components/parameters/LawType'
+                - $ref: '#/components/parameters/AccessType'
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: List of tenders
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/TenderListItem' }
+                                    next_cursor: { type: string, nullable: true }
+                '429': { $ref: '#/components/responses/RateLimited' }
+        post:
+            tags: [tenders]
+            summary: Create a tender (draft)
+            operationId: createTender
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/TenderCreate' }
+            responses:
+                '201':
+                    description: Tender created (status=draft)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /tenders/{tenderId}:
+        get:
+            tags: [tenders]
+            summary: Tender card
+            operationId: getTender
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            responses:
+                '200':
+                    description: Tender card (fields depend on role and access)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        patch:
+            tags: [tenders]
+            summary: Update a tender (until the bid submission deadline)
+            operationId: updateTender
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/TenderUpdate' }
+            responses:
+                '200':
+                    description: Updated version
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /tenders/{tenderId}/publish:
+        post:
+            tags: [tenders]
+            summary: Publish a tender (draft/published/withdrawn → published)
+            operationId: publishTender
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            responses:
+                '200':
+                    description: Published; timeline computed
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /tenders/{tenderId}/withdraw:
+        post:
+            tags: [tenders]
+            summary: Withdraw publication (published → withdrawn, only before accepting_bids)
+            operationId: withdrawTender
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [reason]
+                            properties:
+                                reason: { type: string, maxLength: 500 }
+            responses:
+                '200':
+                    description: Withdrawn (status=withdrawn)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /tenders/{tenderId}/cancel:
+        post:
+            tags: [tenders]
+            summary: Cancel a tender (mandatory reason)
+            operationId: cancelTender
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/CancelTenderRequest' }
+            responses:
+                '200':
+                    description: Cancelled; lots/auctions cascade → CANCELLED, securities returned
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /tenders/{tenderId}/rating:
+        post:
+            tags: [tenders]
+            summary: Rate order execution (after DONE/DONE_BY_CLAIM)
+            operationId: rateTender
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [execution_rating]
+                            properties:
+                                execution_rating: { type: integer, minimum: 1, maximum: 10, nullable: true }
+            responses:
+                '200':
+                    description: Rating saved
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Tender' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /tenders/{tenderId}/access:
+        get:
+            tags: [tenders]
+            summary: 'Check access to a tender (closed: contract_holders)'
+            operationId: checkTenderAccess
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            responses:
+                '200':
+                    description: Access check result for the current user
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    accessible: { type: boolean }
+                                    reason:
+                                        type: string
+                                        nullable: true
+                                        enum: [contract_required, contract_expired, contract_terminated, ok]
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /tenders/{tenderId}/lots:
+        get:
+            tags: [tenders]
+            summary: Tender lots
+            operationId: listLots
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            responses:
+                '200':
+                    description: List of lots
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Lot' } }
+
+    # ================= PROCUREMENT PLANS =================
+    /procurement-plans:
+        get:
+            tags: [tenders]
+            summary: List procurement plans
+            operationId: listProcurementPlans
+            parameters:
+                - { $ref: '#/components/parameters/Cursor' }
+                - { $ref: '#/components/parameters/Limit' }
+            responses:
+                '200':
+                    description: List of plans
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/ProcurementPlan' } }
+        post:
+            tags: [tenders]
+            summary: Create a procurement plan
+            operationId: createProcurementPlan
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/ProcurementPlanCreate' }
+            responses:
+                '201':
+                    description: Plan created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/ProcurementPlan' }
+
+    # ================= BIDS =================
+    /tenders/{tenderId}/bids:
+        get:
+            tags: [bids]
+            summary: List bids (before opening — metadata only; after — contents by permissions)
+            operationId: listBids
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+                - { $ref: '#/components/parameters/Cursor' }
+                - { $ref: '#/components/parameters/Limit' }
+            responses:
+                '200':
+                    description: >
+                        Before opening (tenders.bids_opened_at not set) — bid metadata only: the customer sees all, a participant sees their own. After
+                        automatic opening — decrypted contents:
+                        the customer gets the full set (part1, part2_ref, price),
+                        the participant gets only part1 (in part).
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Bid' } }
+                                    next_cursor: { type: string, nullable: true }
+        post:
+            tags: [bids]
+            summary: Submit a bid; re-submitting for a lot before the deadline replaces it
+            operationId: submitBid
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+                - { $ref: '#/components/parameters/IdempotencyKey' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/BidCreate' }
+            responses:
+                '201':
+                    description: Bid submitted or replaced (status=submitted; same bid_id on replacement)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Bid' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /bids/{bidId}/withdraw:
+        post:
+            tags: [bids]
+            summary: Withdraw a bid (before the deadline; reason required)
+            operationId: withdrawBid
+            parameters:
+                - { $ref: '#/components/parameters/BidId' }
+                - { $ref: '#/components/parameters/IdempotencyKey' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [reason]
+                            properties:
+                                reason: { type: string, maxLength: 500 }
+            responses:
+                '200':
+                    description: Bid withdrawn (status=withdrawn)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Bid' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /bids/{bidId}/qualification:
+        post:
+            tags: [bids]
+            summary: Admit/reject a bid (review)
+            operationId: qualifyBid
+            parameters:
+                - { $ref: '#/components/parameters/BidId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [decision, reason]
+                            properties:
+                                decision: { type: string, enum: [admit, reject] }
+                                reason: { type: string, minLength: 1, maxLength: 1000 }
+            responses:
+                '200':
+                    description: Decision recorded; participant notified
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Bid' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    # ================= AUCTIONS =================
+    /auctions:
+        post:
+            tags: [auctions]
+            summary: Create an auction for a lot (status=new, or scheduled when scheduled_start_at is set)
+            operationId: createAuction
+            description: |
+                The auction is created from a lot of the customer's tender (1:1, unique tender+lot).
+                Canonical parameters are inherited from the lot: price_basis, vat_rate_bps,
+                the start price (the lot's canonical price; null until the first bid when the tender has
+                no_start_price), trade_end_lead_hours. Trading parameters (type,
+                step_mode, step, limits, duration) come from the body.
+                Validation: a step is required for REDUCTION+fixed; limits must be consistent;
+                scheduled_start_at (if set) must be in the future.
+                Access: the auction.control permission (admin/manager; agent — 403); customer only
+                (tender tenant). A duplicate auction for the lot → 409 {auction_exists}.
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AuctionCreate' }
+            responses:
+                '201':
+                    description: Auction created (status=new/scheduled)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionState' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Conflict (code: conflict — an auction for the lot already exists)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auctions/{auctionId}/state:
+        get:
+            tags: [auctions]
+            summary: Current auction status and rules (rules_snapshot)
+            operationId: getAuctionState
+            description: |
+                Status + rules (rules_snapshot) + timer (remaining_sec) + current prices.
+                The source of truth is PostgreSQL (auctions); live fields are current at request time.
+                Access: admitted participants (bids.status = admitted), the customer
+                (tender owner), observers (platform_admin). Everyone else — 403.
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            responses:
+                '200':
+                    description: Status + rules snapshot
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionState' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /auctions/{auctionId}/stream:
+        get:
+            tags: [auctions]
+            summary: 'Auction SSE stream discovery (JWT link to the Mercure hub)'
+            operationId: streamAuction
+            description: |
+                One-way server→client push via the **Mercure hub**: the client receives a JWT discovery link
+                (public hub URL + private topic `auction:{id}` + subscribe-JWT) and connects to the hub via EventSource.
+                Privacy: subscription is only for admitted participants, the customer and observers (Mercure JWT authorization, sub permission);
+                publishing is done by the core with the publish JWT (REST /auctions/{id}/bids — bids).
+                The response includes the current snapshot (`state`) for immediate rendering; the hub sends live events after connecting:
+                `state`, `bid`, `timer`, `status`.
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            responses:
+                '200':
+                    description: 'JWT discovery link: hub, private topic, subscribe-JWT, snapshot'
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionStreamDiscovery' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /auctions/{auctionId}/bids:
+        get:
+            tags: [auctions]
+            summary: Bid history (participants anonymous until the end of trading)
+            operationId: listAuctionBids
+            description: |
+                Accepted and rejected bids (append-only) in round order.
+                Anonymity: while the auction accepts bids (TRADE), bidder_id is masked
+                (null); after trading ends, participant identities are revealed.
+                Access: admitted participants, the customer, observers (platform_admin).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+                - { $ref: '#/components/parameters/Cursor' }
+                - { $ref: '#/components/parameters/Limit' }
+            responses:
+                '200':
+                    description: Bid history
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/AuctionBid' } }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        post:
+            tags: [auctions]
+            summary: Place a bid (per auction type; the first bid sets the start when no_start_price)
+            operationId: placeAuctionBid
+            description: |
+                The mechanics depend on the auction type + step_mode (AuctionBidService::placeBid):
+                REDUCTION(fixed/free), FREE_PRICE (within limits), PRICE_REQUEST (one price
+                offer per participant per window); no_start_price — the first
+                bid fixes start_price_minor (price discovery, is_first_price=true).
+                Admitted participants only and only in TRADE;
+                idempotency — the Idempotency-Key header.
+                Access: the auction.bid permission (admin/manager; agent — 403).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+                - { $ref: '#/components/parameters/IdempotencyKey' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AuctionBidCreate' }
+            responses:
+                '201':
+                    description: Bid accepted
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionBid' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auctions/{auctionId}/schedule:
+        post:
+            tags: [auctions]
+            summary: Schedule trading start (NEW → SCHEDULED), event auction.scheduled
+            operationId: scheduleAuction
+            description: |
+                Sets the trading start date/time (scheduled_start_at — must be in the
+                future). Until that moment bids are not accepted; the start (SCHEDULED →
+                TRADE) is executed by the system/customer. Only the customer can do this
+                (tender tenant), permission auction.control (admin/manager).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AuctionSchedule' }
+            responses:
+                '200':
+                    description: Auction scheduled (status=scheduled)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionState' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Transition not allowed (code: state_transition_forbidden — auction is not in NEW)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auctions/{auctionId}/cancel:
+        post:
+            tags: [auctions]
+            summary: Cancel an auction (→ CANCELLED), event auction.cancelled
+            operationId: cancelAuction
+            description: |
+                Cancellation from any allowing status:
+                draft/agreement/new/scheduled/trade/paused/choice/approve/in_work/claim.
+                The reason is an optional text (goes to the audit log and the auction.cancelled event).
+                Only the customer can do this (tender tenant), permission auction.control (admin/manager).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            requestBody:
+                required: false
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AuctionCancel' }
+            responses:
+                '200':
+                    description: Auction cancelled (status=cancelled)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionState' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Transition not allowed (code: state_transition_forbidden — cancellation from the current status)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auctions/{auctionId}:
+        patch:
+            tags: [auctions]
+            summary: Edit auction parameters before trading starts (PATCH)
+            operationId: updateAuction
+            description: |
+                Changes trading parameters (type, step_mode, step, limits, duration,
+                max extensions) WHILE trading has not started (status draft/agreement/new/
+                scheduled). PATCH semantics: only the passed fields change; an empty
+                request or "the same values" → 422 {nothing to update}. Rules are
+                frozen only on entering TRADE (rules_snapshot).
+                Canonical fields from the lot (price_basis/vat_rate_bps/start_price_minor/
+                trade_end_lead_hours) and scheduled_start_at are NOT edited by this method
+                (they are changed via the lot/tender or schedule).
+                Only the customer can do this (tender tenant), permission auction.control (admin/manager).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/AuctionUpdate' }
+            responses:
+                '200':
+                    description: Parameters updated (status unchanged)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionState' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Edit not allowed (code: state_transition_forbidden — trading already in progress/finished)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+                '429': { $ref: '#/components/responses/RateLimited' }
+
+    /auctions/{auctionId}/finish:
+        post:
+            tags: [auctions]
+            summary: Finish trading (TRADE → CHOICE), event auction.finished
+            operationId: finishAuction
+            description: |
+                Trading is stopped (timer expired / manual stop by the customer), the window is closed, bids are no longer accepted.
+                Step before choosing the winner: for REDUCTION — automatic (minimum price, POST /winner without bid_id),
+                for FREE_PRICE/PRICE_REQUEST — manual selection of an offer in CHOICE (POST /winner with bid_id).
+                Only the customer can do this (tender tenant), permission auction.control (admin/manager).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            responses:
+                '200':
+                    description: Trading finished
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionWinnerResult' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Transition not allowed (code: state_transition_forbidden — auction is not in TRADE)'
+                    $ref: '#/components/responses/Conflict'
+
+    /auctions/{auctionId}/winner:
+        post:
+            tags: [auctions]
+            summary: Choose the auction winner (auto REDUCTION / manual FREE_PRICE/PRICE_REQUEST)
+            operationId: chooseAuctionWinner
+            description: |
+                Automatic (no bid_id, REDUCTION): the winner is the accepted bid with the minimum price
+                (canonical basis); trading is finished if needed (FINISH). No winner
+                (no accepted bids) → 409 {no_winner}. Auto-selection for a non-REDUCTION → 409 {wrong_auction_type}.
+                Manual (with bid_id, FREE_PRICE/PRICE_REQUEST): the customer points to the accepted offer
+                (auction_bids.id) in CHOICE; an unaccepted/foreign bid → 409 {invalid_winner_bid}.
+                In both cases: CHOICE → APPROVE, event auction.winner_chosen (mode: auto/manual),
+                the winner is fixed (auctions/lots.winner_bid_id, bids.status winning/lost).
+                Only the customer can do this (tender tenant), permission auction.choose_winner (admin/manager).
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            requestBody:
+                required: false
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                bid_id:
+                                    type: string
+                                    format: uuid
+                                    nullable: true
+                                    description: 'ID of the accepted bid (auction_bids.id) — for manual selection (FREE_PRICE/PRICE_REQUEST); empty/absent = automatic selection (REDUCTION)'
+            responses:
+                '200':
+                    description: Winner chosen and approved (APPROVE)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionWinnerResult' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Winner cannot be chosen (code: no_winner | invalid_winner_bid | wrong_auction_type | state_transition_forbidden)'
+                    $ref: '#/components/responses/Conflict'
+
+    /auctions/{auctionId}/start-work:
+        post:
+            tags: [auctions]
+            summary: Start work under the contract (APPROVE → IN_WORK)
+            operationId: startWork
+            description: |
+                The performer (auction winner) marks the start of work under the contract.
+                contract_tenders.status → in_work, event execution.in_work.
+                Access: execution.manage (supplier) / auction.control (customer); party check in the service.
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            responses:
+                '200':
+                    description: Work started (IN_WORK)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionStatusResult' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Transition not allowed (code: state_transition_forbidden — auction is not in APPROVE)'
+                    $ref: '#/components/responses/Conflict'
+
+    /auctions/{auctionId}/mark-done:
+        post:
+            tags: [auctions]
+            summary: Performer marks completion (IN_WORK → DONE_BY_PERFORMER)
+            operationId: markDoneByPerformer
+            description: |
+                The performer marks completion. contract_tenders.status → done_by_performer,
+                event execution.done_by_performer. Access: execution.manage (supplier);
+                party check (winner) in the service.
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            responses:
+                '200':
+                    description: Completion marked (DONE_BY_PERFORMER)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionStatusResult' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Transition not allowed (code: state_transition_forbidden — auction is not in IN_WORK)'
+                    $ref: '#/components/responses/Conflict'
+
+    /auctions/{auctionId}/confirm-done:
+        post:
+            tags: [auctions]
+            summary: Customer confirms completion (→ DONE)
+            operationId: confirmDone
+            description: |
+                The customer confirms completion. **B2: only with a valid
+                contract** (contract.status ∈ signed/registered, not terminated/expired/deleted).
+                contract_tenders.status → done, lot → CLOSED, event execution.done.
+                Access: auction.control (customer); tenant check and B2 in the service.
+                Without a contract → 409 {contract_required}.
+            parameters:
+                - { $ref: '#/components/parameters/AuctionId' }
+            responses:
+                '200':
+                    description: Completion confirmed (DONE)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionStatusResult' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'B2 or status (code: contract_required | state_transition_forbidden)'
+                    $ref: '#/components/responses/Conflict'
+
+    # ================= SECURITY DEPOSIT =================
+    /securities/{securityId}/release:
+        post:
+            tags: [contracts]
+            summary: Release a security deposit (release)
+            operationId: releaseSecurity
+            parameters:
+                - name: securityId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Security deposit released
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    id: { type: string, format: uuid }
+                                    status: { $ref: '#/components/schemas/SecurityStatus' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /securities/{securityId}/forfeit:
+        post:
+            tags: [contracts]
+            summary: Forfeit a security deposit (forfeit)
+            operationId: forfeitSecurity
+            parameters:
+                - name: securityId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Security deposit forfeited
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    id: { type: string, format: uuid }
+                                    status: { $ref: '#/components/schemas/SecurityStatus' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    # ================= QUESTIONS / COMPLAINTS =================
+    /tenders/{tenderId}/questions:
+        get:
+            tags: [tenders]
+            summary: Questions and answers for a tender
+            operationId: listQuestions
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            responses:
+                '200':
+                    description: List of questions
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Question' } }
+        post:
+            tags: [tenders]
+            summary: Ask a question
+            operationId: createQuestion
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [text]
+                            properties:
+                                lot_id: { type: string, format: uuid, nullable: true }
+                                text: { type: string, minLength: 1, maxLength: 4000 }
+            responses:
+                '201':
+                    description: Question created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Question' }
+
+    /tenders/{tenderId}/complaints:
+        post:
+            tags: [tenders]
+            summary: File a complaint
+            operationId: createComplaint
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [text, ground]
+                            properties:
+                                lot_id: { type: string, format: uuid, nullable: true }
+                                text: { type: string, minLength: 1 }
+                                ground: { type: string, minLength: 1 }
+                                document_ids: { type: array, items: { type: string, format: uuid } }
+            responses:
+                '201':
+                    description: Complaint created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Complaint' }
+
+    # ================= DOCUMENTS =================
+    /documents:
+        post:
+            tags: [documents]
+            summary: Upload a document (multipart)
+            operationId: uploadDocument
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [file, document_type_id, entity_type, entity_id]
+                            properties:
+                                file: { type: string, format: binary }
+                                document_type_id: { type: string, format: uuid }
+                                entity_type: { type: string, enum: [tender, lot, bid, contract, claim] }
+                                entity_id: { type: string, format: uuid }
+                                visibility: { type: string, enum: [public, private] }
+                                scope: { type: string, enum: [tender, contract] }
+            responses:
+                '201':
+                    description: Document uploaded
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Document' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /documents/{documentId}:
+        get:
+            tags: [documents]
+            summary: Metadata and download link
+            operationId: getDocument
+            parameters:
+                - { $ref: '#/components/parameters/DocumentId' }
+            responses:
+                '200':
+                    description: Document (access per visibility rules)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Document' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /document-types:
+        get:
+            tags: [documents]
+            summary: Document type catalog
+            operationId: listDocumentTypes
+            responses:
+                '200':
+                    description: List of types
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/DocumentType' } }
+        post:
+            tags: [documents]
+            summary: Create a document type (superadmin)
+            operationId: createDocumentType
+            security:
+                - bearerAuth: []
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/DocumentTypeCreate' }
+            responses:
+                '201':
+                    description: Type created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/DocumentType' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
+    /document-types/{documentTypeId}:
+        put:
+            tags: [documents]
+            summary: Update a document type (superadmin)
+            operationId: updateDocumentType
+            security:
+                - bearerAuth: []
+            parameters:
+                - name: documentTypeId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                name: { type: string, maxLength: 200 }
+                                owner_role: { type: string, enum: [customer, executor, both] }
+                                visibility: { $ref: '#/components/schemas/DocumentVisibility' }
+                                required: { type: boolean }
+                                active: { type: boolean, description: 'false — deactivation' }
+            responses:
+                '200':
+                    description: Type updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/DocumentType' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+        delete:
+            tags: [documents]
+            summary: Deactivate a document type (superadmin)
+            operationId: deactivateDocumentType
+            security:
+                - bearerAuth: []
+            parameters:
+                - name: documentTypeId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Type deactivated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/DocumentType' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /documents/{documentId}/download:
+        get:
+            tags: [documents]
+            summary: Download the current version of a document
+            operationId: downloadDocument
+            security:
+                - bearerAuth: []
+            parameters:
+                - { $ref: '#/components/parameters/DocumentId' }
+            responses:
+                '200':
+                    description: Binary file contents
+                    content:
+                        application/octet-stream: {}
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /contracts/{contractId}/scan:
+        post:
+            tags: [documents, contracts]
+            summary: Attach a contract scan (multi-use — for many tenders)
+            operationId: uploadContractScan
+            parameters:
+                - { $ref: '#/components/parameters/ContractId' }
+            requestBody:
+                required: true
+                content:
+                    multipart/form-data:
+                        schema:
+                            type: object
+                            required: [file]
+                            properties:
+                                file: { type: string, format: binary }
+            responses:
+                '201':
+                    description: Scan attached to the contract
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Document' }
+
+    # ================= CONTRACTS =================
+    /contract-types:
+        get:
+            tags: [contracts]
+            summary: List contract types
+            operationId: listContractTypes
+            responses:
+                '200':
+                    description: List of types
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/ContractType' } }
+        post:
+            tags: [contracts]
+            summary: Create a contract type
+            operationId: createContractType
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [code, name]
+                            properties:
+                                code: { type: string, maxLength: 50 }
+                                name: { type: string, maxLength: 200 }
+                                is_single_use: { type: boolean, default: false }
+                                template_ref: { type: string, nullable: true }
+            responses:
+                '201':
+                    description: Type created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/ContractType' }
+
+    /contracts:
+        get:
+            tags: [contracts]
+            summary: List contracts
+            operationId: listContracts
+            parameters:
+                - { $ref: '#/components/parameters/Cursor' }
+                - { $ref: '#/components/parameters/Limit' }
+                - name: contract_status
+                  in: query
+                  schema: { $ref: '#/components/schemas/ContractStatus' }
+            responses:
+                '200':
+                    description: List of contracts
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Contract' } }
+        post:
+            tags: [contracts]
+            summary: Create a contract (for a tender or a framework contract outside a tender)
+            operationId: createContract
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/ContractCreate' }
+            responses:
+                '201':
+                    description: Contract created (status=draft)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Contract' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /contracts/{contractId}:
+        get:
+            tags: [contracts]
+            summary: Contract card
+            operationId: getContract
+            parameters:
+                - { $ref: '#/components/parameters/ContractId' }
+            responses:
+                '200':
+                    description: Contract
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Contract' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    /contracts/{contractId}/sign:
+        post:
+            tags: [contracts]
+            summary: Sign a contract (both parties; pending_signature → signed)
+            operationId: signContract
+            parameters:
+                - { $ref: '#/components/parameters/ContractId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [party]
+                            properties:
+                                party: { type: string, enum: [customer, supplier] }
+                                signature: { type: string, description: 'Qualified electronic signature (a stub in MVP)' }
+            responses:
+                '200':
+                    description: Signature accepted; signed when both parties have signed
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Contract' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /contracts/{contractId}/send-for-signature:
+        post:
+            tags: [contracts]
+            summary: Send a contract to the parties for signing (draft → pending_signature)
+            operationId: sendContractForSignature
+            parameters:
+                - { $ref: '#/components/parameters/ContractId' }
+            responses:
+                '200':
+                    description: Contract sent for signing
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Contract' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /contracts/{contractId}/tenders:
+        post:
+            tags: [contracts]
+            summary: Bind a tender to a contract (multi_use; after APPROVE)
+            operationId: bindTenderToContract
+            parameters:
+                - { $ref: '#/components/parameters/ContractId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [tender_id, award_id, price_net_minor]
+                            properties:
+                                tender_id: { type: string, format: uuid }
+                                lot_id: { type: string, format: uuid, nullable: true }
+                                award_id: { type: string, format: uuid }
+                                price_net_minor: { type: integer, minimum: 0 }
+                                vat_rate: { type: number, nullable: true }
+            responses:
+                '201':
+                    description: Tender bound (contract_tenders created, status=pending)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/ContractTender' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /contract_tenders/{contractTenderId}/stages:
+        post:
+            tags: [contracts]
+            summary: Create an execution stage for a tender
+            operationId: createContractStage
+            parameters:
+                - name: contractTenderId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [title]
+                            properties:
+                                number: { type: integer }
+                                title: { type: string, minLength: 1 }
+                                amount_minor: { type: integer, minimum: 0 }
+                                due_at: { type: string, format: date-time }
+            responses:
+                '201':
+                    description: Stage created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/ContractStage' }
+
+    # ================= CLAIMS =================
+    /claims:
+        post:
+            tags: [contracts]
+            summary: Create a claim (APPROVE/IN_WORK/DONE_BY_PERFORMER → CLAIM)
+            operationId: createClaim
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [contract_id, stage, reason, amount_minor]
+                            properties:
+                                contract_id: { type: string, format: uuid }
+                                stage: { type: string, enum: [approve, in_work, done_by_performer] }
+                                reason: { type: string, minLength: 1 }
+                                amount_minor: { type: integer, minimum: 0 }
+                                document_ids: { type: array, items: { type: string, format: uuid } }
+            responses:
+                '201':
+                    description: Claim created; work paused
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Claim' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    /claims/{claimId}/resolve:
+        post:
+            tags: [contracts]
+            summary: Resolve a claim (→ IN_WORK / DONE_BY_CLAIM / CANCELLED)
+            operationId: resolveClaim
+            parameters:
+                - name: claimId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [outcome]
+                            properties:
+                                outcome: { type: string, enum: [rejected, settled, accepted, terminate_contract] }
+                                resolution: { type: string, maxLength: 2000 }
+                                accepted_amount_minor: { type: integer, minimum: 0 }
+            responses:
+                '200':
+                    description: Claim resolved; status transitioned
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Claim' }
+                '409': { $ref: '#/components/responses/Conflict' }
+
+    # ================= COMPANIES =================
+    /suppliers/profile:
+        get:
+            tags: [companies]
+            summary: Own supplier profile
+            operationId: getMySupplierProfile
+            responses:
+                '200':
+                    description: Profile
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/SupplierProfile' }
+        put:
+            tags: [companies]
+            summary: Update the supplier profile
+            operationId: updateSupplierProfile
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/SupplierProfileUpdate' }
+            responses:
+                '200':
+                    description: Profile updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/SupplierProfile' }
+
+    /suppliers/{supplierId}:
+        get:
+            tags: [companies]
+            summary: Supplier card (with rating and checks)
+            operationId: getSupplier
+            parameters:
+                - name: supplierId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Profile + rating + checks (RNP, courts — from the plugin)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/SupplierProfile' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+    # ================= NOTIFICATIONS =================
+    /notifications/subscriptions:
+        get:
+            tags: [notifications]
+            summary: My notification subscriptions
+            operationId: listNotificationSubscriptions
+            responses:
+                '200':
+                    description: List of subscriptions
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/NotificationSubscription' } }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+        post:
+            tags: [notifications]
+            summary: Create a subscription
+            operationId: createNotificationSubscription
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/NotificationSubscriptionCreate' }
+            responses:
+                '201':
+                    description: Subscription created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/NotificationSubscription' }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [notifications]
+            summary: Delete a subscription
+            operationId: deleteNotificationSubscription
+            parameters:
+                - name: subscriptionId
+                  in: query
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '204':
+                    description: Deleted
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /notifications/subscriptions/{subscriptionId}/toggle:
+        post:
+            tags: [notifications]
+            summary: Enable/disable a subscription
+            operationId: toggleNotificationSubscription
+            parameters:
+                - name: subscriptionId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Subscription with updated active
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/NotificationSubscription' }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    # ================= SAVED SEARCHES / FAVORITES =================
+    /saved-searches:
+        get:
+            tags: [notifications]
+            summary: My saved searches
+            operationId: listSavedSearches
+            responses:
+                '200':
+                    description: List
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/SavedSearch' } }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+        post:
+            tags: [notifications]
+            summary: Save a search
+            operationId: createSavedSearch
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [name, filters]
+                            properties:
+                                name: { type: string, maxLength: 200 }
+                                filters: { type: object, additionalProperties: true }
+                                digest_period: { type: string, enum: [daily, weekly, none], default: none }
+            responses:
+                '201':
+                    description: Saved
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/SavedSearch' }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [notifications]
+            summary: Delete a saved search
+            operationId: deleteSavedSearch
+            parameters:
+                - name: savedSearchId
+                  in: query
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '204':
+                    description: Deleted
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    /favorites:
+        get:
+            tags: [notifications]
+            summary: Favorites
+            operationId: listFavorites
+            responses:
+                '200':
+                    description: List
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Favorite' } }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+        post:
+            tags: [notifications]
+            summary: Add to favorites
+            operationId: addFavorite
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [entity_type, entity_id]
+                            properties:
+                                entity_type: { type: string, enum: [tender, lot] }
+                                entity_id: { type: string, format: uuid }
+                                note: { type: string, maxLength: 500 }
+            responses:
+                '201':
+                    description: Added
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Favorite' }
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '409':
+                    description: Entity already in favorites (duplicate_favorite)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    title: { type: string, example: Favorite already exists }
+                                    code: { type: string, example: duplicate_favorite }
+                                    detail: { type: string }
+                '422':
+                    $ref: '#/components/responses/ValidationError'
+        delete:
+            tags: [notifications]
+            summary: Remove from favorites
+            operationId: deleteFavorite
+            parameters:
+                - name: favoriteId
+                  in: query
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '204':
+                    description: Deleted
+                '401':
+                    $ref: '#/components/responses/Unauthorized'
+                '403':
+                    $ref: '#/components/responses/Forbidden'
+                '404':
+                    $ref: '#/components/responses/NotFound'
+
+    # ================= ANALYTICS =================
+    /dashboard:
+        get:
+            tags: [analytics]
+            summary: Dashboard (counters, upcoming deadlines)
+            operationId: getDashboard
+            parameters:
+                - name: period
+                  in: query
+                  schema: { type: string, enum: [day, week, month] }
+            responses:
+                '200':
+                    description: Counters and deadlines
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    active_tenders: { type: integer }
+                                    my_bids: { type: integer }
+                                    my_contracts: { type: integer }
+                                    upcoming_deadlines:
+                                        type: array
+                                        items:
+                                            type: object
+                                            properties:
+                                                entity_type: { type: string }
+                                                entity_id: { type: string, format: uuid }
+                                                deadline_at: { type: string, format: date-time }
+
+    /stats/tenders:
+        get:
+            tags: [analytics]
+            summary: Tender statistics (breakdowns)
+            operationId: getTenderStats
+            parameters:
+                - name: dimension
+                  in: query
+                  schema: { type: string, enum: [region, okpd2, customer, period] }
+                - name: from
+                  in: query
+                  schema: { type: string, format: date }
+                - name: to
+                  in: query
+                  schema: { type: string, format: date }
+            responses:
+                '200':
+                    description: Aggregates (Redis counters + PG marts)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items:
+                                            type: object
+                                            properties:
+                                                dimension_value: { type: string }
+                                                tenders_total: { type: integer }
+                                                avg_price_reduction_percent: { type: number }
+                                                contracts_amount_sum_minor: { type: integer }
+
+    /exports:
+        post:
+            tags: [analytics]
+            summary: Request an export (background generation)
+            operationId: createExport
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [export_type, format]
+                            properties:
+                                export_type: { type: string, enum: [tenders, bids, contracts] }
+                                format: { type: string, enum: [xlsx, csv] }
+                                filters: { type: object, additionalProperties: true, description: 'selection filters: status/from/to etc.' }
+            responses:
+                '202':
+                    description: Export queued
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    job_id: { type: string, format: uuid }
+                                    status: { type: string, enum: [queued] }
+
+    /exports/{jobId}:
+        get:
+            tags: [analytics]
+            summary: Export status and file link
+            operationId: getExport
+            parameters:
+                - name: jobId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Status
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    id: { type: string, format: uuid }
+                                    export_type: { type: string, enum: [tenders, bids, contracts] }
+                                    format: { type: string, enum: [xlsx, csv] }
+                                    status: { type: string, enum: [queued, processing, ready, failed] }
+                                    download_url: { type: string, nullable: true, description: 'only for status=ready' }
+                                    error: { type: string, nullable: true }
+                                    created_at: { type: string, format: date-time }
+                                    completed_at: { type: string, format: date-time, nullable: true }
+                '404':
+                    description: Job not found or belongs to another company
+                '401':
+                    description: Not authenticated
+                '403':
+                    description: Missing the exports.export permission
+
+    /exports/{jobId}/download:
+        get:
+            tags: [analytics]
+            summary: Download the ready export file
+            operationId: downloadExport
+            parameters:
+                - name: jobId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: File (application/vnd.openxmlformats-officedocument.spreadsheetml.sheet | text/csv)
+                    content:
+                        application/octet-stream:
+                            schema: { type: string, format: binary }
+                '409':
+                    description: Export not ready yet (export_not_ready)
+                '404':
+                    description: Job not found or belongs to another company
+                '401':
+                    description: Not authenticated
+                '403':
+                    description: Missing the exports.export permission
+
+    # ================= WEBHOOKS =================
+    /webhooks:
+        get:
+            tags: [platform]
+            summary: My webhook subscriptions
+            operationId: listWebhooks
+            responses:
+                '200':
+                    description: List
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Webhook' } }
+        post:
+            tags: [platform]
+            summary: Create a webhook subscription
+            operationId: createWebhook
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [url, events]
+                            properties:
+                                url: { type: string, format: uri }
+                                secret: { type: string, minLength: 16, maxLength: 128, description: 'for HMAC-SHA256 signatures' }
+                                events:
+                                    type: array
+                                    items:
+                                        type: string
+                                        description: 'see events.md (tender.*, auction.*, bid.*, contract.*, execution.*, claim.*)'
+                                filters: { type: object, additionalProperties: true }
+            responses:
+                '201':
+                    description: Subscription created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Webhook' }
+
+    /webhooks/{webhookId}:
+        patch:
+            tags: [platform]
+            summary: Update a subscription (url/events/activity)
+            operationId: updateWebhook
+            parameters:
+                - { $ref: '#/components/parameters/WebhookId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                url: { type: string, format: uri }
+                                events: { type: array, items: { type: string } }
+                                status: { type: string, enum: [active, paused] }
+            responses:
+                '200':
+                    description: Updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Webhook' }
+        delete:
+            tags: [platform]
+            summary: Delete a subscription
+            operationId: deleteWebhook
+            parameters:
+                - { $ref: '#/components/parameters/WebhookId' }
+            responses:
+                '204':
+                    description: Deleted
+
+    /webhooks/{webhookId}/rotate-secret:
+        post:
+            tags: [platform]
+            summary: Rotate the subscription secret
+            operationId: rotateWebhookSecret
+            parameters:
+                - { $ref: '#/components/parameters/WebhookId' }
+            responses:
+                '200':
+                    description: New secret (shown once)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    secret: { type: string }
+
+    /webhooks/{webhookId}/deliveries:
+        get:
+            tags: [platform]
+            summary: Delivery log
+            operationId: listWebhookDeliveries
+            parameters:
+                - { $ref: '#/components/parameters/WebhookId' }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Deliveries (status, attempts, error, next_retry)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/WebhookDelivery' } }
+
+    # ================= LIMITS / USAGE =================
+    /usage:
+        get:
+            tags: [platform]
+            summary: Tenant limit consumption
+            operationId: getUsage
+            parameters:
+                - name: period
+                  in: query
+                  schema: { type: string, enum: [day, month] }
+            responses:
+                '200':
+                    description: Limits and consumption
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    requests: { type: object, additionalProperties: true }
+                                    events: { type: integer }
+                                    webhooks: { type: integer }
+
+    /rate-limits:
+        get:
+            tags: [platform]
+            summary: Current limits (global and per tender)
+            operationId: getRateLimits
+            responses:
+                '200':
+                    description: Limits
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    global:
+                                        type: object
+                                        properties:
+                                            limit: { type: integer }
+                                            remaining: { type: integer }
+                                            reset_at: { type: string, format: date-time }
+                                    per_tender: { type: object, additionalProperties: true }
+
+    # ================= API KEYS =================
+    # Access to all operations — the api_keys.manage permission (admin).
+    # The raw token is returned ONCE (creation/rotation); key-based authentication —
+    # X-API-Key or Bearer (instead of JWT), permissions limited to the key's scopes.
+    /api-keys:
+        get:
+            tags: [platform]
+            summary: My API keys
+            operationId: listApiKeys
+            responses:
+                '200':
+                    description: List (without token_hash and raw tokens)
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/ApiKey' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+        post:
+            tags: [platform]
+            summary: Issue an API key
+            operationId: createApiKey
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [name]
+                            properties:
+                                name: { type: string, maxLength: 100 }
+                                scopes:
+                                    type: array
+                                    items: { type: string }
+                                    description: ApiKeyScopes catalog (api:tenders:read, api:tenders:write, api:bids:write, api:auctions:bid, api:webhooks:manage, api:keys:manage, api:all …); empty/api:all — full owner access
+                                expires_at: { type: string, format: date-time, nullable: true }
+            responses:
+                '201':
+                    description: Key issued (token shown once)
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/ApiKey'
+                                    - type: object
+                                      required: [token]
+                                      properties:
+                                          token: { type: string, description: raw token, shown once }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+    /api-keys/{apiKeyId}:
+        delete:
+            tags: [platform]
+            summary: Revoke an API key
+            operationId: revokeApiKey
+            parameters:
+                - name: apiKeyId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '204':
+                    description: Revoked (key-based authentication → 401)
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+    /api-keys/{apiKeyId}/rotate:
+        post:
+            tags: [platform]
+            summary: Rotate an API key
+            operationId: rotateApiKey
+            parameters:
+                - name: apiKeyId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: New token returned once; the old one is invalidated
+                    content:
+                        application/json:
+                            schema:
+                                allOf:
+                                    - $ref: '#/components/schemas/ApiKey'
+                                    - type: object
+                                      required: [token]
+                                      properties:
+                                          token: { type: string, description: new raw token, shown once }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+    securitySchemes:
+        bearerAuth:
+            type: http
+            scheme: bearer
+            bearerFormat: JWT
+            description: OAuth2 access token / PAT / API key (Bearer)
+        apiKeyAuth:
+            type: apiKey
+            in: header
+            name: X-API-Key
+            description: Alternative way to pass the API key
+
+    parameters:
+        TenderId:
+            name: tenderId
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        BidId:
+            name: bidId
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        AuctionId:
+            name: auctionId
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        ContractId:
+            name: contractId
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        DocumentId:
+            name: documentId
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        WebhookId:
+            name: webhookId
+            in: path
+            required: true
+            schema: { type: string, format: uuid }
+        Q:
+            name: q
+            in: query
+            description: Full-text search (title, description, documentation)
+            schema: { type: string }
+        TenderStatus:
+            name: status
+            in: query
+            schema: { $ref: '#/components/schemas/TenderStatus' }
+        Region:
+            name: region
+            in: query
+            schema: { type: string, maxLength: 100 }
+        PriceMin:
+            name: price_min
+            in: query
+            description: Min initial max contract price (НМЦК) in minor units
+            schema: { type: integer, minimum: 0 }
+        PriceMax:
+            name: price_max
+            in: query
+            description: Max initial max contract price (НМЦК) in minor units
+            schema: { type: integer, minimum: 0 }
+        Okpd2:
+            name: okpd2
+            in: query
+            schema: { type: string, maxLength: 20 }
+        LawType:
+            name: law_type
+            in: query
+            schema: { type: string, enum: [fz44, fz223, commercial] }
+        AccessType:
+            name: access_type
+            in: query
+            schema: { type: string, enum: [open, contract_holders] }
+        Cursor:
+            name: cursor
+            in: query
+            description: Pagination (OPAQUE cursor from the previous response)
+            schema: { type: string }
+        Limit:
+            name: limit
+            in: query
+            schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        IdempotencyKey:
+            name: Idempotency-Key
+            in: header
+            description: |
+                Mutation idempotency: a repeated request with the same key and the same
+                payload → the same response (replay), no duplicates; the same key with a different payload →
+                409 idempotency_conflict. The key is valid until expires_at (TTL retention).
+            schema: { type: string, maxLength: 255 }
+
+    responses:
+        ValidationError:
+            description: Validation error
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Unauthorized:
+            description: Not authorized (missing/expired token)
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Forbidden:
+            description: Insufficient permissions / no access
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        NotFound:
+            description: Resource not found
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        Conflict:
+            description: State conflict (code from the error registry)
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+        RateLimited:
+            description: Rate limit exceeded (Retry-After)
+            content:
+                application/json:
+                    schema: { $ref: '#/components/schemas/Error' }
+            headers:
+                Retry-After:
+                    schema: { type: integer }
+                X-RateLimit-Limit:
+                    schema: { type: integer }
+                X-RateLimit-Remaining:
+                    schema: { type: integer }
+                X-RateLimit-Reset:
+                    schema: { type: integer }
+
+    schemas:
+        # ---------- Role permissions ----------
+        Permission:
+            type: object
+            properties:
+                code: { type: string, example: tender.create }
+                name: { type: string }
+                group: { type: string, enum: [common, customer, supplier, platform] }
+                description: { type: string, nullable: true }
+        RolePermission:
+            type: object
+            properties:
+                role: { type: string, enum: [manager, agent] }
+                permission_code: { type: string }
+                enabled: { type: boolean }
+                is_default: { type: boolean }
+
+        # ---------- Users and companies ----------
+        UserRole:
+            type: string
+            enum: [admin, manager, agent]
+        User:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                company_id: { type: string, format: uuid, nullable: true }
+                email: { type: string, format: email }
+                name: { type: string }
+                role: { $ref: '#/components/schemas/UserRole' }
+                verification_status: { type: string, enum: [invited, email_pending, active, blocked] }
+                email_verified_at: { type: string, format: date-time, nullable: true }
+                two_factor_enabled: { type: boolean }
+                last_login_at: { type: string, format: date-time, nullable: true }
+                created_at: { type: string, format: date-time }
+        CompanyStatus:
+            type: string
+            enum: [pending, active, rejected, suspended]
+        Company:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                type: { type: string, enum: [customer, supplier, both] }
+                legal_name: { type: string }
+                inn: { type: string }
+                kpp: { type: string, nullable: true }
+                ogrn: { type: string, nullable: true }
+                address: { type: string, nullable: true }
+                contacts: { type: object, additionalProperties: true }
+                verification_status: { $ref: '#/components/schemas/CompanyStatus' }
+                verified_at: { type: string, format: date-time, nullable: true }
+                created_at: { type: string, format: date-time }
+
+        # ---------- Money ----------
+        Money:
+            type: object
+            description: Amount in integer minor units. Formatting happens in the presentation layer.
+            required: [amount_minor, currency]
+            properties:
+                amount_minor: { type: integer, description: 'Pennies/cents (int, never float/decimal)' }
+                currency: { type: string, minLength: 3, maxLength: 3, example: RUB }
+
+        # ---------- Tender ----------
+        TenderStatus:
+            type: string
+            enum: [draft, published, withdrawn, accepting_bids, bidding, evaluation, awarding, contract, closed, cancelled]
+        TenderCreate:
+            type: object
+            required: [title, procedure_type, customer_id, currency, price_basis]
+            properties:
+                title: { type: string, maxLength: 500 }
+                description: { type: string, maxLength: 10000 }
+                procedure_type: { type: string, enum: [auction, competition, rfq, rfp, direct] }
+                law_type: { type: string, enum: [fz44, fz223, commercial] }
+                nmck_minor: { type: integer, minimum: 0, nullable: true, description: 'null when no_start_price=true' }
+                no_start_price: { type: boolean, default: false }
+                currency: { type: string, minLength: 3, maxLength: 3 }
+                vat_rate: { type: number, description: 'VAT rate %, frozen before publication' }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                customer_id: { type: string, format: uuid }
+                region: { type: string, maxLength: 100 }
+                access_type: { type: string, enum: [open, contract_holders], default: open }
+                required_contract_type_id: { type: string, format: uuid, nullable: true }
+                timeline:
+                    type: object
+                    description: 'Key dates: bids_end, opening, auction_start, evaluation_end'
+                    additionalProperties: { type: string, format: date-time }
+                lots:
+                    type: array
+                    minItems: 1
+                    items: { $ref: '#/components/schemas/LotCreate' }
+        TenderUpdate:
+            type: object
+            description: Edit allowed fields before the bid submission deadline
+            properties:
+                title: { type: string, maxLength: 500 }
+                description: { type: string, maxLength: 10000 }
+                region: { type: string, maxLength: 100 }
+                timeline: { type: object, additionalProperties: { type: string, format: date-time } }
+                change_reason: { type: string, maxLength: 1000 }
+        CancelTenderRequest:
+            type: object
+            required: [cancellation_reason_code]
+            properties:
+                cancellation_reason_code:
+                    type: string
+                    enum: [cancellation_needs, changing_order_conditions, carrier_refusal, other]
+                cancellation_reason_text:
+                    type: string
+                    description: 'Required when code=other'
+                    maxLength: 2000
+        Tender:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                number: { type: string }
+                title: { type: string }
+                description: { type: string, nullable: true }
+                procedure_type: { type: string }
+                law_type: { type: string }
+                nmck_minor: { type: integer, nullable: true }
+                no_start_price: { type: boolean }
+                currency: { type: string }
+                vat_rate: { type: number }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                status: { $ref: '#/components/schemas/TenderStatus' }
+                access_type: { type: string, enum: [open, contract_holders] }
+                execution_rating: { type: integer, nullable: true }
+                cancellation_reason_code: { type: string, nullable: true }
+                cancellation_reason_text: { type: string, nullable: true }
+                lots: { type: array, items: { $ref: '#/components/schemas/Lot' } }
+                created_at: { type: string, format: date-time }
+                updated_at: { type: string, format: date-time }
+                version: { type: integer }
+        TenderListItem:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                number: { type: string }
+                title: { type: string }
+                status: { $ref: '#/components/schemas/TenderStatus' }
+                nmck_minor: { type: integer, nullable: true }
+                currency: { type: string }
+                region: { type: string, nullable: true }
+                deadline: { type: string, format: date-time, nullable: true }
+                lot_count: { type: integer }
+
+        # ---------- Lot ----------
+        LotCreate:
+            type: object
+            required: [title, price_net_minor]
+            properties:
+                number: { type: integer }
+                title: { type: string, maxLength: 500 }
+                price_net_minor: { type: integer, minimum: 0 }
+                vat_rate: { type: number }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                quantity: { type: number }
+                unit: { type: string, maxLength: 50 }
+                delivery_terms: { type: object, additionalProperties: true }
+                execution_start_at: { type: string, format: date-time, nullable: true }
+                trade_end_lead_hours: { type: integer, default: 0 }
+                security_percent: { type: number, minimum: 0, maximum: 100 }
+        Lot:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                number: { type: integer }
+                title: { type: string }
+                price_net_minor: { type: integer }
+                price_gross_minor: { type: integer }
+                vat_rate: { type: number }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                execution_start_at: { type: string, format: date-time, nullable: true }
+                trade_end_lead_hours: { type: integer }
+                status: { type: string }
+                winner_bid_id: { type: string, format: uuid, nullable: true }
+
+        # ---------- Procurement plan ----------
+        ProcurementPlanCreate:
+            type: object
+            required: [period]
+            properties:
+                period: { type: string, format: date, description: 'Plan year/period' }
+                items:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            subject: { type: string }
+                            okpd2: { type: string }
+                            volume: { type: number }
+                            planned_date: { type: string, format: date }
+                            method: { type: string }
+        ProcurementPlan:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                company_id: { type: string, format: uuid }
+                period: { type: string }
+                status: { type: string }
+                items: { type: array, items: { type: object } }
+
+        # ---------- Bid ----------
+        BidStatus:
+            type: string
+            enum: [draft, submitted, withdrawn, admitted, rejected, winning, lost]
+        BidCreate:
+            type: object
+            required: [supplier_id]
+            properties:
+                supplier_id: { type: string, format: uuid }
+                lot_id: { type: string, format: uuid, nullable: true }
+                part1:
+                    type: object
+                    description: 'Consent, characteristics (confidential until opening)'
+                    additionalProperties: true
+                part2_document_ids:
+                    type: array
+                    items: { type: string, format: uuid }
+                price_minor: { type: integer, minimum: 0, nullable: true, description: 'For competitive procedures' }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                vat_rate: { type: number }
+        Bid:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                lot_id: { type: string, format: uuid, nullable: true }
+                supplier_id: { type: string, format: uuid }
+                status: { $ref: '#/components/schemas/BidStatus' }
+                price_minor: { type: integer, nullable: true }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                vat_rate: { type: number, nullable: true }
+                submitted_at: { type: string, format: date-time, nullable: true }
+                decision_reason: { type: string, nullable: true }
+                payload_encrypted: { type: boolean, description: 'true before opening; false after (contents decrypted)' }
+                part1: { type: object, nullable: true, description: 'part 1 (consent, characteristics) — after opening: to the customer and participants' }
+                part2_ref: { type: array, nullable: true, items: { type: string }, description: 'part 2 (documents) — after opening: to the customer only' }
+                evaluated_at: { type: string, format: date-time, nullable: true }
+
+        # ---------- Auction ----------
+        AuctionType:
+            type: string
+            enum: [reduction, free_price, price_request]
+        StepMode:
+            type: string
+            enum: [fixed, free]
+        AuctionStatus:
+            type: string
+            enum: [draft, agreement, new, scheduled, trade, paused, choice, approve, in_work, done_by_performer, done, claim, done_by_claim, cancelled, expired, deleted]
+        AuctionCreate:
+            type: object
+            required: [lot_id, type]
+            description: |
+                Create an auction for a lot (POST /auctions). Canonical parameters
+                (price_basis/vat_rate_bps/start_price_minor/trade_end_lead_hours) are inherited
+                from the lot and not required in the body. scheduled_start_at (if set) — creation
+                directly with scheduling (status=scheduled). Money — int minor units.
+            properties:
+                lot_id:
+                    type: string
+                    format: uuid
+                    description: 'ID of a lot from the customer''s tender (auction 1:1, unique tender+lot)'
+                type: { $ref: '#/components/schemas/AuctionType' }
+                step_mode:
+                    $ref: '#/components/schemas/StepMode'
+                    description: 'Default fixed; free — only for REDUCTION (free lowering)'
+                bid_step_minor:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Fixed step (minor units); required for REDUCTION+fixed if bid_step_percent_bps is not set'
+                bid_step_percent_bps:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Step as % of the start price (reduction+fixed only), ×10000 (0.5% = 50)'
+                price_min_limit_minor:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Lower price limit (minor units) — for REDUCTION it cannot exceed the start'
+                price_max_limit_minor:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Upper price limit (minor units); must be >= price_min_limit_minor'
+                step_duration_sec:
+                    type: integer
+                    minimum: 1
+                    description: 'Step/trading window duration, sec (default 600)'
+                max_extensions:
+                    type: integer
+                    minimum: 0
+                    description: 'Max anti-sniping extensions (default 10)'
+                scheduled_start_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+                    description: 'Start date/time (in the future); when set, the auction is created in scheduled'
+        AuctionSchedule:
+            type: object
+            required: [scheduled_start_at]
+            description: 'Schedule trading start (NEW → SCHEDULED)'
+            properties:
+                scheduled_start_at:
+                    type: string
+                    format: date-time
+                    description: 'Trading start date/time — must be in the future (ISO-8601)'
+        AuctionCancel:
+            type: object
+            description: 'Cancel an auction (→ CANCELLED); body optional'
+            properties:
+                reason:
+                    type: string
+                    maxLength: 500
+                    nullable: true
+                    description: 'Cancellation reason (to the audit log and the auction.cancelled event)'
+        AuctionUpdate:
+            type: object
+            description: |
+                Edit auction parameters before trading starts (PATCH /auctions/{id}).
+                All fields are optional — only the passed ones change. Canonical fields
+                from the lot (price_basis/vat_rate_bps/start_price_minor/trade_end_lead_hours)
+                and scheduled_start_at are not changed by this method (not in the schema →
+                422 extra fields). Money — int minor units.
+            properties:
+                type: { $ref: '#/components/schemas/AuctionType' }
+                step_mode:
+                    $ref: '#/components/schemas/StepMode'
+                    description: 'fixed/free (free — only for REDUCTION)'
+                bid_step_minor:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Fixed step (minor units); for REDUCTION+fixed at least one of the steps is required'
+                bid_step_percent_bps:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Step as % of the start price (reduction+fixed only), ×10000'
+                price_min_limit_minor:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Lower price limit (minor units)'
+                price_max_limit_minor:
+                    type: integer
+                    minimum: 0
+                    nullable: true
+                    description: 'Upper price limit (minor units); >= price_min_limit_minor'
+                step_duration_sec:
+                    type: integer
+                    minimum: 1
+                    description: 'Step/trading window duration, sec'
+                max_extensions:
+                    type: integer
+                    minimum: 0
+                    description: 'Max anti-sniping extensions'
+        AuctionState:
+            type: object
+            description: |
+                Auction state (GET /auctions/{id}/state): status, rules
+                (rules_snapshot) and timer (remaining_sec). Money — int minor units;
+                price_basis — the canonical comparison basis. Source — PostgreSQL.
+            properties:
+                id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                lot_id: { type: string, format: uuid }
+                type: { $ref: '#/components/schemas/AuctionType' }
+                step_mode: { $ref: '#/components/schemas/StepMode' }
+                no_start_price: { type: boolean, description: 'Initial max contract price (НМЦК) absent until the first bid' }
+                status: { $ref: '#/components/schemas/AuctionStatus' }
+                scheduled_start_at: { type: string, format: date-time, nullable: true, description: 'Planned start date/time (SCHEDULED)' }
+                trade_end_lead_hours: { type: integer, description: 'Extension boundary: the new planned_end_at cannot exceed execution_start_at − N hours' }
+                price_basis: { $ref: '#/components/schemas/PriceBasis', description: 'Canonical comparison basis, inherited from the lot' }
+                vat_rate_bps: { type: integer, description: 'VAT rate in basis points (from the lot)' }
+                start_price_minor: { type: integer, nullable: true }
+                current_price_minor: { type: integer, nullable: true }
+                bid_step_minor: { type: integer, nullable: true }
+                bid_step_percent_bps: { type: integer, nullable: true, description: 'Step as % of the start price (reduction+fixed only), ×10000' }
+                price_min_limit_minor: { type: integer, nullable: true }
+                price_max_limit_minor: { type: integer, nullable: true }
+                step_duration_sec: { type: integer }
+                max_extensions: { type: integer }
+                extensions_count: { type: integer }
+                planned_end_at: { type: string, format: date-time, nullable: true }
+                remaining_sec: { type: integer, nullable: true, description: 'Remaining trading time, sec; on pause — paused_remaining_sec (timer frozen)' }
+                started_at: { type: string, format: date-time, nullable: true }
+                paused_remaining_sec: { type: integer, nullable: true }
+                winner_bid_id: { type: string, format: uuid, nullable: true, description: 'ID of the winning bid (auction_bids.id) at APPROVE' }
+                version: { type: integer }
+                updated_at: { type: string, format: date-time }
+                rules_snapshot: { type: object, nullable: true, additionalProperties: true, description: 'Rules snapshot frozen at start' }
+        AuctionStreamDiscovery:
+            type: object
+            description: 'JWT discovery link to the Mercure hub: the client connects via EventSource to the private topic auction:{id} with a subscribe-JWT'
+            properties:
+                hub: { type: string, description: 'Public hub URL (/.well-known/mercure)' }
+                topic: { type: string, description: 'Private topic: auction:{id}' }
+                token: { type: string, description: 'subscribe-JWT (sub permission on the topic, HS256)' }
+                expires_in: { type: integer, description: 'subscribe-JWT lifetime (sec)' }
+                state:
+                    type: object
+                    description: 'Current snapshot of the auction''s live state (for immediate rendering)'
+                    additionalProperties: true
+        AuctionBidCreate:
+            type: object
+            required: [price_minor]
+            description: |
+                Place a bid. Validation per type (AuctionBidService): REDUCTION(fixed) ≤
+                current−step; REDUCTION(free) < current; FREE_PRICE/PRICE_REQUEST — within
+                price_min_limit..price_max_limit. The comparison basis (price_basis,
+                and the VAT rate come from the auction (canonical basis; no body field required).
+            properties:
+                price_minor:
+                    type: integer
+                    minimum: 0
+                    description: 'Price in minor units (canonical basis)'
+        AuctionBid:
+            type: object
+            description: |
+                Auction bid (append-only). bidder_id is anonymous until the end of trading:
+                it is masked (null) in history while the auction is in TRADE; after the end —
+                revealed. The response to your own bid (POST) always contains bidder_id.
+            properties:
+                id: { type: string, format: uuid }
+                auction_id: { type: string, format: uuid }
+                round: { type: integer }
+                price_minor: { type: integer }
+                price_display_minor: { type: integer }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                bidder_id: { type: string, format: uuid, nullable: true, description: 'Anonymous until the end of trading' }
+                is_first_price: { type: boolean, description: 'The first bid with no_start_price fixes the start' }
+                placed_at: { type: string, format: date-time }
+                status: { type: string, enum: [accepted, rejected] }
+                reason: { type: string, nullable: true, description: 'Rejection reason (append-only)' }
+        AuctionWinnerResult:
+            type: object
+            description: 'Result of finishing trading / choosing the winner'
+            properties:
+                auction_id: { type: string, format: uuid }
+                status: { $ref: '#/components/schemas/AuctionStatus' }
+                winner_bid_id: { type: string, format: uuid, nullable: true, description: 'ID of the winning bid (auction_bids.id); set at APPROVE' }
+        AuctionStatusResult:
+            type: object
+            description: 'Execution transition result: auction_id + new status'
+            properties:
+                auction_id: { type: string, format: uuid }
+                status: { $ref: '#/components/schemas/AuctionStatus' }
+        SecurityStatus:
+            type: string
+            enum: [pending, active, released, forfeited]
+        # ---------- Questions / complaints ----------
+        Question:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                lot_id: { type: string, format: uuid, nullable: true }
+                text: { type: string }
+                answer: { type: string, nullable: true }
+                published_at: { type: string, format: date-time, nullable: true }
+        Complaint:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                status: { type: string, enum: [draft, pending, resolved] }
+                text: { type: string }
+                ground: { type: string }
+                resolution: { type: string, nullable: true }
+
+        # ---------- Documents ----------
+        DocumentVisibility:
+            type: string
+            enum: [public, private]
+        DocumentTypeCreate:
+            type: object
+            required: [code, name, owner_role]
+            properties:
+                code: { type: string, maxLength: 50 }
+                name: { type: string, maxLength: 200 }
+                owner_role: { type: string, enum: [customer, executor, both] }
+                visibility: { $ref: '#/components/schemas/DocumentVisibility' }
+                required: { type: boolean, default: false }
+                auto_generated: { type: boolean, default: false, description: 'Only via a plugin (DocumentGenerator), not in the core' }
+        DocumentType:
+            type: object
+            properties:
+                id: { type: integer, format: int64 }
+                code: { type: string }
+                name: { type: string }
+                owner_role: { type: string }
+                visibility: { $ref: '#/components/schemas/DocumentVisibility' }
+                required: { type: boolean }
+                auto_generated: { type: boolean }
+        Document:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                document_type_id: { type: integer, format: int64 }
+                entity_type: { type: string, enum: [tender, lot, bid, contract, claim] }
+                entity_id: { type: string, format: uuid }
+                title: { type: string }
+                owner_role: { type: string, enum: [customer, executor, system] }
+                visibility: { $ref: '#/components/schemas/DocumentVisibility' }
+                scope: { type: string, enum: [tender, contract] }
+                is_auto_generated: { type: boolean }
+                versions:
+                    type: array
+                    items:
+                        type: object
+                        properties:
+                            file_id: { type: string, format: uuid }
+                            version: { type: integer }
+                            sha256: { type: string }
+                            size_bytes: { type: integer }
+                            uploaded_at: { type: string, format: date-time }
+                download_url: { type: string, nullable: true }
+
+        # ---------- Contracts ----------
+        ContractStatus:
+            type: string
+            enum: [draft, pending_signature, signed, registered, terminated, expired, deleted]
+        ContractScope:
+            type: string
+            enum: [single_use, multi_use]
+        ContractSource:
+            type: string
+            enum: [tender, external]
+        ContractType:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                code: { type: string }
+                name: { type: string }
+                is_single_use: { type: boolean }
+                template_ref: { type: string, nullable: true }
+        ContractCreate:
+            type: object
+            required: [contract_type_id, customer_id, supplier_id, scope]
+            properties:
+                contract_type_id: { type: string, format: uuid }
+                source: { $ref: '#/components/schemas/ContractSource' }
+                customer_id: { type: string, format: uuid }
+                supplier_id: { type: string, format: uuid }
+                scope: { $ref: '#/components/schemas/ContractScope' }
+                price_net_minor: { type: integer, minimum: 0, nullable: true }
+                vat_rate: { type: number }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                valid_from: { type: string, format: date }
+                valid_to: { type: string, format: date, nullable: true }
+                terms: { type: object, additionalProperties: true }
+        Contract:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                number: { type: string }
+                contract_type_id: { type: string, format: uuid }
+                source: { $ref: '#/components/schemas/ContractSource' }
+                customer_id: { type: string, format: uuid }
+                supplier_id: { type: string, format: uuid }
+                status: { $ref: '#/components/schemas/ContractStatus' }
+                scope: { $ref: '#/components/schemas/ContractScope' }
+                price_net_minor: { type: integer, nullable: true }
+                price_gross_minor: { type: integer, nullable: true }
+                vat_rate: { type: number }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                valid_from: { type: string, format: date, nullable: true }
+                valid_to: { type: string, format: date, nullable: true }
+                signed_at: { type: string, format: date-time, nullable: true }
+                registered_at: { type: string, format: date-time, nullable: true }
+                terminated_at: { type: string, format: date-time, nullable: true }
+                tenders: { type: array, items: { $ref: '#/components/schemas/ContractTender' } }
+        ContractTenderStatus:
+            type: string
+            enum: [pending, in_work, done_by_performer, done, claim, done_by_claim, terminated]
+        ContractTender:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                contract_id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                lot_id: { type: string, format: uuid, nullable: true }
+                award_id: { type: string, format: uuid }
+                price_net_minor: { type: integer }
+                status: { $ref: '#/components/schemas/ContractTenderStatus' }
+        ContractStage:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                contract_tender_id: { type: string, format: uuid }
+                number: { type: integer }
+                title: { type: string }
+                amount_minor: { type: integer }
+                due_at: { type: string, format: date-time, nullable: true }
+                status: { type: string }
+                accepted_at: { type: string, format: date-time, nullable: true }
+
+        # ---------- Claim ----------
+        Claim:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                contract_id: { type: string, format: uuid }
+                stage: { type: string, enum: [approve, in_work, done_by_performer] }
+                reason: { type: string }
+                amount_minor: { type: integer }
+                status: { type: string, enum: [draft, submitted, resolved_rejected, resolved_accepted, cancelled] }
+                resolution: { type: string, nullable: true }
+                resolved_at: { type: string, format: date-time, nullable: true }
+
+        # ---------- Companies ----------
+        PriceBasis:
+            type: string
+            enum: [net, gross]
+        SupplierProfile:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                company_id: { type: string, format: uuid }
+                legal_name: { type: string }
+                inn: { type: string }
+                categories: { type: array, items: { type: string } }
+                rating: { type: number, nullable: true }
+                verification_status: { type: string, enum: [unverified, pending, verified] }
+                rnp_blocked: { type: boolean }
+                checks:
+                    type: object
+                    description: 'Check results (RNP, courts) from the plugin'
+                    additionalProperties: true
+        SupplierProfileUpdate:
+            type: object
+            properties:
+                categories: { type: array, items: { type: string } }
+                capabilities: { type: array, items: { type: string } }
+                documents: { type: array, items: { type: string, format: uuid } }
+
+        # ---------- Notifications / searches / favorites ----------
+        NotificationSubscriptionCreate:
+            type: object
+            required: [channel, events]
+            properties:
+                channel: { type: string, enum: [email, webhook, telegram] }
+                events: { type: array, items: { type: string } }
+                filters:
+                    type: object
+                    description: 'Tender/lot/region/category'
+                    additionalProperties: true
+                digest: { type: boolean, default: false }
+        NotificationSubscription:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                channel: { type: string, enum: [email, webhook, telegram] }
+                events: { type: array, items: { type: string } }
+                filters: { type: object }
+                digest: { type: boolean }
+                active: { type: boolean }
+                created_at: { type: string, format: date-time }
+        SavedSearch:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                filters: { type: object }
+                digest_period: { type: string, enum: [daily, weekly, none] }
+                active: { type: boolean }
+                created_at: { type: string, format: date-time }
+        Favorite:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                entity_type: { type: string, enum: [tender, lot] }
+                entity_id: { type: string, format: uuid }
+                note: { type: string, nullable: true }
+                created_at: { type: string, format: date-time }
+
+        # ---------- Webhook ----------
+        Webhook:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                url: { type: string, format: uri }
+                events: { type: array, items: { type: string } }
+                filters: { type: object }
+                status: { type: string, enum: [active, paused] }
+                created_at: { type: string, format: date-time }
+        WebhookDelivery:
+            type: object
+            properties:
+                id: { type: string, format: uuid }
+                webhook_id: { type: string, format: uuid }
+                event_id: { type: string, format: uuid }
+                event_type: { type: string }
+                status: { type: string, enum: [pending, delivered, failed, dead] }
+                attempts: { type: integer }
+                next_retry_at: { type: string, format: date-time, nullable: true }
+                last_http_status: { type: integer, nullable: true }
+                last_error: { type: string, nullable: true }
+                delivered_at: { type: string, format: date-time, nullable: true }
+
+        # ---------- API key ----------
+        ApiKey:
+            type: object
+            description: Company API key (raw token and hash are not returned — the token is shown once at creation/rotation)
+            properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                scopes: { type: array, items: { type: string }, description: 'ApiKeyScopes catalog; empty/api:all — full owner access' }
+                expires_at: { type: string, format: date-time, nullable: true }
+                last_used_at: { type: string, format: date-time, nullable: true }
+                revoked_at: { type: string, format: date-time, nullable: true, description: Revocation time (after revocation authentication → 401) }
+                created_at: { type: string, format: date-time }
+
+        # ---------- Errors (RFC 9457) ----------
+        Error:
+            type: object
+            required: [type, title, status, detail, code, trace_id]
+            properties:
+                type:
+                    type: string
+                    description: Error type URI (or about:blank)
+                    example: about:blank
+                title:
+                    type: string
+                    example: State conflict
+                status:
+                    type: integer
+                    example: 409
+                detail:
+                    type: string
+                code:
+                    type: string
+                    description: Code from the error registry (see below)
+                    example: bid_rejected
+                trace_id:
+                    type: string
+                    format: uuid
+                    description: For end-to-end tracing
+                errors:
+                    type: array
+                    description: Validation details (for 422)
+                    items:
+                        type: object
+                        properties:
+                            field: { type: string }
+                            message: { type: string }
+
+        ErrorCode:
+            type: string
+            description: |
+                Error code registry:
+                - validation_error (422) — invalid input data
+                - unauthorized (401) — missing/expired token
+                - forbidden (403) — no permissions (incl. a private document)
+                - not_found (404) — resource not found / tender not visible
+                - state_transition_forbidden (409) — invalid status transition
+                - bid_rejected (409) — the bid failed validation (price/step/limits)
+                - duplicate_bid (409) — duplicate bid (idempotency)
+                - auction_not_trade (409) — the auction is not in TRADE
+                - contract_required (409) — DONE without a valid contract (B2)
+                - access_denied (409) — closed tender without an active framework contract
+                - org_pending (403) — the company is not approved by the superadmin: the customer cannot create tenders, the performer cannot submit bids
+                - email_not_verified (403) — the user's email is not verified
+                - contract_expired (409) — contract expired/terminated
+                - idempotency_conflict (409) — repeated Idempotency-Key with a different payload
+                - cancel_reason_required (422) — cancellation without a reason
+                - other_reason_required (422) — code=other without text
+                - rating_not_allowed (409) — rating outside DONE/DONE_BY_CLAIM
+                - lots_sum_mismatch (422) — Σ lots ≠ НМЦК
+                - rate_limited (429) — limit exceeded (Retry-After)
+                - internal_error (500) — internal error
