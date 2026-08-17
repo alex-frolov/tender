@@ -169,7 +169,14 @@ docker compose exec app php bin/console doctrine:migrations:migrate --no-interac
 
 # 3. Apply migrations to the test database (used by the test suite)
 docker compose exec app php bin/console doctrine:migrations:migrate --no-interaction --env=test
+
+# 4. Create the platform admin (system super-admin outside tenants; prompts
+#    for password if not given; the created account is ACTIVE immediately)
+docker compose exec app php bin/console app:create:platform-admin admin@example.com
 ```
+
+The welcome page (`http://localhost:8080/`) links to the interactive API
+reference (Scalar) at `http://localhost:8080/scalar`.
 
 Service endpoints:
 
@@ -254,6 +261,7 @@ Console commands defined by the application:
 | `idempotency:cleanup` | delete expired idempotency keys |
 | `ru:procurement:install` | register plugin protocol document types + print active RU rules |
 | `app:load:prepare` | prepare k6 load-test state in the dev DB |
+| `app:create:platform-admin` | create a system platform admin (role `platform_admin`, outside tenants) |
 
 ## Architecture
 

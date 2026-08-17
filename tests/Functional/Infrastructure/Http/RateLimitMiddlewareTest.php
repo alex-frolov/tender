@@ -28,7 +28,8 @@ final class RateLimitMiddlewareTest extends WebTestCase
     {
         $client = static::createClient();
         $client->setServerParameter('REMOTE_ADDR', self::nextIp());
-        $client->request('GET', '/');
+        // заведомо несуществующий маршрут: rate-limit срабатывает до 404
+        $client->request('GET', '/__rate_limit_probe__');
 
         self::assertSame(404, $client->getResponse()->getStatusCode());
         $response = $client->getResponse();
@@ -44,14 +45,15 @@ final class RateLimitMiddlewareTest extends WebTestCase
         $ip = self::nextIp();
         $client->setServerParameter('REMOTE_ADDR', $ip);
 
-        // тестовый лимит = 3 (config/packages/test/rate_limiter.yaml)
+        // тестовый лимит = 3 (config/packages/test/rate_limiter.yaml);
+        // заведомо несуществующий маршрут (rate-limit срабатывает до 404)
         for ($i = 0; $i < 3; ++$i) {
-            $client->request('GET', '/');
+            $client->request('GET', '/__rate_limit_probe__');
             self::assertSame(404, $client->getResponse()->getStatusCode());
         }
 
         // четвёртый — 429
-        $client->request('GET', '/');
+        $client->request('GET', '/__rate_limit_probe__');
         self::assertSame(429, $client->getResponse()->getStatusCode());
         self::assertTrue($client->getResponse()->headers->has('Retry-After'));
         self::assertTrue($client->getResponse()->headers->has('X-RateLimit-Remaining'));
@@ -70,9 +72,10 @@ final class RateLimitMiddlewareTest extends WebTestCase
         $ip = self::nextIp();
         $client->setServerParameter('REMOTE_ADDR', $ip);
 
-        // превышаем лимит на /, но /health должен остаться доступен (RL-4)
+        // превышаем лимит на несуществующем маршруте, но /health должен
+        // остаться доступен (RL-4)
         for ($i = 0; $i < 5; ++$i) {
-            $client->request('GET', '/');
+            $client->request('GET', '/__rate_limit_probe__');
         }
 
         $client->request('GET', '/health/live');
