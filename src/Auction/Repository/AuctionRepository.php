@@ -154,13 +154,15 @@ final class AuctionRepository extends ServiceEntityRepository
     /**
      * Ближайшие окончания живых торгов (AM-13, GET /dashboard upcoming_deadlines):
      * аукционы в TRADE с planned_end_at в будущем, отсортированные по сроку.
+     * $until — верхняя граница горизонта дедлайнов (period day/week/month
+     * дашборда): null = без ограничения.
      *
      * @return list<array{auction_id: string, tender_id: string, deadline_at: string}>
      */
-    public function upcomingTradeEnds(Uuid $tenantId, int $limit): array
+    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
     {
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $rows = $this->createQueryBuilder('a')
+        $qb = $this->createQueryBuilder('a')
             ->select('a.id', 'a.tenderId', 'a.plannedEndAt')
             ->where('a.tenantId = :tenantId')
             ->andWhere('a.status = :trade')
@@ -170,9 +172,12 @@ final class AuctionRepository extends ServiceEntityRepository
             ->setParameter('trade', AuctionStatusEnum::TRADE->value)
             ->setParameter('now', $now)
             ->orderBy('a.plannedEndAt', 'ASC')
-            ->setMaxResults($limit)
-            ->getQuery()
-            ->getArrayResult();
+            ->setMaxResults($limit);
+        if (null !== $until) {
+            $qb->andWhere('a.plannedEndAt <= :until')->setParameter('until', $until);
+        }
+
+        $rows = $qb->getQuery()->getArrayResult();
 
         /** @var list<array{id: string, tenderId: string, plannedEndAt: \DateTimeImmutable|string}> $rows */
         $items = [];
@@ -244,6 +249,28 @@ SQL;
         $result = $this->createQueryBuilder('a')
             ->where('a.status = :trade')
             ->setParameter('trade', AuctionStatusEnum::TRADE->value)
+            ->getQuery()
+            ->getResult();
+
+        return $result;
+    }
+
+    /**
+     * Список аукционов компании-тенанта (GET /auctions).
+     * Сортировка: сначала активные/ближайшие (по planned_end_at/created_at),
+     * затем остальные — по created_at DESC. Без пагинации — размер списка
+     * аукционов компании ограничен бизнес-процессами (по одному на лот).
+     *
+     * @return list<Auction>
+     */
+    public function listForTenant(Uuid $tenantId): array
+    {
+        /** @var list<Auction> $result */
+        $result = $this->createQueryBuilder('a')
+            ->where('a.tenantId = :tenantId')
+            ->setParameter('tenantId', $tenantId)
+            ->orderBy('a.plannedEndAt', 'DESC')
+            ->addOrderBy('a.createdAt', 'DESC')
             ->getQuery()
             ->getResult();
 

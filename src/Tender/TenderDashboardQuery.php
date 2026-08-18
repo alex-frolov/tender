@@ -32,11 +32,13 @@ interface TenderDashboardQuery
     /**
      * Ближайшие дедлайны приёма заявок (bids_end из таймлайна, ещё не
      * прошедшие), отсортированные по сроку, до $limit записей. Для
-     * upcoming_deadlines дашборда.
+     * upcoming_deadlines дашборда. $until — верхняя граница горизонта
+     * (period day/week/month): учитываются только дедлайны ≤ until;
+     * null — без ограничения.
      *
      * @return list<array{tender_id: string, deadline_at: string}>
      */
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit): array;
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array;
 
     /**
      * Факты тендеров по срезу за период [from, to) (GET /stats/tenders):

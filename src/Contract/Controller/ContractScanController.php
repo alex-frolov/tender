@@ -7,7 +7,7 @@ namespace App\Contract\Controller;
 use App\Contract\Entity\Contract;
 use App\Contract\UseCase\UploadContractScanUseCase;
 use App\Controller\AbstractBaseController;
-use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Security\ContractVoter;
 use App\Shared\Exception\ValidationException;
 use Symfony\Bridge\Doctrine\Attribute\MapEntity;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
@@ -22,16 +22,18 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  * Исполнитель прикладывает скан для работы с заказчиком; для многоразового
  * договора (multi_use) один скан действует для многих тендеров. Загружается
  * документ (entity_type=contract, scope=contract) и фиксируется contract_documents.
- * Файл из multipart-запроса извлекается здесь (HTTP-адаптация), оркестрация —
- * UploadContractScanUseCase. Доступ: любая сторона договора (party-проверка в
- * сервисе). Контракт: api/openapi.yaml (/contracts/{contractId}/scan POST).
+ *  Файл из multipart-запроса извлекается здесь (HTTP-адаптация), оркестрация —
+ *  UploadContractScanUseCase. Доступ: право contracts.scan_upload через
+ *  ContractVoter::SCAN (admin/manager; agent — 403); party-проверка (любая
+ *  сторона договора) — в сервисе. Контракт: api/openapi.yaml
+ *  (/contracts/{contractId}/scan POST).
  */
 final class ContractScanController extends AbstractBaseController
 {
     public const string URL = '/api/v1/contracts/{contractId}/scan';
 
     #[Route(self::URL, name: 'contract_scan', methods: [Request::METHOD_POST])]
-    #[IsGranted(UserRoleEnum::AGENT->value)]
+    #[IsGranted(ContractVoter::SCAN)]
     public function scan(
         Request $request,
         #[MapEntity(mapping: ['contractId' => 'id'])]

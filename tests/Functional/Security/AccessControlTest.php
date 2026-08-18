@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional\Security;
 
+use App\Contract\Controller\ContractTypeListController;
+use App\Document\Controller\DocumentTypeListController;
 use App\Iam\Controller\Auth\TokenController;
 use App\Iam\Controller\User\UserInviteController;
 use App\Iam\Controller\User\UserListController;
@@ -115,5 +117,16 @@ final class AccessControlTest extends WebTestCase
 
         self::request('GET', UserListController::URL, $token);
         self::assertSame(200, self::client()->getResponse()->getStatusCode());
+    }
+
+    public function testDictionaryEndpointsRequireAuthentication(): void
+    {
+        // Справочники доступны «любому аутентифицированному» — без токена 401.
+        self::client();
+        self::request('GET', ContractTypeListController::URL, '');
+        self::assertSame(401, self::client()->getResponse()->getStatusCode());
+
+        self::request('GET', DocumentTypeListController::URL, '');
+        self::assertSame(401, self::client()->getResponse()->getStatusCode());
     }
 }

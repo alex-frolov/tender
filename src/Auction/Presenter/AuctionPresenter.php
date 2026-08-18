@@ -70,6 +70,30 @@ final class AuctionPresenter
     }
 
     /**
+     * Элемент списка аукционов компании (openapi AuctionListItem, GET /auctions).
+     * Компактное представление для списка: id, тендер/лот, тип, статус, цены,
+     * таймер. Полная детализация — GET /auctions/{id}/state (AuctionState).
+     *
+     * @return array<string, mixed>
+     */
+    public function listItem(Auction $auction): array
+    {
+        return [
+            'id' => (string) $auction->getId(),
+            'tender_id' => (string) $auction->getTenderId(),
+            'lot_id' => (string) $auction->getLotId(),
+            'type' => $auction->getType()->value,
+            'status' => $auction->getStatus()->value,
+            'no_start_price' => $auction->isNoStartPrice(),
+            'current_price_minor' => $auction->getCurrentPriceMinor(),
+            'start_price_minor' => $auction->getStartPriceMinor(),
+            'planned_end_at' => $auction->getPlannedEndAt()?->format('Y-m-d\TH:i:s\Z'),
+            'remaining_sec' => $this->remainingSec($auction, new \DateTimeImmutable('now', new \DateTimeZone('UTC'))),
+            'winner_bid_id' => null !== $auction->getWinnerBidId() ? (string) $auction->getWinnerBidId() : null,
+        ];
+    }
+
+    /**
      * Ставка аукциона (openapi AuctionBid).
      *
      * @return array<string, mixed>
@@ -98,6 +122,11 @@ final class AuctionPresenter
      *
      * @return array{items: list<array<string, mixed>>, next_cursor: null}
      */
+    /**
+     * @param list<AuctionBid> $bids
+     *
+     * @return list<array<string, mixed>>
+     */
     public function bidList(array $bids, bool $revealBidder): array
     {
         $items = [];
@@ -105,7 +134,7 @@ final class AuctionPresenter
             $items[] = $this->bid($bid, $revealBidder);
         }
 
-        return ['items' => $items, 'next_cursor' => null];
+        return $items;
     }
 
     /**

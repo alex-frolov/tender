@@ -24,9 +24,9 @@ final readonly class AuctionDashboardQueryService implements AuctionDashboardQue
         return $this->auctions->countActive($tenantId);
     }
 
-    public function upcomingTradeEnds(Uuid $tenantId, int $limit): array
+    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
     {
-        return $this->auctions->upcomingTradeEnds($tenantId, max(1, $limit));
+        return $this->auctions->upcomingTradeEnds($tenantId, max(1, $limit), $until);
     }
 
     public function avgReductionByTender(Uuid $tenantId, \DateTimeImmutable $from, \DateTimeImmutable $to): array

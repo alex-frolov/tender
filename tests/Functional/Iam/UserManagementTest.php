@@ -215,6 +215,25 @@ final class UserManagementTest extends WebTestCase
         self::assertSame('agent', $body['role']);
     }
 
+    public function testAdminChangesUserName(): void
+    {
+        self::client();
+        $ctx = self::adminActor();
+        $target = UserFactory::createOne([
+            'role' => UserRoleEnum::MANAGER,
+            'companyId' => $ctx['company']->getId(),
+            'name' => 'Старое имя',
+        ]);
+        $token = self::login();
+
+        $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
+        $client = self::request('PATCH', $url, $token, ['name' => 'Новое имя']);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('Новое имя', $body['name']);
+    }
+
     public function testCannotDemoteLastActiveAdmin(): void
     {
         self::client();
@@ -270,8 +289,13 @@ final class UserManagementTest extends WebTestCase
         $reloaded = $em->getRepository(User::class)->find((string) $target->getId());
         self::assertNotNull($reloaded);
         self::assertTrue($reloaded->isDeleted());
+        self::assertSame(UserStatusEnum::DELETED, $reloaded->getVerificationStatus());
         self::assertSame('victim@test.ru', $reloaded->getMaskedEmail());
         self::assertStringEndsWith('@deleted.local', $reloaded->getEmail());
+
+        // повторное удаление невозможно (переход delete из deleted отсутствует)
+        $client = self::request('DELETE', $url, $token, null);
+        self::assertResponseStatusCodeSame(404);
     }
 
     public function testCannotDeleteLastActiveAdmin(): void
@@ -298,6 +322,35 @@ final class UserManagementTest extends WebTestCase
         self::assertIsArray($body);
         self::assertIsArray($body['items']);
         self::assertCount(4, $body['items']);
+    }
+
+    public function testDeletedUserNotListed(): void
+    {
+        self::client();
+        $ctx = self::adminActor();
+        $target = UserFactory::createOne([
+            'email' => 'ghost@test.ru',
+            'role' => UserRoleEnum::AGENT,
+            'companyId' => $ctx['company']->getId(),
+        ]);
+        $token = self::login();
+
+        $url = str_replace('{userId}', (string) $target->getId(), UserDeleteController::URL);
+        $client = self::request('DELETE', $url, $token, null);
+        self::assertResponseStatusCodeSame(204);
+
+        // после удаления юзер исчезает из GET /users (статус deleted, фильтр <> deleted)
+        $client = self::request('GET', UserListController::URL, $token);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsArray($body['items']);
+        self::assertCount(3, $body['items']);
+        foreach ($body['items'] as $item) {
+            self::assertIsArray($item);
+            self::assertNotSame((string) $target->getId(), $item['id']);
+            self::assertNotSame(UserStatusEnum::DELETED->value, $item['verification_status']);
+        }
     }
 
     private static function currentUserId(): string

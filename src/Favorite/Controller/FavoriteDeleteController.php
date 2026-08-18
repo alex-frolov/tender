@@ -7,6 +7,8 @@ namespace App\Favorite\Controller;
 use App\Controller\AbstractBaseController;
 use App\Favorite\UseCase\DeleteFavoriteUseCase;
 use App\Security\SavedSearchVoter;
+use App\Shared\Form\EntityIdQueryType;
+use App\Shared\Input\EntityIdInput;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,8 +28,10 @@ final class FavoriteDeleteController extends AbstractBaseController
     #[IsGranted(SavedSearchVoter::FAVORITES)]
     public function delete(Request $request, DeleteFavoriteUseCase $useCase): JsonResponse
     {
-        $favoriteId = (string) $request->query->get('favoriteId', '');
-        $useCase->execute($this->currentUser($request), $favoriteId);
+        $form = $this->formQuery(EntityIdQueryType::class, $request, options: ['id_field' => 'favoriteId']);
+        /** @var EntityIdInput $input */
+        $input = $form->getData();
+        $useCase->execute($this->currentUser($request), $input->id);
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
     }

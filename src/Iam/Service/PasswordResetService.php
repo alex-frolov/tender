@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Iam\Service;
 
+use App\Iam\Entity\Enum\UserStatusEnum;
+use App\Iam\Entity\Enum\UserStatusTransition;
 use App\Iam\Entity\PasswordResetToken;
 use App\Iam\Entity\User;
 use App\Infrastructure\Metrics\RateLimitMetricsCollector;
@@ -16,6 +18,7 @@ use Symfony\Component\Mime\Email;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\RateLimiter\RateLimit;
 use Symfony\Component\RateLimiter\RateLimiterFactory;
+use Symfony\Component\Workflow\WorkflowInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
 use Twig\Environment;
 
@@ -44,6 +47,8 @@ final readonly class PasswordResetService
         private RateLimitMetricsCollector $rateLimitMetrics,
         private Environment $twig,
         private TranslatorInterface $translator,
+        #[Autowire(service: 'state_machine.user_status')]
+        private WorkflowInterface $userWorkflow,
         private int $tokenTtl,
         private string $resetUrlTemplate,
         private string $from,
@@ -101,6 +106,21 @@ final readonly class PasswordResetService
         $entity->markUsed();
 
         $user->setPasswordHash($this->passwordHasher->hashPassword($user, $newPassword));
+
+        // Сброс пароля для приглашённого/неподтверждённого пользователя — это
+        // принятие приглашения: активируем аккаунт и подтверждаем email
+        // (иначе вход останется запрещён — AuthenticationService пускает только
+        // ACTIVE с подтверждённым email). Для blocked/deleted — не трогаем.
+        if (UserStatusEnum::INVITED === $user->getVerificationStatus()
+            || UserStatusEnum::EMAIL_PENDING === $user->getVerificationStatus()) {
+            // invited → active по workflow user_status; markEmailVerified фиксирует
+            // email_verified_at (маркировка не хранит дату).
+            if ($this->userWorkflow->can($user, UserStatusTransition::ACCEPT_INVITE->value)) {
+                $this->userWorkflow->apply($user, UserStatusTransition::ACCEPT_INVITE->value);
+            }
+            $user->markEmailVerified();
+        }
+
         $this->refreshTokens->revokeAllForUser($user->getId());
         $this->em->flush();
 

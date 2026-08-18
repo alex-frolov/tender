@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Tender\Controller;
 
 use App\Controller\AbstractBaseController;
-use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Security\TenderVoter;
 use App\Tender\UseCase\CheckTenderAccessUseCase;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -18,7 +18,8 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  * Для закрытого тендера (access_type=contract_holders) доступен только
  * исполнитель с действующим multi_use-договором с заказчиком; ответ содержит
  * reason из openapi: contract_required / contract_expired / contract_terminated
- * / ok. Для открытого тендера — всегда ok. Доступ: любой сотрудник компании.
+ * / ok. Для открытого тендера — всегда ok. Доступ: право tenders.board.view
+ * (TenderVoter::VIEW, единый код просмотра тендерной доски).
  * Оркестрация и презентация — CheckTenderAccessUseCase.
  * Контракт: api/openapi.yaml (/tenders/{tenderId}/access GET).
  */
@@ -27,7 +28,7 @@ final class TenderAccessController extends AbstractBaseController
     public const string URL = '/api/v1/tenders/{tenderId}/access';
 
     #[Route(self::URL, name: 'tender_access', methods: [Request::METHOD_GET])]
-    #[IsGranted(UserRoleEnum::AGENT->value)]
+    #[IsGranted(TenderVoter::VIEW)]
     public function access(Request $request, string $tenderId, CheckTenderAccessUseCase $useCase): JsonResponse
     {
         $user = $this->currentUser($request);

@@ -98,6 +98,10 @@ final class TenderCreateType extends AbstractType
                 'required' => false,
                 'constraints' => [new Length(max: 100)],
             ])
+            ->add('okpd2', TextType::class, [
+                'required' => false,
+                'constraints' => [new Length(max: 20)],
+            ])
             ->add('access_type', ChoiceType::class, [
                 'property_path' => 'accessType',
                 'required' => false,

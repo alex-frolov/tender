@@ -8,6 +8,7 @@ use App\Iam\Entity\User;
 use App\Shared\Audit\AuditService;
 use App\Tender\Entity\Enum\CancellationReasonEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
+use App\Tender\Entity\Lot;
 use App\Tender\Entity\Tender;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
@@ -177,6 +178,110 @@ final readonly class TenderTransaction
                 'status' => $tender->getStatus()->value,
                 'cancellation_reason_code' => $code->value,
                 'cancellation_reason_text' => $tender->getCancellationReasonText(),
+            ],
+            ip: $ip,
+        );
+    }
+
+    /**
+     * Добавление лота: flush + аудит tender.lot_created (FR-1.1.7, FR-1.8).
+     */
+    public function commitLotCreated(
+        Tender $tender,
+        Lot $lot,
+        User $actor,
+        Uuid $companyId,
+        ?string $ip,
+    ): void {
+        $this->em->flush();
+
+        $this->audit->record(
+            action: 'tender.lot_created',
+            entityType: 'lot',
+            entityId: (string) $lot->getId(),
+            tenantId: (string) $companyId,
+            actorType: 'user',
+            actorId: (string) $actor->getId(),
+            after: [
+                'tender_id' => (string) $tender->getId(),
+                'number' => $lot->getNumber(),
+                'title' => $lot->getTitle(),
+                'price_net_minor' => $lot->getPriceNetMinor(),
+            ],
+            ip: $ip,
+        );
+    }
+
+    /**
+     * Изменение лота: flush + аудит tender.lot_updated (FR-1.1.7, FR-1.8).
+     *
+     * @param array<string, mixed> $before
+     */
+    public function commitLotUpdated(
+        Tender $tender,
+        Lot $lot,
+        array $before,
+        User $actor,
+        Uuid $companyId,
+        ?string $ip,
+    ): void {
+        $this->em->flush();
+
+        $this->audit->record(
+            action: 'tender.lot_updated',
+            entityType: 'lot',
+            entityId: (string) $lot->getId(),
+            tenantId: (string) $companyId,
+            actorType: 'user',
+            actorId: (string) $actor->getId(),
+            before: $before,
+            after: [
+                'tender_id' => (string) $tender->getId(),
+                'number' => $lot->getNumber(),
+                'title' => $lot->getTitle(),
+                'price_net_minor' => $lot->getPriceNetMinor(),
+                'price_gross_minor' => $lot->getPriceGrossMinor(),
+            ],
+            ip: $ip,
+        );
+    }
+
+    /**
+     * Удаление лота: flush + перенумерация оставшихся (1..N) + аудит
+     * tender.lot_removed (FR-1.1.7, FR-1.8).
+     *
+     * Перенумерация выполняется ОТДЕЛЬНЫМ flush ПОСЛЕ удаления: при одном flush
+     * Doctrine сделал бы UPDATE (номер) раньше DELETE, что конфликтует с
+     * уникальным ключом (tender_id, number).
+     */
+    public function commitLotRemoved(
+        Tender $tender,
+        Lot $lot,
+        User $actor,
+        Uuid $companyId,
+        ?string $ip,
+    ): void {
+        $this->em->flush(); // DELETE удалённого лота (orphanRemoval)
+
+        // перенумерация оставшихся лотов: 1..N по порядку
+        $number = 1;
+        foreach ($tender->getLots() as $remaining) {
+            $remaining->renumber($number);
+            ++$number;
+        }
+        $this->em->flush();
+
+        $this->audit->record(
+            action: 'tender.lot_removed',
+            entityType: 'lot',
+            entityId: (string) $lot->getId(),
+            tenantId: (string) $companyId,
+            actorType: 'user',
+            actorId: (string) $actor->getId(),
+            after: [
+                'tender_id' => (string) $tender->getId(),
+                'number' => $lot->getNumber(),
+                'title' => $lot->getTitle(),
             ],
             ip: $ip,
         );

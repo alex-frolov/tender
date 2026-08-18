@@ -143,15 +143,19 @@ final class ContractScanTest extends WebTestCase
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
-        self::assertSame((string) $ctx['contract']->getId(), $body['contract_id']);
-        self::assertIsString($body['document_id']);
-        self::assertSame('executor', $body['uploaded_by']);
+        // Контракт эндпоинта — форма openapi Document (entity_type/scope).
+        self::assertSame('contract', $body['entity_type']);
+        self::assertSame('contract', $body['scope']);
+        self::assertSame((string) $ctx['contract']->getId(), $body['entity_id']);
+        self::assertIsString($body['id']);
+        self::assertIsArray($body['versions']);
+        self::assertNotEmpty($body['versions']);
 
         // contract_documents связь в БД.
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $scan = $em->getRepository(ContractDocument::class)->findOneBy(['contractId' => $ctx['contract']->getId()]);
         self::assertInstanceOf(ContractDocument::class, $scan);
-        self::assertSame((string) $scan->getDocumentId(), $body['document_id']);
+        self::assertSame((string) $scan->getDocumentId(), $body['id']);
     }
 
     public function testCustomerUploadsContractScan(): void
@@ -170,7 +174,9 @@ final class ContractScanTest extends WebTestCase
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
-        self::assertSame('customer', $body['uploaded_by']);
+        self::assertSame('contract', $body['entity_type']);
+        self::assertSame('contract', $body['scope']);
+        self::assertSame('executor', $body['owner_role']);
     }
 
     public function testThirdPartyCannotUploadScan(): void
@@ -194,6 +200,30 @@ final class ContractScanTest extends WebTestCase
             ['HTTP_AUTHORIZATION' => 'Bearer '.$outsiderToken],
         );
         self::assertResponseStatusCodeSame(404);
+    }
+
+    public function testAgentCannotUploadScanEvenAsParty(): void
+    {
+        // contracts.scan_upload (group supplier): admin/manager — да, agent — 403
+        // (ContractVoter::SCAN), даже если agent — сторона договора.
+        $ctx = self::contractContext();
+        $agentUser = UserFactory::createOne([
+            'companyId' => $ctx['supplier']->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'scan-agent-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $agentToken = self::loginAs((string) $agentUser->getEmail());
+
+        $client = self::client();
+        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
+        $client->request(
+            'POST',
+            self::scanUrl((string) $ctx['contract']->getId()),
+            [],
+            ['file' => self::pdf()],
+            ['HTTP_AUTHORIZATION' => 'Bearer '.$agentToken],
+        );
+        self::assertResponseStatusCodeSame(403);
     }
 
     public function testUnauthenticatedReturns401(): void

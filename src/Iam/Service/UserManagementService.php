@@ -7,6 +7,7 @@ namespace App\Iam\Service;
 use App\Iam\Entity\Enum\LocaleEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Entity\Enum\UserStatusEnum;
+use App\Iam\Entity\Enum\UserStatusTransition;
 use App\Iam\Entity\User;
 use App\Iam\Exception\LastAdminException;
 use App\Iam\Exception\UserNotFoundException;
@@ -14,11 +15,14 @@ use App\Iam\Input\InviteUserInput;
 use App\Iam\Input\UpdateUserInput;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\ConflictException;
+use App\Shared\Exception\StateTransitionException;
 use App\Shared\Exception\ValidationException;
 use Doctrine\ORM\EntityManagerInterface;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\Mailer\MailerInterface;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Workflow\WorkflowInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
 use Twig\Environment;
 
@@ -49,6 +53,8 @@ final readonly class UserManagementService
         private MailerInterface $mailer,
         private Environment $twig,
         private TranslatorInterface $translator,
+        #[Autowire(service: 'state_machine.user_status')]
+        private WorkflowInterface $userWorkflow,
         private string $inviteUrlTemplate,
         private string $from,
     ) {
@@ -105,7 +111,9 @@ final readonly class UserManagementService
         $users = $this->em->getRepository(User::class)
             ->createQueryBuilder('u')
             ->where('u.companyId = :companyId')
+            ->andWhere('u.verificationStatus <> :deleted')
             ->setParameter('companyId', $companyId)
+            ->setParameter('deleted', UserStatusEnum::DELETED->value)
             ->orderBy('u.createdAt', 'ASC')
             ->getQuery()
             ->getResult();
@@ -126,6 +134,10 @@ final readonly class UserManagementService
         $companyId = $this->requireCompany($actor);
         $user = $this->resolveUser($companyId, $userId);
 
+        if (null !== $input->name && '' !== $input->name && $input->name !== $user->getName()) {
+            $this->rename($actor, $companyId, $user, $input->name, $ip);
+        }
+
         if (null !== $input->role && '' !== $input->role) {
             $this->changeRole($actor, $companyId, $user, $this->resolveRole($input->role), $ip);
         }
@@ -139,6 +151,28 @@ final readonly class UserManagementService
         }
 
         return $user;
+    }
+
+    /**
+     * Смена имени пользователя админом (FR-1.5.8, PATCH /users/{userId}).
+     */
+    private function rename(User $actor, Uuid $companyId, User $user, string $name, ?string $ip): void
+    {
+        $before = $user->getName();
+        $user->changeName($name);
+        $this->em->flush();
+
+        $this->audit->record(
+            action: 'user.renamed',
+            entityType: 'user',
+            entityId: (string) $user->getId(),
+            tenantId: (string) $companyId,
+            actorType: 'user',
+            actorId: (string) $actor->getId(),
+            before: ['name' => $before],
+            after: ['name' => $name],
+            ip: $ip,
+        );
     }
 
     /**
@@ -179,7 +213,15 @@ final readonly class UserManagementService
     private function setStatus(User $actor, Uuid $companyId, User $user, UserStatusEnum $status, ?string $ip): void
     {
         $before = $user->getVerificationStatus();
-        $user->setVerificationStatus($status);
+
+        // Статус меняется только через workflow user_status (active → blocked → active).
+        $transition = UserStatusEnum::BLOCKED === $status
+            ? UserStatusTransition::BLOCK->value
+            : UserStatusTransition::UNBLOCK->value;
+        if (!$this->userWorkflow->can($user, $transition)) {
+            throw new StateTransitionException(\sprintf('Cannot %s user from status %s', $transition, $before->value));
+        }
+        $this->userWorkflow->apply($user, $transition);
         $this->em->flush();
 
         if (UserStatusEnum::BLOCKED === $status) {
@@ -200,7 +242,9 @@ final readonly class UserManagementService
     }
 
     /**
-     * Soft-delete пользователя с маскированием email (FR-1.5.9).
+     * Мягкое удаление пользователя с маскированием email (FR-1.5.9).
+     * Статус → deleted через workflow (терминальное состояние); повторное
+     * удаление невозможно (переход delete из deleted отсутствует).
      * Администратора нельзя удалить, если он — последний активный админ.
      *
      * @throws LastAdminException    если это последний активный админ
@@ -215,7 +259,13 @@ final readonly class UserManagementService
             throw new LastAdminException('Cannot delete the last active administrator');
         }
 
-        $before = $user->getEmail();
+        $beforeStatus = $user->getVerificationStatus();
+        if (!$this->userWorkflow->can($user, UserStatusTransition::DELETE->value)) {
+            throw new StateTransitionException(\sprintf('Cannot delete user from status %s', $beforeStatus->value));
+        }
+        $this->userWorkflow->apply($user, UserStatusTransition::DELETE->value);
+
+        $beforeEmail = $user->getEmail();
         $user->softDelete();
         $this->refreshTokens->revokeAllForUser($user->getId());
         $this->em->flush();
@@ -227,8 +277,8 @@ final readonly class UserManagementService
             tenantId: (string) $companyId,
             actorType: 'user',
             actorId: (string) $actor->getId(),
-            before: ['email' => $before],
-            after: ['deleted_at' => $user->getDeletedAt()?->format('Y-m-d\TH:i:s\Z'), 'email_masked' => true],
+            before: ['email' => $beforeEmail, 'status' => $beforeStatus->value],
+            after: ['status' => UserStatusEnum::DELETED->value, 'deleted_at' => $user->getDeletedAt()?->format('Y-m-d\TH:i:s\Z'), 'email_masked' => true],
             ip: $ip,
         );
     }
@@ -244,10 +294,11 @@ final readonly class UserManagementService
             ->where('u.companyId = :companyId')
             ->andWhere('u.role = :role')
             ->andWhere('u.verificationStatus = :status')
-            ->andWhere('u.deletedAt IS NULL')
+            ->andWhere('u.verificationStatus <> :deleted')
             ->setParameter('companyId', $companyId)
             ->setParameter('role', UserRoleEnum::ADMIN->value)
             ->setParameter('status', UserStatusEnum::ACTIVE->value)
+            ->setParameter('deleted', UserStatusEnum::DELETED->value)
             ->getQuery()
             ->getSingleScalarResult();
 
@@ -266,9 +317,10 @@ final readonly class UserManagementService
             ->createQueryBuilder('u')
             ->where('u.id = :id')
             ->andWhere('u.companyId = :companyId')
-            ->andWhere('u.deletedAt IS NULL')
+            ->andWhere('u.verificationStatus <> :deleted')
             ->setParameter('id', $userId)
             ->setParameter('companyId', $companyId)
+            ->setParameter('deleted', UserStatusEnum::DELETED->value)
             ->getQuery()
             ->getOneOrNullResult();
 

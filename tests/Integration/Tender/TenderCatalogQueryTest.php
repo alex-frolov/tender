@@ -9,6 +9,7 @@ use App\Tender\Entity\Enum\LotStatusEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tender\Entity\Tender;
 use App\Tender\TenderCatalogQuery;
+use App\Tender\TenderFilters;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use Doctrine\ORM\EntityManagerInterface;
@@ -59,19 +60,19 @@ final class TenderCatalogQueryTest extends KernelTestCase
         $this->setCreatedAt($tenders['T4'], '2026-01-01T00:00:04+00:00');
         $this->setCreatedAt($tenders['T5'], '2026-01-01T00:00:05+00:00');
 
-        $page1 = $this->query->page($tenant, null, null, 2);
+        $page1 = $this->query->page($tenant, new TenderFilters(), null, 2);
         self::assertCount(2, $page1->items);
         self::assertSame('T5', $page1->items[0]['title']);
         self::assertSame('T4', $page1->items[1]['title']);
         self::assertNotNull($page1->nextCursor);
 
-        $page2 = $this->query->page($tenant, null, $page1->nextCursor, 2);
+        $page2 = $this->query->page($tenant, new TenderFilters(), $page1->nextCursor, 2);
         self::assertCount(2, $page2->items);
         self::assertSame('T3', $page2->items[0]['title']);
         self::assertSame('T2', $page2->items[1]['title']);
         self::assertNotNull($page2->nextCursor);
 
-        $page3 = $this->query->page($tenant, null, $page2->nextCursor, 2);
+        $page3 = $this->query->page($tenant, new TenderFilters(), $page2->nextCursor, 2);
         self::assertCount(1, $page3->items);
         self::assertSame('T1', $page3->items[0]['title']);
         self::assertNull($page3->nextCursor);
@@ -85,7 +86,7 @@ final class TenderCatalogQueryTest extends KernelTestCase
         $published->setStatus(TenderStatusEnum::PUBLISHED);
         $this->em->flush();
 
-        $page = $this->query->page($tenant, TenderStatusEnum::PUBLISHED, null, 20);
+        $page = $this->query->page($tenant, new TenderFilters(status: TenderStatusEnum::PUBLISHED), null, 20);
 
         self::assertCount(1, $page->items);
         self::assertSame('Published', $page->items[0]['title']);
@@ -105,7 +106,7 @@ final class TenderCatalogQueryTest extends KernelTestCase
         // без лотов → административный статус (draft), lot_count 0
         $empty = TenderFactory::createOne(['customerId' => $tenant, 'title' => 'Empty', 'noStartPrice' => true, 'nmckMinor' => null]);
 
-        $page = $this->query->page($tenant, null, null, 20);
+        $page = $this->query->page($tenant, new TenderFilters(), null, 20);
         self::assertCount(2, $page->items);
 
         $byTitle = [];
@@ -126,7 +127,7 @@ final class TenderCatalogQueryTest extends KernelTestCase
 
         $this->expectException(ValidationException::class);
 
-        $this->query->page($tenant, null, '!!!not-a-cursor!!!', 20);
+        $this->query->page($tenant, new TenderFilters(), '!!!not-a-cursor!!!', 20);
     }
 
     private function setCreatedAt(Tender $tender, string $at): void

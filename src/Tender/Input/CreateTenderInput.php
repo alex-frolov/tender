@@ -40,6 +40,8 @@ final class CreateTenderInput
 
     public ?string $region = null;
 
+    public ?string $okpd2 = null;
+
     public ?string $accessType = null;
 
     public ?string $requiredContractTypeId = null;

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Analytics\Controller\Dashboard;
 
+use App\Analytics\Form\DashboardQueryType;
+use App\Analytics\Input\DashboardQueryInput;
 use App\Analytics\UseCase\GetDashboardUseCase;
 use App\Controller\AbstractBaseController;
 use App\Security\DashboardVoter;
@@ -17,8 +19,10 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  *
  * Счётчики (активные тендеры / мои заявки / мои договоры) и ближайшие
  * дедлайны. Доступ — право dashboard.view (common, все роли компании).
- * Контракт: api/openapi.yaml. Query-параметр period (day/week/month) из спеки
- * принимается, но на снапшот-счётчики v1 не влияет (future period-тренды).
+ * Query-параметр period (day/week/month) — форма DashboardQueryType:
+ * ограничивает горизонт upcoming_deadlines (ближайшие 1 день/7 дней/30 дней);
+ * счётчики — снапшот-мгновенные и от period не зависят.
+ * Контракт: api/openapi.yaml.
  */
 final class DashboardController extends AbstractBaseController
 {
@@ -28,11 +32,13 @@ final class DashboardController extends AbstractBaseController
     #[IsGranted(DashboardVoter::VIEW)]
     public function dashboard(Request $request, GetDashboardUseCase $useCase): JsonResponse
     {
-        $period = $request->query->get('period');
-        if (null !== $period && !\in_array($period, ['day', 'week', 'month'], true)) {
-            return $this->json(['title' => 'Validation Failed', 'code' => 'validation_error', 'detail' => 'invalid period'], 422);
-        }
+        $queryForm = $this->formQuery(DashboardQueryType::class, $request);
+        /** @var DashboardQueryInput $query */
+        $query = $queryForm->getData();
 
-        return $this->json($useCase->execute($this->currentUser($request)));
+        return $this->json($useCase->execute(
+            actor: $this->currentUser($request),
+            period: $query->period,
+        ));
     }
 }

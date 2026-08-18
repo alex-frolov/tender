@@ -39,6 +39,10 @@ parameters:
     # compiler pass'ом ProcurementRulesPass); 0 — дефолты ядра.
     procurement_plugin_enabled: '%env(bool:PROCUREMENT_PLUGIN_ENABLED)%'
 
+    # Доменный часовой пояс платформы (platform_settings.timezone_default
+    # при отсутствии сохранённого значения). Источник — env DOMAIN_TIMEZONE.
+    platform_timezone_default: '%env(DOMAIN_TIMEZONE)%'
+
 imports:
     # 00-app.yaml — _defaults + App\: (ресурс src/). ДОЛЖЕН быть первым:
     # загружается раньше модульных файлов, чтобы явные определения модулей

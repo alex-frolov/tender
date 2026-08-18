@@ -61,6 +61,8 @@ final class WebhookDeliveryRepository extends ServiceEntityRepository
 
     /**
      * Журнал доставок подписки (GET /webhooks/{id}/deliveries), новые сверху.
+     * Полный список — страница лимитируется KeysetCursor-срезом на уровне
+     * UseCase (AR-6); без LIMIT, чтобы не резать ключи последующих страниц.
      *
      * @return list<WebhookDelivery>
      */
@@ -72,11 +74,29 @@ final class WebhookDeliveryRepository extends ServiceEntityRepository
             ->where('w.id = :webhook')
             ->setParameter('webhook', Uuid::fromString($webhookId))
             ->orderBy('d.createdAt', 'DESC')
-            ->setMaxResults(100)
             ->getQuery()
             ->getResult();
 
         return $result;
+    }
+
+    /**
+     * Число доставок тенанта за период (GET /usage webhooks): [from, now).
+     * Считает через связь доставка → webhook (tenant_id webhook'а).
+     */
+    public function countForTenantPeriod(Uuid $tenantId, \DateTimeImmutable $from): int
+    {
+        $count = $this->createQueryBuilder('d')
+            ->select('COUNT(d.id)')
+            ->join('d.webhook', 'w')
+            ->where('w.tenantId = :tenant')
+            ->andWhere('d.createdAt >= :from')
+            ->setParameter('tenant', $tenantId)
+            ->setParameter('from', $from)
+            ->getQuery()
+            ->getSingleScalarResult();
+
+        return (int) $count;
     }
 
     /**

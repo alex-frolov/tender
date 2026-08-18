@@ -7,6 +7,7 @@ namespace App\Tender\Repository;
 use App\Tender\Entity\Enum\LotStatusEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tender\Entity\Tender;
+use App\Tender\TenderFilters;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Uid\Uuid;
@@ -70,14 +71,14 @@ final class TenderRepository extends ServiceEntityRepository
      * created_at → tiebreaker id.
      *
      * @param Uuid                    $tenantId        компания-тенант
-     * @param TenderStatusEnum|null   $status          фильтр по статусу
+     * @param TenderFilters           $filters         фильтры каталога (q/status/law_type/region/price/access)
      * @param \DateTimeImmutable|null $cursorCreatedAt created_at позиции курсора (null — первая страница)
      * @param Uuid|null               $cursorId        id позиции курсора (tiebreaker, null — первая страница)
      * @param int                     $limit           размер страницы
      *
-     * @return list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}>
+     * @return list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}>
      */
-    public function listCatalogPage(Uuid $tenantId, ?TenderStatusEnum $status, ?\DateTimeImmutable $cursorCreatedAt, ?Uuid $cursorId, int $limit): array
+    public function listCatalogPage(Uuid $tenantId, TenderFilters $filters, ?\DateTimeImmutable $cursorCreatedAt, ?Uuid $cursorId, int $limit): array
     {
         $qb = $this->createQueryBuilder('t')
             ->select(
@@ -88,6 +89,7 @@ final class TenderRepository extends ServiceEntityRepository
                 't.nmckMinor AS nmck_minor',
                 't.currency AS currency',
                 't.region AS region',
+                't.okpd2 AS okpd2',
                 't.timeline AS timeline',
                 't.createdAt AS created_at',
             )
@@ -97,8 +99,48 @@ final class TenderRepository extends ServiceEntityRepository
             ->addOrderBy('t.id', 'DESC')
             ->setMaxResults(max(1, $limit));
 
-        if (null !== $status) {
-            $qb->andWhere('t.status = :status')->setParameter('status', $status->value);
+        if (null !== $filters->status) {
+            $qb->andWhere('t.status = :status')->setParameter('status', $filters->status->value);
+        }
+
+        if (null !== $filters->lawType) {
+            $qb->andWhere('t.lawType = :lawType')->setParameter('lawType', $filters->lawType->value);
+        }
+
+        if (null !== $filters->region && '' !== $filters->region) {
+            // Подстрока без учёта регистра (ILIKE); точное совпадение не требуется.
+            $qb->andWhere('LOWER(t.region) LIKE :region')
+                ->setParameter('region', '%'.mb_strtolower($filters->region).'%');
+        }
+
+        if (null !== $filters->okpd2 && '' !== $filters->okpd2) {
+            // Код ОКПД2 (префиксный поиск, как в каталоге 44-ФЗ): совпадение
+            // по началу кода (ILIKE) — фильтр из openapi (параметр okpd2).
+            $qb->andWhere('t.okpd2 IS NOT NULL')
+                ->andWhere('LOWER(t.okpd2) LIKE :okpd2')
+                ->setParameter('okpd2', mb_strtolower($filters->okpd2).'%');
+        }
+
+        if (null !== $filters->priceMin) {
+            $qb->andWhere('t.nmckMinor >= :priceMin')->setParameter('priceMin', $filters->priceMin);
+        }
+        if (null !== $filters->priceMax) {
+            $qb->andWhere('t.nmckMinor <= :priceMax')->setParameter('priceMax', $filters->priceMax);
+        }
+
+        if (null !== $filters->accessType) {
+            $qb->andWhere('t.accessType = :accessType')->setParameter('accessType', $filters->accessType->value);
+        }
+
+        if (null !== $filters->q && '' !== $filters->q) {
+            // Поиск по номеру/названию/описанию (полнотекст — упрощённо: ILIKE по трём полям).
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->like('LOWER(t.number)', ':q'),
+                    $qb->expr()->like('LOWER(t.title)', ':q'),
+                    $qb->expr()->like('LOWER(t.description)', ':q'),
+                ),
+            )->setParameter('q', '%'.mb_strtolower($filters->q).'%');
         }
 
         if (null !== $cursorCreatedAt && null !== $cursorId) {
@@ -115,7 +157,7 @@ final class TenderRepository extends ServiceEntityRepository
                 ->setParameter('cursorId', $cursorId);
         }
 
-        /** @var list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}> $result */
+        /** @var list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}> $result */
         $result = $qb->getQuery()->getArrayResult();
 
         return $result;
@@ -230,11 +272,13 @@ final class TenderRepository extends ServiceEntityRepository
     /**
      * Ближайшие дедлайны приёма заявок (FR-1.1.4/1.1.7, AM-13): тендеры компании
      * с непустым таймлайном (bids_end ещё в будущем), отсортированные по сроку.
-     * Ограничение — $limit; результат для GET /dashboard upcoming_deadlines.
+     * Ограничение — $limit; $until — верхняя граница горизонта дедлайнов
+     * (period day/week/month дашборда): null = без ограничения.
+     * Результат для GET /dashboard upcoming_deadlines.
      *
      * @return list<array{tender_id: string, deadline_at: string}> до $limit записей
      */
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit): array
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
     {
         /** @var list<array{id: string, status: string, timeline: array<string, string>|null}> $rows */
         $rows = $this->createQueryBuilder('t')
@@ -262,6 +306,9 @@ final class TenderRepository extends ServiceEntityRepository
                 continue;
             }
             if ($deadline <= $now) {
+                continue;
+            }
+            if (null !== $until && $deadline > $until) {
                 continue;
             }
             $items[] = ['tender_id' => (string) $row['id'], 'deadline_at' => $deadlineAt];

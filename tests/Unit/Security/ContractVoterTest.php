@@ -90,6 +90,38 @@ final class ContractVoterTest extends TestCase
         );
     }
 
+    public function testScanDelegatesToPermissionCheck(): void
+    {
+        $permissions = $this->createMock(PermissionCheckerInterface::class);
+        $manager = $this->user(UserRoleEnum::MANAGER);
+        $permissions->expects(self::once())
+            ->method('can')
+            ->with($manager, 'contracts.scan_upload')
+            ->willReturn(true);
+        $voter = new ContractVoter($permissions);
+
+        self::assertSame(
+            VoterInterface::ACCESS_GRANTED,
+            $voter->vote($this->token($manager), null, [ContractVoter::SCAN]),
+        );
+    }
+
+    public function testScanDeniedWhenPermissionFails(): void
+    {
+        $permissions = $this->createMock(PermissionCheckerInterface::class);
+        $agent = $this->user(UserRoleEnum::AGENT);
+        $permissions->expects(self::once())
+            ->method('can')
+            ->with($agent, 'contracts.scan_upload')
+            ->willReturn(false);
+        $voter = new ContractVoter($permissions);
+
+        self::assertSame(
+            VoterInterface::ACCESS_DENIED,
+            $voter->vote($this->token($agent), null, [ContractVoter::SCAN]),
+        );
+    }
+
     public function testSignGrantedByPermissionForCustomer(): void
     {
         $customer = $this->user(UserRoleEnum::ADMIN);

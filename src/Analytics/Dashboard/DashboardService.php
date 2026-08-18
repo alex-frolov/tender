@@ -22,11 +22,21 @@ use Symfony\Component\Uid\Uuid;
  *
  * Срез данных — компания актора (tenant-изоляция на уровне запросов модулей);
  * актор без компании (platform_admin) не имеет дашборда компании → 409.
+ *
+ * period (day/week/month) ограничивает горизонт upcoming_deadlines
+ * (ближайшие 1 день / 7 дней / 30 дней); счётчики — снапшот-мгновенные.
  */
 final readonly class DashboardService
 {
     /** Максимум дедлайнов в ответе. */
     private const int DEADLINE_LIMIT = 10;
+
+    /** Горизонты дедлайнов по period (day/week/month) → смещение от now. */
+    private const array PERIOD_HORIZONS = [
+        'day' => 'P1D',
+        'week' => 'P7D',
+        'month' => 'P30D',
+    ];
 
     public function __construct(
         private TenderDashboardQuery $tenders,
@@ -37,24 +47,27 @@ final readonly class DashboardService
     }
 
     /**
+     * @param string|null $period горизонт дедлайнов (day/week/month) или null без ограничения
+     *
      * @return array{active_tenders: int, my_bids: int, my_contracts: int,
      *              upcoming_deadlines: list<array{entity_type: string, entity_id: string, deadline_at: string}>}
      *
      * @throws ConflictException если актор без компании
      */
-    public function get(User $actor): array
+    public function get(User $actor, ?string $period = null): array
     {
         $companyId = $this->requireCompany($actor);
+        $until = $this->horizon($period);
 
         $deadlines = [];
-        foreach ($this->tenders->upcomingBidDeadlines($companyId, self::DEADLINE_LIMIT) as $row) {
+        foreach ($this->tenders->upcomingBidDeadlines($companyId, self::DEADLINE_LIMIT, $until) as $row) {
             $deadlines[] = [
                 'entity_type' => 'tender',
                 'entity_id' => $row['tender_id'],
                 'deadline_at' => $row['deadline_at'],
             ];
         }
-        foreach ($this->auctions->upcomingTradeEnds($companyId, self::DEADLINE_LIMIT) as $row) {
+        foreach ($this->auctions->upcomingTradeEnds($companyId, self::DEADLINE_LIMIT, $until) as $row) {
             $deadlines[] = [
                 'entity_type' => 'auction',
                 'entity_id' => $row['auction_id'],
@@ -86,5 +99,20 @@ final readonly class DashboardService
         }
 
         return $companyId;
+    }
+
+    /**
+     * Верхняя граница горизонта дедлайнов по period (day/week/month):
+     * now + смещение. Неизвестный/отсутствующий period → null (без ограничения);
+     * допустимость значений гарантирует ChoiceType формы DashboardQueryType.
+     */
+    private function horizon(?string $period): ?\DateTimeImmutable
+    {
+        $interval = self::PERIOD_HORIZONS[$period ?? ''] ?? null;
+        if (null === $interval) {
+            return null;
+        }
+
+        return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->add(new \DateInterval($interval));
     }
 }

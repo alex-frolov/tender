@@ -75,6 +75,9 @@ class Tender
     #[ORM\Column(length: 100, nullable: true)]
     private ?string $region = null;
 
+    #[ORM\Column(length: 20, nullable: true)]
+    private ?string $okpd2 = null;
+
     #[ORM\Column(type: 'string', length: 20, enumType: AccessTypeEnum::class, options: ['default' => 'open'])]
     private AccessTypeEnum $accessType = AccessTypeEnum::OPEN;
 
@@ -153,6 +156,7 @@ class Tender
         AccessTypeEnum $accessType = AccessTypeEnum::OPEN,
         ?Uuid $requiredContractTypeId = null,
         ?array $timeline = null,
+        ?string $okpd2 = null,
         bool $securityRequired = false,
         ?array $nationalRegime = null,
     ) {
@@ -174,6 +178,7 @@ class Tender
         $this->accessType = $accessType;
         $this->requiredContractTypeId = $requiredContractTypeId;
         $this->timeline = $timeline;
+        $this->okpd2 = $okpd2;
         $this->securityRequired = $securityRequired;
         $this->nationalRegime = $nationalRegime;
         $this->createdAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
@@ -249,6 +254,11 @@ class Tender
     public function getRegion(): ?string
     {
         return $this->region;
+    }
+
+    public function getOkpd2(): ?string
+    {
+        return $this->okpd2;
     }
 
     public function getAccessType(): AccessTypeEnum
@@ -352,6 +362,17 @@ class Tender
         }
     }
 
+    /**
+     * Удаление лота (FR-1.1.7, DELETE /tenders/{tenderId}/lots/{lotId}).
+     * Инвариант суммы лотов (assertLotsSumInvariant) проверяет вызывающий сервис.
+     */
+    public function removeLot(Lot $lot): void
+    {
+        if ($this->lots->contains($lot)) {
+            $this->lots->removeElement($lot);
+        }
+    }
+
     public function lotCount(): int
     {
         return $this->lots->count();
@@ -440,6 +461,15 @@ class Tender
     }
 
     /**
+     * Установка НМЦК (FR-1.1.7). Вызывается при изменении состава лотов
+     * (удаление лота пересчитывает nmck = сумма оставшихся).
+     */
+    public function updateNmck(int $nmckMinor): void
+    {
+        $this->nmckMinor = $nmckMinor;
+    }
+
+    /**
      * Сумма price_net_minor всех лотов (кан. база, FR-1.1.7).
      */
     public function lotsSumNetMinor(): int
@@ -512,6 +542,12 @@ class Tender
     public function setRegion(?string $region): void
     {
         $this->region = $region;
+        $this->touch();
+    }
+
+    public function setOkpd2(?string $okpd2): void
+    {
+        $this->okpd2 = $okpd2;
         $this->touch();
     }
 

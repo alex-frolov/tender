@@ -158,4 +158,32 @@ class Company
     {
         $this->timezoneDefault = $timezone;
     }
+
+    public function setLegalName(string $legalName): void
+    {
+        $this->legalName = $legalName;
+    }
+
+    public function setKpp(?string $kpp): void
+    {
+        $this->kpp = $kpp;
+    }
+
+    public function setOgrn(?string $ogrn): void
+    {
+        $this->ogrn = $ogrn;
+    }
+
+    public function setAddress(?string $address): void
+    {
+        $this->address = $address;
+    }
+
+    /**
+     * @param array<string, mixed>|null $contacts
+     */
+    public function setContacts(?array $contacts): void
+    {
+        $this->contacts = $contacts;
+    }
 }

@@ -19,9 +19,12 @@ use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tender\Entity\Enum\TenderStatusTransition;
 use App\Tender\Entity\Lot;
 use App\Tender\Entity\Tender;
+use App\Tender\Exception\LotsSumMismatchException;
 use App\Tender\Exception\RatingNotAllowedException;
 use App\Tender\Input\CreateTenderInput;
+use App\Tender\Input\LotCreateInput;
 use App\Tender\Input\LotInput;
+use App\Tender\Input\LotUpdateInput;
 use App\Tender\Input\UpdateTenderInput;
 use App\Tender\Repository\TenderRepository;
 use App\Tender\Service\TenderTimelineScheduler;
@@ -92,6 +95,7 @@ final class TenderService
             noStartPrice: $input->noStartPrice,
             description: $input->description,
             region: $input->region,
+            okpd2: $input->okpd2,
             accessType: $input->accessType ? $this->accessType($input->accessType) : AccessTypeEnum::OPEN,
             requiredContractTypeId: $input->requiredContractTypeId ? InputValue::uuid($input->requiredContractTypeId, 'required_contract_type_id') : null,
             timeline: $input->timeline,
@@ -185,6 +189,9 @@ final class TenderService
         }
         if (null !== $input->region) {
             $tender->setRegion('' === $input->region ? null : $input->region);
+        }
+        if (null !== $input->okpd2) {
+            $tender->setOkpd2('' === $input->okpd2 ? null : $input->okpd2);
         }
         if (null !== $input->timeline) {
             $tender->setTimeline([] === $input->timeline ? null : $input->timeline);
@@ -351,6 +358,156 @@ final class TenderService
         }
 
         $tender->assertLotsSumInvariant();
+    }
+
+    /**
+     * Добавление лота в тендер (FR-1.1.7, POST /tenders/{tenderId}/lots).
+     * Только до окончания приёма заявок. После добавления пересчитывается
+     * инвариант суммы: Σ price_net_minor лотов = nmck_minor (иначе 422
+     * LotsSumMismatchException). Номер лота — следующий по порядку.
+     *
+     * @throws NotFoundException        если тендер не найден в компании актора
+     * @throws ConflictException        если тендер уже нельзя редактировать
+     * @throws LotsSumMismatchException если сумма лотов ≠ НМЦК (422)
+     */
+    public function addLot(User $actor, string $tenderId, LotCreateInput $input, ?string $ip = null): Lot
+    {
+        $companyId = InputValue::companyId($actor);
+        $tender = $this->resolveTender($companyId, $tenderId);
+        $this->assertEditable($tender);
+
+        $nextNumber = $tender->lotCount() + 1;
+        $lot = $this->buildLot($tender, $input, $nextNumber - 1);
+        $tender->addLot($lot);
+        $tender->assertLotsSumInvariant();
+
+        $this->transaction->commitLotCreated($tender, $lot, $actor, $companyId, $ip);
+
+        return $lot;
+    }
+
+    /**
+     * Изменение лота (FR-1.1.7, PATCH /tenders/{tenderId}/lots/{lotId}).
+     * Только до окончания приёма заявок. Изменяются только указанные поля;
+     * после правки пересчитывается инвариант суммы лотов (422 при несовпадении).
+     *
+     * @throws NotFoundException        если тендер/лот не найден в компании актора
+     * @throws ConflictException        если тендер уже нельзя редактировать
+     * @throws LotsSumMismatchException если сумма лотов ≠ НМЦК (422)
+     */
+    public function updateLot(User $actor, string $tenderId, string $lotId, LotUpdateInput $input, ?string $ip = null): Lot
+    {
+        $companyId = InputValue::companyId($actor);
+        $tender = $this->resolveTender($companyId, $tenderId);
+        $this->assertEditable($tender);
+
+        $lot = $this->resolveLot($tender, $lotId);
+        $before = $this->lotSnapshot($lot);
+
+        $executionStartAt = null;
+        if (null !== $input->executionStartAt) {
+            try {
+                $executionStartAt = '' === $input->executionStartAt
+                    ? null
+                    : new \DateTimeImmutable($input->executionStartAt, new \DateTimeZone('UTC'));
+            } catch (\Exception $e) {
+                throw new ValidationException('execution_start_at must be a valid date-time');
+            }
+        }
+
+        // Title — обязательное поле лота: пустую строку игнорируем (не очищаем).
+        $lot->update(
+            title: $input->title ?? $lot->getTitle(),
+            priceNetMinor: $input->priceNetMinor,
+            vatRateBps: null !== $input->vatRate ? $this->vatBps($input->vatRate) : null,
+            priceBasis: null !== $input->priceBasis ? $this->priceBasis($input->priceBasis) : null,
+            quantity: $input->quantity,
+            unit: $input->unit,
+            deliveryTerms: $input->deliveryTerms,
+            executionStartAt: $executionStartAt,
+            tradeEndLeadHours: $input->tradeEndLeadHours,
+            securityPercent: $input->securityPercent,
+        );
+
+        $tender->assertLotsSumInvariant();
+        $this->transaction->commitLotUpdated($tender, $lot, $before, $actor, $companyId, $ip);
+
+        return $lot;
+    }
+
+    /**
+     * Удаление лота (FR-1.1.7, DELETE /tenders/{tenderId}/lots/{lotId}).
+     * Только до окончания приёма заявок. Удалять последний лот нельзя
+     * (тендер без лотов не может быть опубликован). После удаления лоты
+     * перенумеровываются 1..N.
+     *
+     * @throws NotFoundException   если тендер/лот не найден в компании актора
+     * @throws ConflictException   если тендер уже нельзя редактировать
+     * @throws ValidationException если это последний лот тендера
+     */
+    public function removeLot(User $actor, string $tenderId, string $lotId, ?string $ip = null): void
+    {
+        $companyId = InputValue::companyId($actor);
+        $tender = $this->resolveTender($companyId, $tenderId);
+        $this->assertEditable($tender);
+
+        $lot = $this->resolveLot($tender, $lotId);
+        if (1 === $tender->lotCount()) {
+            throw new ValidationException('tender must have at least one lot');
+        }
+
+        $tender->removeLot($lot);
+
+        // НМЦК = сумма оставшихся лотов (FR-1.1.7); при no_start_price не трогаем.
+        if (!$tender->isNoStartPrice() && null !== $tender->getNmckMinor()) {
+            $tender->updateNmck($tender->lotsSumNetMinor());
+        }
+
+        $tender->assertLotsSumInvariant();
+        // Перенумерация выполняется в transaction ПОСЛЕ flush удаления
+        // (иначе конфликт уникального ключа (tender_id, number)).
+        $this->transaction->commitLotRemoved($tender, $lot, $actor, $companyId, $ip);
+    }
+
+    /**
+     * Лот в рамках тендера (tenant-изоляция: лот ищем только среди лотов тендера).
+     *
+     * @throws NotFoundException если лот не найден в тендере
+     */
+    private function resolveLot(Tender $tender, string $lotId): Lot
+    {
+        if (!Uuid::isValid($lotId)) {
+            throw new NotFoundException('Lot not found');
+        }
+
+        foreach ($tender->getLots() as $lot) {
+            if ($lot->getId()->equals(Uuid::fromString($lotId))) {
+                return $lot;
+            }
+        }
+
+        throw new NotFoundException('Lot not found');
+    }
+
+    /**
+     * Снимок полей лота для аудита (before).
+     *
+     * @return array<string, mixed>
+     */
+    private function lotSnapshot(Lot $lot): array
+    {
+        return [
+            'title' => $lot->getTitle(),
+            'price_net_minor' => $lot->getPriceNetMinor(),
+            'price_gross_minor' => $lot->getPriceGrossMinor(),
+            'vat_rate' => $lot->getVatRateBps() / 100,
+            'price_basis' => $lot->getPriceBasis()->value,
+            'quantity' => $lot->getQuantity(),
+            'unit' => $lot->getUnit(),
+            'execution_start_at' => $lot->getExecutionStartAt()?->format('Y-m-d\TH:i:s\Z'),
+            'trade_end_lead_hours' => $lot->getTradeEndLeadHours(),
+            'security_percent' => $lot->getSecurityPercent(),
+        ];
     }
 
     /**

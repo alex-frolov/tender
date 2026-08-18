@@ -6,6 +6,7 @@ namespace App\Infrastructure\Console;
 
 use App\Iam\Entity\Enum\LocaleEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\Enum\UserStatusTransition;
 use App\Iam\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -16,7 +17,9 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Workflow\WorkflowInterface;
 
 /**
  * Создание системного суперадминистратора (роль platform_admin, ADR-005:
@@ -40,6 +43,8 @@ final class CreatePlatformAdminCommand extends Command
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserPasswordHasherInterface $passwordHasher,
+        #[Autowire(service: 'state_machine.user_status')]
+        private readonly WorkflowInterface $userWorkflow,
     ) {
         parent::__construct();
     }
@@ -72,7 +77,11 @@ final class CreatePlatformAdminCommand extends Command
             locale: LocaleEnum::RU,
         );
         $user->setPasswordHash($this->passwordHasher->hashPassword($user, $password));
-        // Системный аккаунт установки: сразу ACTIVE, без email-подтверждения.
+        // Системный аккаунт установки: сразу ACTIVE (email_pending → active по
+        // workflow user_status), без email-подтверждения.
+        if ($this->userWorkflow->can($user, UserStatusTransition::VERIFY_EMAIL->value)) {
+            $this->userWorkflow->apply($user, UserStatusTransition::VERIFY_EMAIL->value);
+        }
         $user->markEmailVerified();
 
         $this->em->persist($user);

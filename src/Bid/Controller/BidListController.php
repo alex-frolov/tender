@@ -7,6 +7,8 @@ namespace App\Bid\Controller;
 use App\Bid\UseCase\ListBidsUseCase;
 use App\Controller\AbstractBaseController;
 use App\Security\BidVoter;
+use App\Shared\Form\PaginatorForm;
+use App\Shared\Input\Paginator;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -29,7 +31,10 @@ final class BidListController extends AbstractBaseController
     public function list(Request $request, string $tenderId, ListBidsUseCase $useCase): JsonResponse
     {
         $user = $this->currentUser($request);
+        $paginatorForm = $this->formQuery(PaginatorForm::class, $request);
+        /** @var Paginator $paginator */
+        $paginator = $paginatorForm->getData();
 
-        return $this->json($useCase->execute(user: $user, tenderId: $tenderId));
+        return $this->json($useCase->execute(user: $user, tenderId: $tenderId, paginator: $paginator));
     }
 }

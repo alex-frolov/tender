@@ -70,7 +70,12 @@ paths:
                                     refresh_token: { type: string }
                                     expires_in: { type: integer, description: 'Access token lifetime in seconds' }
                                     token_type: { type: string, example: Bearer }
-                '401': { $ref: '#/components/responses/Unauthorized' }
+                '401':
+                    description: |
+                        Bad credentials, or second factor required. When 2FA is enabled the error
+                        carries code=totp_required / two_factor_required (see ErrorCode registry) —
+                        retry the same request with totp_code.
+                    $ref: '#/components/responses/Unauthorized'
                 '403':
                     description: Email not verified / user deleted / blocked
                     $ref: '#/components/responses/Forbidden'
@@ -824,6 +829,96 @@ paths:
                                 type: object
                                 properties:
                                     items: { type: array, items: { $ref: '#/components/schemas/Lot' } }
+        post:
+            tags: [tenders]
+            summary: Add a lot to the tender
+            operationId: createLot
+            description: |
+                Add a new lot to a tender before the bid acceptance closes (editable statuses:
+                draft/published/withdrawn/accepting_bids). The lot number is assigned as the next
+                in order. After adding, the lots-sum invariant is re-checked: the sum of
+                price_net_minor of all lots must equal nmck_minor (409 lots_sum_mismatch).
+                Access: tenders.update permission (admin/manager; agent — 403).
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/LotCreate' }
+            responses:
+                '201':
+                    description: Lot created
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Lot' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Conflict (code: conflict — tender cannot be edited)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /tenders/{tenderId}/lots/{lotId}:
+        patch:
+            tags: [tenders]
+            summary: Update a lot
+            operationId: updateLot
+            description: |
+                Edit lot fields before the bid acceptance closes. Only specified fields are
+                changed (null = keep). price_net_minor/vat_rate recompute price_gross_minor
+                (net→gross, HALF_UP). After the edit, the lots-sum invariant is re-checked
+                (409 lots_sum_mismatch). Access: tenders.update (admin/manager; agent — 403).
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+                - name: lotId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema: { $ref: '#/components/schemas/LotUpdate' }
+            responses:
+                '200':
+                    description: Lot updated
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Lot' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Conflict (code: conflict — tender cannot be edited)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
+        delete:
+            tags: [tenders]
+            summary: Delete a lot
+            operationId: deleteLot
+            description: |
+                Remove a lot before the bid acceptance closes. The last lot cannot be removed
+                (a tender must have at least one lot to be published); remaining lots are
+                renumbered 1..N. After removal the lots-sum invariant is re-checked.
+                Access: tenders.update (admin/manager; agent — 403).
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+                - name: lotId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '204':
+                    description: Lot deleted
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409':
+                    description: 'Conflict (code: conflict — tender cannot be edited)'
+                    $ref: '#/components/responses/Conflict'
+                '422': { $ref: '#/components/responses/ValidationError' }
 
     # ================= PROCUREMENT PLANS =================
     /procurement-plans:
@@ -843,6 +938,7 @@ paths:
                                 type: object
                                 properties:
                                     items: { type: array, items: { $ref: '#/components/schemas/ProcurementPlan' } }
+                                    next_cursor: { type: string, nullable: true }
         post:
             tags: [tenders]
             summary: Create a procurement plan
@@ -959,6 +1055,26 @@ paths:
 
     # ================= AUCTIONS =================
     /auctions:
+        get:
+            tags: [auctions]
+            summary: List auctions of my company
+            operationId: listAuctions
+            description: |
+                List of auctions of the actor's company (tenant-isolated). Compact items:
+                id, tender/lot, type, status, prices, timer. No pagination (one auction per
+                lot — the list size is bounded by the business flow). Full detail —
+                GET /auctions/{id}/state. Access: tenders.board.view (all company roles).
+            responses:
+                '200':
+                    description: List of auctions
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/AuctionListItem' } }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
         post:
             tags: [auctions]
             summary: Create an auction for a lot (status=new, or scheduled when scheduled_start_at is set)
@@ -1684,6 +1800,7 @@ paths:
                                 type: object
                                 properties:
                                     items: { type: array, items: { $ref: '#/components/schemas/Contract' } }
+                                    next_cursor: { type: string, nullable: true }
         post:
             tags: [contracts]
             summary: Create a contract (for a tender or a framework contract outside a tender)
@@ -1830,6 +1947,7 @@ paths:
                                 contract_id: { type: string, format: uuid }
                                 stage: { type: string, enum: [approve, in_work, done_by_performer] }
                                 reason: { type: string, minLength: 1 }
+                                description: { type: string, maxLength: 2000 }
                                 amount_minor: { type: integer, minimum: 0 }
                                 document_ids: { type: array, items: { type: string, format: uuid } }
             responses:
@@ -2145,6 +2263,10 @@ paths:
             parameters:
                 - name: period
                   in: query
+                  description: >-
+                    Горизонт ближайших дедлайнов: day (1 день), week (7 дней),
+                    month (30 дней). Не задан — без ограничения.
+                    Счётчики от period не зависят.
                   schema: { type: string, enum: [day, week, month] }
             responses:
                 '200':
@@ -2319,6 +2441,7 @@ paths:
                                         type: string
                                         description: 'see events.md (tender.*, auction.*, bid.*, contract.*, execution.*, claim.*)'
                                 filters: { type: object, additionalProperties: true }
+                                status: { type: string, enum: [active, paused], description: 'Subscription activity (default active)' }
             responses:
                 '201':
                     description: Subscription created
@@ -2394,6 +2517,7 @@ paths:
                                 type: object
                                 properties:
                                     items: { type: array, items: { $ref: '#/components/schemas/WebhookDelivery' } }
+                                    next_cursor: { type: string, nullable: true }
 
     # ================= LIMITS / USAGE =================
     /usage:
@@ -2751,6 +2875,7 @@ components:
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }
                 customer_id: { type: string, format: uuid }
                 region: { type: string, maxLength: 100 }
+                okpd2: { type: string, maxLength: 20, description: 'ОКПД2 код предмета закупки' }
                 access_type: { type: string, enum: [open, contract_holders], default: open }
                 required_contract_type_id: { type: string, format: uuid, nullable: true }
                 timeline:
@@ -2768,6 +2893,7 @@ components:
                 title: { type: string, maxLength: 500 }
                 description: { type: string, maxLength: 10000 }
                 region: { type: string, maxLength: 100 }
+                okpd2: { type: string, maxLength: 20, description: 'ОКПД2 код предмета закупки' }
                 timeline: { type: object, additionalProperties: { type: string, format: date-time } }
                 change_reason: { type: string, maxLength: 1000 }
         CancelTenderRequest:
@@ -2798,6 +2924,7 @@ components:
                 status: { $ref: '#/components/schemas/TenderStatus' }
                 access_type: { type: string, enum: [open, contract_holders] }
                 execution_rating: { type: integer, nullable: true }
+                okpd2: { type: string, maxLength: 20, nullable: true, description: 'ОКПД2 код предмета закупки' }
                 cancellation_reason_code: { type: string, nullable: true }
                 cancellation_reason_text: { type: string, nullable: true }
                 lots: { type: array, items: { $ref: '#/components/schemas/Lot' } }
@@ -2814,6 +2941,7 @@ components:
                 nmck_minor: { type: integer, nullable: true }
                 currency: { type: string }
                 region: { type: string, nullable: true }
+                okpd2: { type: string, maxLength: 20, nullable: true }
                 deadline: { type: string, format: date-time, nullable: true }
                 lot_count: { type: integer }
 
@@ -2832,6 +2960,20 @@ components:
                 delivery_terms: { type: object, additionalProperties: true }
                 execution_start_at: { type: string, format: date-time, nullable: true }
                 trade_end_lead_hours: { type: integer, default: 0 }
+                security_percent: { type: number, minimum: 0, maximum: 100 }
+        LotUpdate:
+            type: object
+            description: Edit allowed lot fields before the bid submission deadline
+            properties:
+                title: { type: string, maxLength: 500 }
+                price_net_minor: { type: integer, minimum: 0 }
+                vat_rate: { type: number }
+                price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                quantity: { type: number }
+                unit: { type: string, maxLength: 50 }
+                delivery_terms: { type: object, additionalProperties: true }
+                execution_start_at: { type: string, format: date-time, nullable: true }
+                trade_end_lead_hours: { type: integer, minimum: 0 }
                 security_percent: { type: number, minimum: 0, maximum: 100 }
         Lot:
             type: object
@@ -2911,6 +3053,7 @@ components:
                 part1: { type: object, nullable: true, description: 'part 1 (consent, characteristics) — after opening: to the customer and participants' }
                 part2_ref: { type: array, nullable: true, items: { type: string }, description: 'part 2 (documents) — after opening: to the customer only' }
                 evaluated_at: { type: string, format: date-time, nullable: true }
+                created_at: { type: string, format: date-time }
 
         # ---------- Auction ----------
         AuctionType:
@@ -3031,6 +3174,22 @@ components:
                     type: integer
                     minimum: 0
                     description: 'Max anti-sniping extensions'
+        AuctionListItem:
+            type: object
+            description: Compact auction list item (GET /auctions)
+            properties:
+                id: { type: string, format: uuid }
+                tender_id: { type: string, format: uuid }
+                lot_id: { type: string, format: uuid }
+                type: { $ref: '#/components/schemas/AuctionType' }
+                status: { $ref: '#/components/schemas/AuctionStatus' }
+                no_start_price: { type: boolean }
+                current_price_minor: { type: integer, nullable: true }
+                start_price_minor: { type: integer, nullable: true }
+                planned_end_at: { type: string, format: date-time, nullable: true }
+                remaining_sec: { type: integer, nullable: true }
+                winner_bid_id: { type: string, format: uuid, nullable: true }
+
         AuctionState:
             type: object
             description: |
@@ -3143,6 +3302,7 @@ components:
                 status: { type: string, enum: [draft, pending, resolved] }
                 text: { type: string }
                 ground: { type: string }
+                document_ids: { type: array, items: { type: string, format: uuid } }
                 resolution: { type: string, nullable: true }
 
         # ---------- Documents ----------
@@ -3169,6 +3329,7 @@ components:
                 visibility: { $ref: '#/components/schemas/DocumentVisibility' }
                 required: { type: boolean }
                 auto_generated: { type: boolean }
+                active: { type: boolean }
         Document:
             type: object
             properties:
@@ -3220,6 +3381,7 @@ components:
                 customer_id: { type: string, format: uuid }
                 supplier_id: { type: string, format: uuid }
                 scope: { $ref: '#/components/schemas/ContractScope' }
+                tender_id: { type: string, format: uuid, nullable: true, description: 'For source=tender: the tender the contract is based on' }
                 price_net_minor: { type: integer, minimum: 0, nullable: true }
                 vat_rate: { type: number }
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }
@@ -3246,6 +3408,9 @@ components:
                 signed_at: { type: string, format: date-time, nullable: true }
                 registered_at: { type: string, format: date-time, nullable: true }
                 terminated_at: { type: string, format: date-time, nullable: true }
+                terms: { type: object, nullable: true, additionalProperties: true, description: 'Contract terms (delivery, payment)' }
+                created_at: { type: string, format: date-time }
+                version: { type: integer }
                 tenders: { type: array, items: { $ref: '#/components/schemas/ContractTender' } }
         ContractTenderStatus:
             type: string
@@ -3297,6 +3462,8 @@ components:
                 legal_name: { type: string }
                 inn: { type: string }
                 categories: { type: array, items: { type: string } }
+                capabilities: { type: array, items: { type: string } }
+                documents: { type: array, items: { type: string, format: uuid } }
                 rating: { type: number, nullable: true }
                 verification_status: { type: string, enum: [unverified, pending, verified] }
                 rnp_blocked: { type: boolean }
@@ -3438,6 +3605,7 @@ components:
                 - access_denied (409) — closed tender without an active framework contract
                 - org_pending (403) — the company is not approved by the superadmin: the customer cannot create tenders, the performer cannot submit bids
                 - email_not_verified (403) — the user's email is not verified
+                - two_factor_required (401) — second factor (TOTP) required to complete sign-in; retry with totp_code
                 - contract_expired (409) — contract expired/terminated
                 - idempotency_conflict (409) — repeated Idempotency-Key with a different payload
                 - cancel_reason_required (422) — cancellation without a reason

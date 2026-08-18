@@ -66,6 +66,30 @@ doctrine:
                 dir: '%kernel.project_dir%/src/Platform/Entity'
                 prefix: 'App\Platform\Entity'
                 alias: PlatformEntity
+            SupplierEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Supplier/Entity'
+                prefix: 'App\Supplier\Entity'
+                alias: SupplierEntity
+            ProcurementPlanEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/ProcurementPlan/Entity'
+                prefix: 'App\ProcurementPlan\Entity'
+                alias: ProcurementPlanEntity
+            QuestionEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Question/Entity'
+                prefix: 'App\Question\Entity'
+                alias: QuestionEntity
+            ComplaintEntity:
+                type: attribute
+                is_bundle: false
+                dir: '%kernel.project_dir%/src/Complaint/Entity'
+                prefix: 'App\Complaint\Entity'
+                alias: ComplaintEntity
             NotificationEntity:
                 type: attribute
                 is_bundle: false

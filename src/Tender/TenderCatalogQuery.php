@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Tender;
 
-use App\Tender\Entity\Enum\TenderStatusEnum;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -22,12 +21,13 @@ interface TenderCatalogQuery
     /**
      * Страница каталога тендеров компании.
      *
-     * @param Uuid                  $tenantId компания-тенант
-     * @param TenderStatusEnum|null $status   фильтр по статусу тендера
-     * @param string|null           $cursor   OPAQUE-курсор из предыдущего ответа (null — первая страница)
-     * @param int                   $limit    размер страницы (1..100)
+     * @param Uuid          $tenantId компания-тенант
+     * @param TenderFilters $filters  фильтры каталога (status, q, law_type,
+     *                                region, price_min/max, access_type)
+     * @param string|null   $cursor   OPAQUE-курсор из предыдущего ответа (null — первая страница)
+     * @param int           $limit    размер страницы (1..100)
      *
      * @throws \App\Shared\Exception\ValidationException если курсор невалиден
      */
-    public function page(Uuid $tenantId, ?TenderStatusEnum $status, ?string $cursor, int $limit): TenderCatalogPage;
+    public function page(Uuid $tenantId, TenderFilters $filters, ?string $cursor, int $limit): TenderCatalogPage;
 }

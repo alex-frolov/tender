@@ -37,6 +37,10 @@ final class TenderUpdateType extends AbstractType
                 'required' => false,
                 'constraints' => [new Length(max: 100)],
             ])
+            ->add('okpd2', TextType::class, [
+                'required' => false,
+                'constraints' => [new Length(max: 20)],
+            ])
             ->add('timeline', CollectionType::class, [
                 'required' => false,
                 'allow_add' => true,

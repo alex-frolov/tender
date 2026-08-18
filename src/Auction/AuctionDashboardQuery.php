@@ -23,10 +23,12 @@ interface AuctionDashboardQuery
     /**
      * Ближайшие окончания живых торгов (GET /dashboard upcoming_deadlines):
      * TRADE-аукционы с planned_end_at в будущем, отсортированные по сроку.
+     * $until — верхняя граница горизонта (period day/week/month): учитываются
+     * только окончания ≤ until; null — без ограничения.
      *
      * @return list<array{auction_id: string, tender_id: string, deadline_at: string}>
      */
-    public function upcomingTradeEnds(Uuid $tenantId, int $limit): array;
+    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array;
 
     /**
      * Средний процент снижения по тендеру за период [from, to) (GET /stats/tenders

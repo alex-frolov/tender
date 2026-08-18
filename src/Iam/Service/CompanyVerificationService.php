@@ -9,6 +9,7 @@ use App\Iam\Entity\Enum\CompanyStatusEnum;
 use App\Iam\Entity\Enum\CompanyStatusTransition;
 use App\Iam\Entity\User;
 use App\Iam\Exception\CompanyNotFoundException;
+use App\Iam\Repository\CompanyRepository;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\StateTransitionException;
 use App\Shared\Exception\ValidationException;
@@ -39,6 +40,7 @@ final readonly class CompanyVerificationService
 {
     public function __construct(
         private EntityManagerInterface $em,
+        private CompanyRepository $companyRepository,
         private AuditService $audit,
         #[Autowire(service: 'state_machine.company_verification')]
         private WorkflowInterface $companyWorkflow,
@@ -99,16 +101,6 @@ final readonly class CompanyVerificationService
         return $this->apply($companyId, $actor, CompanyStatusTransition::SUSPEND->value, 'company.suspended', $ip);
     }
 
-    private function findOrFail(Uuid $companyId): Company
-    {
-        $company = $this->em->getRepository(Company::class)->find($companyId);
-        if (null === $company) {
-            throw new CompanyNotFoundException('Company not found');
-        }
-
-        return $company;
-    }
-
     /**
      * Разобрать companyId из строки; невалидный UUID трактуется как «не найдена» (404).
      *
@@ -138,7 +130,7 @@ final readonly class CompanyVerificationService
         ?string $ip,
         ?array $extra = null,
     ): Company {
-        $company = $this->findOrFail($companyId);
+        $company = $this->companyRepository->findOrFail($companyId);
         if (!$this->companyWorkflow->can($company, $transition)) {
             throw new StateTransitionException('Invalid verification transition');
         }

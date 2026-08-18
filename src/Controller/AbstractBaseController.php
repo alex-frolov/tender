@@ -62,9 +62,14 @@ abstract class AbstractBaseController extends AbstractController
      * различать «поле не передано» и «явный null» (PATCH со сбросом): дефолты
      * DTO сохраняются для отсутствующих полей (clearMissing=false).
      *
+     * $clearMissing — флаг submit() формы (по умолчанию = $strict). Для
+     * entity-bound update форм (data_class = Entity, $data = сущность) всегда
+     * передавать clearMissing: false: отсутствующие в теле поля сохраняют
+     * текущие значения сущности (PATCH-семантика), а не очищаются.
+     *
      * @return FormInterface<null>
      */
-    protected function formInput(string $type, Request $request, bool $strict = false, ?object $data = null): FormInterface
+    protected function formInput(string $type, Request $request, bool $strict = false, ?object $data = null, ?bool $clearMissing = null): FormInterface
     {
         $dataBody = $this->jsonBody($request);
         if ($strict && null === $dataBody && '' !== trim((string) $request->getContent())) {
@@ -75,7 +80,49 @@ abstract class AbstractBaseController extends AbstractController
         $formType = $type;
         /** @var FormInterface<null> $form */
         $form = $this->createForm($formType, $data, ['csrf_protection' => false]);
-        $form->submit($dataBody ?? [], $strict);
+        $form->submit($dataBody ?? [], $clearMissing ?? $strict);
+
+        if (!$form->isValid()) {
+            throw new ValidationException($this->formErrorsMessage($form));
+        }
+
+        return $form;
+    }
+
+    /**
+     * Создать и засабмитить форму из GET-query-параметров (validation-by-form
+     * для списков/фильтров, AM: PaginatorForm, TenderListFiltersType и т.п.).
+     * В отличие от formInput (JSON-тело), источник данных — $request->query->all().
+     * Из query берутся ТОЛЬКО ключи, объявленные в форме (остальные игнорируются) —
+     * это позволяет нескольким формам (фильтры + пагинатор) жить на одном query.
+     * Невалидные данные → ValidationException (422) через JsonApiExceptionSubscriber.
+     *
+     * @param array<string, mixed> $options опции формы (например id_field для EntityIdQueryType)
+     *
+     * @return FormInterface<null>
+     */
+    protected function formQuery(string $type, Request $request, ?object $data = null, array $options = []): FormInterface
+    {
+        /** @var class-string<FormTypeInterface<object>> $formType */
+        $formType = $type;
+        /** @var FormInterface<null> $form */
+        $form = $this->createForm($formType, $data, ['csrf_protection' => false] + $options);
+        /** @var array<string, mixed> $query */
+        $query = $request->query->all();
+
+        // Оставляем только ключи, объявленные полями формы (для compound-форм —
+        // имена детей) — чужие query-параметры не приводят к «extra fields».
+        $allowed = [];
+        foreach ($form->all() as $child) {
+            $allowed[] = $child->getName();
+        }
+        if ([] === $allowed) {
+            $allowed = array_keys($query);
+        }
+        /** @var array<string, mixed> $submitted */
+        $submitted = array_intersect_key($query, array_flip($allowed));
+
+        $form->submit($submitted, false);
 
         if (!$form->isValid()) {
             throw new ValidationException($this->formErrorsMessage($form));

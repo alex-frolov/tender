@@ -8,6 +8,8 @@ use App\Auction\Entity\Auction;
 use App\Auction\UseCase\ListBidsUseCase;
 use App\Controller\AbstractBaseController;
 use App\Security\AuctionStreamVoter;
+use App\Shared\Form\PaginatorForm;
+use App\Shared\Input\Paginator;
 use Symfony\Bridge\Doctrine\Attribute\MapEntity;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -34,6 +36,10 @@ final class AuctionBidListController extends AbstractBaseController
         Auction $auction,
         ListBidsUseCase $useCase,
     ): JsonResponse {
-        return $this->json($useCase->execute($auction));
+        $paginatorForm = $this->formQuery(PaginatorForm::class, $request);
+        /** @var Paginator $paginator */
+        $paginator = $paginatorForm->getData();
+
+        return $this->json($useCase->execute($auction, $paginator));
     }
 }

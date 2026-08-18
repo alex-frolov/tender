@@ -152,6 +152,49 @@ Transitions (from `CompanyStatusTransition`):
 | `reject` | pending / suspended → rejected |
 | `suspend` | active → suspended |
 
+## User status workflow
+
+Статусная модель пользователя (`user_status`, `App\Iam\Entity\User`, marking store —
+`verificationStatus`). Покрывает FR-1.5.5 (регистрация / подтверждение email) и FR-1.5.8
+(приглашение / блокировка).
+
+```
+ invited ── accept_invite ──► active ── block ──► blocked
+                                    ▲                │
+ email_pending ── verify_email ────┘                └── unblock ──► active
+
+ (invited / email_pending / active / blocked) ── delete ──► deleted  [терминальный]
+```
+
+Начальные состояния задаются при создании пользователя (НЕ переходы):
+
+| Сценарий | Начальный статус |
+|---|---|
+| Самостоятельная регистрация (`RegisterService`) | `email_pending` (дефолт конструктора) |
+| Приглашение админом (`UserManagementService::invite`) | `invited` |
+| Платформенный админ (`CreatePlatformAdminCommand`) | `email_pending` → сразу `verify_email` |
+
+Transitions (from `UserStatusTransition`):
+
+| Transition | from → to | Когда |
+|---|---|---|
+| `verify_email` | email_pending → active | Подтверждение email по токену (`EmailVerificationService::verify`); также при создании платформенного админа |
+| `accept_invite` | invited → active | Принятие приглашения: сброс пароля приглашённого (`PasswordResetService::reset`) |
+| `block` | active → blocked | Админ блокирует пользователя (`UserManagementService::setStatus`); сессии отзываются |
+| `unblock` | blocked → active | Админ разблокирует (`UserManagementService::setStatus`) |
+| `delete` | invited / email_pending / active / blocked → deleted | Мягкое удаление (`UserManagementService::softDelete`); терминальный, обратных переходов нет |
+
+Пометки:
+- `markEmailVerified()` (сущность User) вызывается ПОСЛЕ `apply()` для фиксации
+  `email_verified_at` — маркировка хранит только статус, не дату.
+- `blocked` / `deleted` пользователь не может войти (`AuthenticationService`); блокировка
+  отзывает refresh-токены.
+- `deleted` = мягкое удаление (FR-1.5.9): email маскируется на `u_{uuid}@deleted.local`,
+  `deleted_at`/`masked_email` сохраняются для аудита; из списков исключается фильтром
+  `verificationStatus <> deleted` (enum-колонка индексируема — без сравнения с NULL).
+- Прямые мутации `verificationStatus` вне workflow запрещены (кроме первичной установки
+  начального статуса при создании).
+
 ## Applying transitions
 
 Services apply transitions only through the workflow:

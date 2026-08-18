@@ -10,7 +10,7 @@ namespace App\Tender\Input;
  * Обязательные поля лота (title, price_net_minor) — constraints в форме.
  * vat_rate/price_basis/currency, если не заданы, наследуются от тендера в сервисе.
  */
-final class LotInput
+class LotInput
 {
     public ?int $number = null;
 

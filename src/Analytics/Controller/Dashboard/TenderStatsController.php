@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Analytics\Controller\Dashboard;
 
+use App\Analytics\Form\TenderStatsQueryType;
+use App\Analytics\Input\TenderStatsQueryInput;
 use App\Analytics\UseCase\GetTenderStatsUseCase;
 use App\Controller\AbstractBaseController;
 use App\Security\DashboardVoter;
@@ -17,7 +19,8 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  *
  * Агрегаты по срезу dimension (region/customer/period; okpd2 в модели
  * отсутствует) за период [from, to): число тендеров, средний % снижения,
- * сумма цен договоров. Валидация среза/дат — в TenderStatsService (422).
+ * сумма цен договоров. Query-параметры — форма TenderStatsQueryType;
+ * валидация среза/дат — в TenderStatsService (422).
  * Доступ — право dashboard.view (common). Контракт: api/openapi.yaml.
  */
 final class TenderStatsController extends AbstractBaseController
@@ -28,15 +31,15 @@ final class TenderStatsController extends AbstractBaseController
     #[IsGranted(DashboardVoter::VIEW)]
     public function stats(Request $request, GetTenderStatsUseCase $useCase): JsonResponse
     {
-        $dimension = $request->query->get('dimension', 'region');
-        $from = $request->query->get('from');
-        $to = $request->query->get('to');
+        $queryForm = $this->formQuery(TenderStatsQueryType::class, $request);
+        /** @var TenderStatsQueryInput $query */
+        $query = $queryForm->getData();
 
         return $this->json($useCase->execute(
             actor: $this->currentUser($request),
-            dimension: \is_string($dimension) ? $dimension : 'region',
-            from: \is_string($from) ? $from : null,
-            to: \is_string($to) ? $to : null,
+            dimension: $query->dimension ?? 'region',
+            from: $query->from,
+            to: $query->to,
         ));
     }
 }

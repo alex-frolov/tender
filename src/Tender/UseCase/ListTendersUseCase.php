@@ -5,26 +5,29 @@ declare(strict_types=1);
 namespace App\Tender\UseCase;
 
 use App\Iam\Entity\User;
-use App\Shared\Exception\ValidationException;
 use App\Shared\Input\InputValue;
+use App\Shared\Input\Paginator;
+use App\Tender\Entity\Enum\AccessTypeEnum;
+use App\Tender\Entity\Enum\LawTypeEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
+use App\Tender\Input\TenderListFiltersInput;
 use App\Tender\TenderCatalogQuery;
+use App\Tender\TenderFilters;
 use App\Tender\TenderPresenter;
 
 /**
- * Список тендеров компании (FR-1.1.1, GET /tenders?status=&limit=&cursor=).
+ * Список тендеров компании (FR-1.1.1, GET /tenders).
  *
  * Query-use-case на read-модели TenderCatalogQuery (AR-6, NFR-22): keyset-пагинация
  * по (created_at, id), агрегированный статус при мультилоте — по id страницы
  * (FR-1.1.3, вариант C). Ответ — {items, next_cursor}; next_cursor — OPAQUE-курсор
- * для следующей страницы (null — страниц больше нет). Доступ — право
- * tenders.board.view через TenderVoter.
+ * для следующей страницы (null — страниц больше нет). Вход уже провалидирован
+ * формами (TenderListFiltersType + PaginatorForm) — здесь только маппинг DTO в
+ * доменный TenderFilters и лимит из Paginator. Доступ — право tenders.board.view
+ * через TenderVoter.
  */
 final readonly class ListTendersUseCase implements TenderUseCase
 {
-    public const int DEFAULT_LIMIT = 20;
-    public const int MAX_LIMIT = 100;
-
     public function __construct(
         private TenderCatalogQuery $catalog,
         private TenderPresenter $presenter,
@@ -34,13 +37,13 @@ final readonly class ListTendersUseCase implements TenderUseCase
     /**
      * @return array{items: list<array<string, mixed>>, next_cursor: string|null}
      */
-    public function execute(User $user, ?string $status = null, ?string $limit = null, ?string $cursor = null): array
+    public function execute(User $user, TenderListFiltersInput $filters, Paginator $paginator): array
     {
         $page = $this->catalog->page(
             InputValue::companyId($user),
-            $this->statusEnum($status),
-            $cursor,
-            $this->limit($limit),
+            $this->toDomainFilters($filters),
+            $paginator->cursor,
+            $paginator->limitValue(),
         );
 
         $items = array_map(
@@ -52,37 +55,35 @@ final readonly class ListTendersUseCase implements TenderUseCase
     }
 
     /**
-     * @throws ValidationException если статус не из TenderStatusEnum
+     * Маппинг DTO фильтров (формы) в доменный объект каталога.
      */
-    private function statusEnum(?string $status): ?TenderStatusEnum
+    private function toDomainFilters(TenderListFiltersInput $input): TenderFilters
     {
-        if (null === $status || '' === $status) {
-            return null;
-        }
-
-        $enum = TenderStatusEnum::tryFrom($status);
-        if (null === $enum) {
-            throw new ValidationException('invalid status');
-        }
-
-        return $enum;
+        return new TenderFilters(
+            q: $this->trimmedOrNull($input->q),
+            status: null !== $input->status && '' !== $input->status
+                ? TenderStatusEnum::from($input->status)
+                : null,
+            lawType: null !== $input->lawType && '' !== $input->lawType
+                ? LawTypeEnum::from($input->lawType)
+                : null,
+            region: $this->trimmedOrNull($input->region),
+            okpd2: $this->trimmedOrNull($input->okpd2),
+            priceMin: $input->priceMin,
+            priceMax: $input->priceMax,
+            accessType: null !== $input->accessType && '' !== $input->accessType
+                ? AccessTypeEnum::from($input->accessType)
+                : null,
+        );
     }
 
-    /**
-     * Лимит страницы: default 20, диапазон 1..100 (openapi Limit). Значения
-     * вне диапазона клампятся, нечисловые — 422.
-     *
-     * @throws ValidationException если limit не является положительным целым
-     */
-    private function limit(?string $raw): int
+    private function trimmedOrNull(?string $value): ?string
     {
-        if (null === $raw || '' === $raw) {
-            return self::DEFAULT_LIMIT;
+        if (null === $value) {
+            return null;
         }
-        if (!preg_match('/^\d+$/', $raw)) {
-            throw new ValidationException('limit must be a positive integer');
-        }
+        $trimmed = trim($value);
 
-        return max(1, min(self::MAX_LIMIT, (int) $raw));
+        return '' === $trimmed ? null : $trimmed;
     }
 }
