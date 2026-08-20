@@ -45,6 +45,48 @@ enum TenderStatusEnum: string
         };
     }
 
+    /**
+     * Круг видимости тендера в этом статусе (FR-1.5.14).
+     *
+     * Матрица:
+     *   draft, withdrawn, evaluation                  — только заказчик;
+     *   published, accepting_bids, bidding            — участники (с учётом
+     *                                                   access_type);
+     *   awarding, contract, closed, cancelled         — заказчик и исполнитель.
+     *
+     * Смысл: наружу закупка открыта ровно на тех стадиях, когда в ней можно
+     * участвовать. До публикации и во время рассмотрения заявок это внутренняя
+     * работа заказчика, а после определения победителя — двусторонние
+     * отношения заказчика и исполнителя.
+     */
+    public function visibilityLevel(): TenderVisibilityLevelEnum
+    {
+        return match ($this) {
+            self::DRAFT, self::WITHDRAWN, self::EVALUATION => TenderVisibilityLevelEnum::OWNER_ONLY,
+            self::PUBLISHED, self::ACCEPTING_BIDS, self::BIDDING => TenderVisibilityLevelEnum::PARTICIPANTS,
+            self::AWARDING, self::CONTRACT, self::CLOSED, self::CANCELLED => TenderVisibilityLevelEnum::OWNER_AND_WINNER,
+        };
+    }
+
+    /**
+     * Статусы с заданным кругом видимости — для SQL-условий каталога
+     * (`status IN (...)`), где перечислять статусы руками нельзя: новый статус
+     * обязан пройти через match выше, иначе PHP бросит UnhandledMatchError.
+     *
+     * @return list<string>
+     */
+    public static function valuesWithVisibility(TenderVisibilityLevelEnum $level): array
+    {
+        $values = [];
+        foreach (self::cases() as $case) {
+            if ($case->visibilityLevel() === $level) {
+                $values[] = $case->value;
+            }
+        }
+
+        return $values;
+    }
+
     public function isTerminal(): bool
     {
         return self::CLOSED === $this || self::CANCELLED === $this;

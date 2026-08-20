@@ -22,6 +22,7 @@ final readonly class ComplaintPresenter
         return [
             'id' => (string) $complaint->getId(),
             'tender_id' => (string) $complaint->getTenderId(),
+            'company_id' => (string) $complaint->getCompanyId(),
             'lot_id' => null !== $complaint->getLotId() ? (string) $complaint->getLotId() : null,
             'status' => $complaint->getStatus()->value,
             'text' => $complaint->getText(),

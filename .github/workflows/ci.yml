@@ -13,6 +13,12 @@ jobs:
   quality:
     name: Lint · CS Fixer · PHPStan · PHPArkitect · PHPUnit · Coverage
     runs-on: ubuntu-latest
+    env:
+      # Потолок памяти для phpunit/paratest/phpstan (см. composer-скрипты
+      # `php -d memory_limit=${PHP_MEMORY_LIMIT:-1G}`). Локально дефолт 1G —
+      # он обходит memory_limit=128M в контейнере app; на раннере setup-php
+      # уже ставит -1, поэтому здесь ограничение не вводим.
+      PHP_MEMORY_LIMIT: '-1'
     services:
       postgres:
         image: postgres:17

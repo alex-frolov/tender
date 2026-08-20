@@ -16,7 +16,11 @@ use App\Tender\TenderFilters;
 use App\Tender\TenderPresenter;
 
 /**
- * Список тендеров компании (FR-1.1.1, GET /tenders).
+ * Список видимых компании тендеров (FR-1.1.1, FR-1.5.14, GET /tenders).
+ *
+ * Видимость (TenderVisibility): свои тендеры (любой статус) + чужие
+ * опубликованные открытые + чужие опубликованные закрытые, если у заказчика
+ * с компанией актора есть действующий многоразовый (multi_use) договор.
  *
  * Query-use-case на read-модели TenderCatalogQuery (AR-6, NFR-22): keyset-пагинация
  * по (created_at, id), агрегированный статус при мультилоте — по id страницы

@@ -8,6 +8,7 @@ use App\Complaint\Controller\ComplaintCreateController;
 use App\Iam\Controller\Auth\TokenController;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
@@ -85,9 +86,13 @@ final class ComplaintCreateTest extends WebTestCase
     }
 
     /**
-     * @return array{token: string, tenderId: string}
+     * Контекст: тендер заказчика и агент чужой компании-поставщика.
+     * По умолчанию тендер в accepting_bids — участнической стадии, на которой
+     * открытая закупка видна посторонним (FR-1.5.14).
+     *
+     * @return array{token: string, tenderId: string, companyId: string}
      */
-    private static function complaintContext(): array
+    private static function complaintContext(TenderStatusEnum $status = TenderStatusEnum::ACCEPTING_BIDS): array
     {
         $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
@@ -99,9 +104,14 @@ final class ComplaintCreateTest extends WebTestCase
         $tender = TenderFactory::createOne([
             'customerId' => $customer->getId(),
             'createdBy' => $customer->getId(),
+            'status' => $status,
         ]);
 
-        return ['token' => self::loginAs((string) $user->getEmail()), 'tenderId' => (string) $tender->getId()];
+        return [
+            'token' => self::loginAs((string) $user->getEmail()),
+            'tenderId' => (string) $tender->getId(),
+            'companyId' => (string) $supplier->getId(),
+        ];
     }
 
     public function testFileComplaint(): void
@@ -119,6 +129,8 @@ final class ComplaintCreateTest extends WebTestCase
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertSame((string) $ctx['tenderId'], $body['tender_id']);
+        // жалоба атрибутирована компании подателя, а не заказчику
+        self::assertSame((string) $ctx['companyId'], $body['company_id']);
         self::assertSame('pending', $body['status']);
         self::assertSame('Не допускают до участия', $body['text']);
         self::assertSame('Нарушение порядка подачи заявок', $body['ground']);
@@ -135,5 +147,22 @@ final class ComplaintCreateTest extends WebTestCase
 
         $client = self::request('POST', $url, $ctx['token'], ['text' => '']);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    /**
+     * Жалобу нельзя подать на чужой невидимый тендер (FR-1.5.14): черновик
+     * заказчика неотличим для постороннего от несуществующего — 404.
+     */
+    public function testCannotFileComplaintOnInvisibleTender(): void
+    {
+        self::client();
+        $ctx = self::complaintContext(TenderStatusEnum::DRAFT);
+        $url = str_replace('{tenderId}', (string) $ctx['tenderId'], ComplaintCreateController::URL);
+
+        $client = self::request('POST', $url, $ctx['token'], [
+            'text' => 'Жалоба на чужой черновик',
+            'ground' => 'Основание',
+        ]);
+        self::assertResponseStatusCodeSame(404);
     }
 }

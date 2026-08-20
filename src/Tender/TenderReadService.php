@@ -17,11 +17,25 @@ use Symfony\Component\Uid\Uuid;
 interface TenderReadService
 {
     /**
-     * Тендер по id БЕЗ tenant-фильтра (публичный lookup, FR-1.2.1).
+     * Тендер по id БЕЗ tenant-фильтра и БЕЗ проверки видимости (публичный
+     * lookup, FR-1.2.1). Годится только там, где вызывающий сам ограничивает
+     * выдачу компанией актора (списки заявок). Для сценариев, где данные
+     * тендера отдаются или пополняются по одному лишь id (вопросы, жалобы), —
+     * resolveVisibleTender().
      *
      * @throws \App\Shared\Exception\NotFoundException если тендер не найден
      */
     public function resolveTender(string $tenderId): Tender;
+
+    /**
+     * Тендер по id с проверкой видимости для компании-зрителя (FR-1.5.14):
+     * невидимый тендер неотличим от несуществующего — 404, как в
+     * GET /tenders/{id}. Единое правило видимости — App\Tender\TenderVisibility.
+     *
+     * @throws \App\Shared\Exception\NotFoundException если тендер не найден
+     *                                                 или невидим компании
+     */
+    public function resolveVisibleTender(string $tenderId, Uuid $viewerCompanyId): Tender;
 
     /**
      * Лот с проверкой принадлежности тендеру (или null, если лот не указан).
@@ -39,6 +53,17 @@ interface TenderReadService
      * @throws \App\Shared\Exception\NotFoundException если лот не найден
      */
     public function resolveLotById(string $lotId): Lot;
+
+    /**
+     * Подписи тендера и лота по списку id лотов — для списков других модулей
+     * (Auction: GET /auctions показывает номер/название тендера и лота вместо
+     * UUID). Одним запросом на весь список: N+1 при рендере списка недопустим.
+     *
+     * @param list<string> $lotIds id лотов (невалидные и несуществующие пропускаются)
+     *
+     * @return array<string, TenderLotLabel> подписи, ключ — id лота
+     */
+    public function lotLabels(array $lotIds): array;
 
     /**
      * Принадлежность тендера компании (tenant-проверка): существует ли тендер

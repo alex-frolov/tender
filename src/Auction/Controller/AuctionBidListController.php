@@ -21,8 +21,9 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  *
  * Query-access-адаптер → ListBidsUseCase (read-модель без мутаций).
  * Анонимность bidder_id («анонимно до конца торгов») — в UseCase/Presenter.
- * Доступ — R7 (AuctionStreamVoter::VIEW): допущенные участники, заказчик,
- * наблюдатели (platform_admin). Контракт: api/openapi.yaml.
+ * Доступ — AuctionStreamVoter::VIEW: все, кому виден тендер аукциона
+ * (FR-1.5.14), плюс допущенные участники, заказчик и наблюдатели
+ * (platform_admin). Контракт: api/openapi.yaml.
  */
 final class AuctionBidListController extends AbstractBaseController
 {

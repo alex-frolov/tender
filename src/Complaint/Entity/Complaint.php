@@ -14,10 +14,15 @@ use Symfony\Component\Uid\Uuid;
  * Участник подаёт жалобу на действия заказчика (text + ground + приложения).
  * Статус: draft → pending (подана) → resolved (рассмотрена, resolution).
  * Тендер резолвится публичным TenderReadService (границы модулей).
+ *
+ * company_id — компания подателя (тенант актора): жалоба обязана быть
+ * атрибутирована, иначе её нельзя ни показать автору, ни ограничить выдачу
+ * тенантом при рассмотрении (FR-1.8, append-only аудит хранит только событие).
  */
 #[ORM\Entity]
 #[ORM\Table(name: 'complaints')]
 #[ORM\Index(name: 'idx_complaints_tender', columns: ['tender_id'])]
+#[ORM\Index(name: 'idx_complaints_company', columns: ['company_id'])]
 class Complaint
 {
     #[ORM\Id]
@@ -26,6 +31,10 @@ class Complaint
 
     #[ORM\Column(type: 'uuid')]
     private Uuid $tenderId;
+
+    /** Компания подателя жалобы (тенант актора). */
+    #[ORM\Column(type: 'uuid')]
+    private Uuid $companyId;
 
     #[ORM\Column(type: 'uuid', nullable: true)]
     private ?Uuid $lotId = null;
@@ -52,10 +61,11 @@ class Complaint
     /**
      * @param list<string> $documentIds
      */
-    public function __construct(Uuid $tenderId, ?Uuid $lotId, string $text, string $ground, array $documentIds)
+    public function __construct(Uuid $tenderId, Uuid $companyId, ?Uuid $lotId, string $text, string $ground, array $documentIds)
     {
         $this->id = Uuid::v4();
         $this->tenderId = $tenderId;
+        $this->companyId = $companyId;
         $this->lotId = $lotId;
         $this->text = $text;
         $this->ground = $ground;
@@ -71,6 +81,11 @@ class Complaint
     public function getTenderId(): Uuid
     {
         return $this->tenderId;
+    }
+
+    public function getCompanyId(): Uuid
+    {
+        return $this->companyId;
     }
 
     public function getLotId(): ?Uuid

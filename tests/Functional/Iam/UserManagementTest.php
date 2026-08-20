@@ -269,6 +269,55 @@ final class UserManagementTest extends WebTestCase
         self::assertSame(UserStatusEnum::BLOCKED, $reloaded->getVerificationStatus());
     }
 
+    /**
+     * Активация приглашённого админом (FR-1.5.8): PATCH status=active ведёт
+     * через accept_invite, а не через unblock — иначе переход из invited
+     * был бы недоступен и запрос падал бы 409.
+     */
+    public function testAdminActivatesInvitedUser(): void
+    {
+        self::client();
+        $ctx = self::adminActor();
+        $target = UserFactory::createOne([
+            'role' => UserRoleEnum::MANAGER,
+            'companyId' => $ctx['company']->getId(),
+        ]);
+        $target->setVerificationStatus(UserStatusEnum::INVITED);
+        static::getContainer()->get(EntityManagerInterface::class)->flush();
+        $token = self::login();
+
+        $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
+        $client = self::request('PATCH', $url, $token, ['status' => 'active']);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('active', $body['verification_status']);
+    }
+
+    /**
+     * Повторная установка того же статуса — идемпотентный no-op, а не 409:
+     * перехода block из blocked в workflow нет.
+     */
+    public function testSettingSameStatusIsNoop(): void
+    {
+        self::client();
+        $ctx = self::adminActor();
+        $target = UserFactory::createOne([
+            'role' => UserRoleEnum::MANAGER,
+            'companyId' => $ctx['company']->getId(),
+        ]);
+        $target->setVerificationStatus(UserStatusEnum::BLOCKED);
+        static::getContainer()->get(EntityManagerInterface::class)->flush();
+        $token = self::login();
+
+        $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
+        $client = self::request('PATCH', $url, $token, ['status' => 'blocked']);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('blocked', $body['verification_status']);
+    }
+
     public function testSoftDeleteMasksEmail(): void
     {
         self::client();

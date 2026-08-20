@@ -30,4 +30,14 @@ interface ContractAccessChecker
      * (по valid_to или статус expired); contract_terminated — договор расторгнут.
      */
     public function checkReason(Uuid $customerId, Uuid $supplierId): string;
+
+    /**
+     * Заказчики, с которыми у компании есть действующий multi_use-договор
+     * (FR-1.5.14). Нужен видимости закрытых тендеров: каталог фильтруется
+     * условием tenders.customer_id IN (...), а не проверкой договора на каждую
+     * строку (N+1 в списке недопустим, NFR-22).
+     *
+     * @return list<Uuid> id компаний-заказчиков (пусто — доступа по договору нет)
+     */
+    public function customersWithActiveMultiUse(Uuid $supplierId): array;
 }

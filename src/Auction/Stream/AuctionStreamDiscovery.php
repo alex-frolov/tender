@@ -23,6 +23,11 @@ use Symfony\Component\Mercure\Jwt\TokenFactoryInterface;
  *   token      — subscribe-JWT (mercure.subscribe = [topic], подписан subscribe-секретом);
  *   expires_in — срок жизни токена (сек);
  *   state      — текущий снапшот live-состояния (для немедленного рендера).
+ *
+ * `GET /auctions/stream` (discoverMany) — тот же discovery для СПИСКА аукционов
+ * компании: один JWT с правом sub на все topic'и сразу, чтобы список торгов
+ * обновлялся по одному соединению с hub, а не по одному EventSource на строку
+ * (браузер держит не больше ~6 SSE-соединений на origin).
  */
 final class AuctionStreamDiscovery
 {
@@ -45,25 +50,52 @@ final class AuctionStreamDiscovery
         return [
             'hub' => $this->hub->getPublicUrl(),
             'topic' => $topic,
-            'token' => $this->subscribeToken($topic),
+            'token' => $this->subscribeToken([$topic]),
             'expires_in' => $this->subscribeTtl,
             'state' => $this->stateSnapshot($auction)->toArray(),
         ];
     }
 
     /**
-     * Subscribe-JWT на приватный topic (mercure.subscribe = [topic]).
+     * Discovery-ответ для списка аукционов (GET /auctions/stream): один hub,
+     * приватные topic'и всех переданных аукционов и ОДИН subscribe-JWT с правом
+     * sub на каждый из них. Пустой список — пустые topics и токен без прав:
+     * подписываться не на что (живых торгов у компании сейчас нет).
+     *
+     * @param list<Auction> $auctions
+     *
+     * @return array<string, mixed>
+     */
+    public function discoverMany(array $auctions): array
+    {
+        $topics = array_map(
+            static fn (Auction $auction): string => AuctionTopic::for((string) $auction->getId()),
+            $auctions,
+        );
+
+        return [
+            'hub' => $this->hub->getPublicUrl(),
+            'topics' => $topics,
+            'token' => $this->subscribeToken($topics),
+            'expires_in' => $this->subscribeTtl,
+        ];
+    }
+
+    /**
+     * Subscribe-JWT на приватные topic'и (mercure.subscribe = topics).
      * JWT подписывается subscribe-секретом (MERCURE_JWT_SECRET_SUBSCRIBE);
      * hub проверяет право sub при подключении (R7).
+     *
+     * @param list<string> $topics
      */
-    private function subscribeToken(string $topic): string
+    private function subscribeToken(array $topics): string
     {
         $factory = $this->hub->getFactory();
         if (!$factory instanceof TokenFactoryInterface) {
             throw new \LogicException('Mercure hub has no subscribe token factory configured');
         }
 
-        return $factory->create([$topic], []);
+        return $factory->create($topics, []);
     }
 
     /**

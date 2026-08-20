@@ -120,6 +120,41 @@ final class ContractRepository extends ServiceEntityRepository
     }
 
     /**
+     * Заказчики, у которых с компанией-исполнителем есть действующий
+     * multi_use-договор (FR-1.5.14): те же условия, что в findActiveMultiUse(),
+     * но одним запросом на всех контрагентов — множество customer_id для
+     * фильтра видимости закрытых тендеров (каталог/карточка).
+     *
+     * @return list<Uuid> id заказчиков (без дублей)
+     */
+    public function activeMultiUseCustomerIds(Uuid $supplierId): array
+    {
+        $today = new \DateTimeImmutable('today', new \DateTimeZone('UTC'));
+
+        /** @var list<array{customer_id: string|Uuid}> $rows */
+        $rows = $this->createQueryBuilder('c')
+            ->select('DISTINCT c.customerId AS customer_id')
+            ->where('c.supplierId = :supplier')
+            ->andWhere('c.scope = :scope')
+            ->andWhere('c.status IN (:statuses)')
+            ->andWhere('c.validTo IS NULL OR c.validTo >= :today')
+            ->setParameter('supplier', $supplierId)
+            ->setParameter('scope', ContractScopeEnum::MULTI_USE->value)
+            ->setParameter('statuses', [ContractStatusEnum::SIGNED->value, ContractStatusEnum::REGISTERED->value])
+            ->setParameter('today', $today)
+            ->getQuery()
+            ->getArrayResult();
+
+        // DQL-проекция uuid-колонки отдаёт Uuid-объект, а не строку.
+        return array_map(
+            static fn (array $row): Uuid => $row['customer_id'] instanceof Uuid
+                ? $row['customer_id']
+                : Uuid::fromString($row['customer_id']),
+            $rows,
+        );
+    }
+
+    /**
      * Последний multi_use-договор между заказчиком и исполнителем ЛЮБОГО статуса
      * (для определения причины отсутствия доступа в GET /tenders/{id}/access:
      * contract_required/contract_expired/contract_terminated, FR-1.5.14).

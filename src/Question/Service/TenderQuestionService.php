@@ -19,6 +19,11 @@ use Symfony\Component\Uid\Uuid;
  * - create(): задать вопрос (участник/заказчик, право tenders.qa);
  *   лот валидируется принадлежностью тендеру через TenderReadService;
  * - listForTender(): вопросы тендера (новые сверху).
+ *
+ * Тендер резолвится ТОЛЬКО через resolveVisibleTender (FR-1.5.14): право
+ * tenders.qa есть у любого админа компании и субъекта не имеет, поэтому
+ * без проверки видимости Q&A чужой (в т.ч. черновой) закупки читались бы
+ * и пополнялись по одному лишь id. Невидимый тендер → 404.
  */
 final readonly class TenderQuestionService
 {
@@ -34,12 +39,12 @@ final readonly class TenderQuestionService
      * Создание вопроса по тендеру (POST /tenders/{tenderId}/questions).
      *
      * @throws \App\Shared\Exception\NotFoundException если тендер не найден
-     * @throws ConflictException                       если актор без компании
+     *                                                 или невидим компании
      * @throws ConflictException                       если лот не принадлежит тендеру
      */
     public function create(string $tenderId, CreateQuestionInput $input, Uuid $companyId, string $actorId, ?string $ip = null): TenderQuestion
     {
-        $tender = $this->tenders->resolveTender($tenderId);
+        $tender = $this->tenders->resolveVisibleTender($tenderId, $companyId);
         $lotId = null !== $input->lotId && '' !== $input->lotId
             ? $this->tenders->resolveLot($tender->getId(), $input->lotId)?->getId()
             : null;
@@ -68,11 +73,16 @@ final readonly class TenderQuestionService
     }
 
     /**
+     * Вопросы тендера, видимого компании актора (GET /tenders/{tenderId}/questions).
+     *
      * @return list<TenderQuestion>
+     *
+     * @throws \App\Shared\Exception\NotFoundException если тендер не найден
+     *                                                 или невидим компании
      */
-    public function listForTender(string $tenderId): array
+    public function listForTender(string $tenderId, Uuid $companyId): array
     {
-        $tender = $this->tenders->resolveTender($tenderId);
+        $tender = $this->tenders->resolveVisibleTender($tenderId, $companyId);
 
         return $this->questions->listForTender($tender->getId());
     }

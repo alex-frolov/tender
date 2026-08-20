@@ -212,16 +212,23 @@ final readonly class WebhookService
     }
 
     /**
-     * Журнал доставок подписки (WH-2..6, GET /webhooks/{id}/deliveries).
-     * Подписка проверяется на принадлежность актору (404 для чужих).
+     * Страница журнала доставок подписки (WH-2..6, GET /webhooks/{id}/deliveries),
+     * новые сверху. Подписка проверяется на принадлежность актору (404 для чужих);
+     * keyset-срез по (created_at, id) DESC делает БД, $limit вызывающий передаёт
+     * как limit+1 (лишняя строка = есть следующая страница).
      *
      * @return list<WebhookDelivery>
      */
-    public function listDeliveries(User $actor, string $webhookId): array
-    {
+    public function listDeliveries(
+        User $actor,
+        string $webhookId,
+        ?\DateTimeImmutable $cursorCreatedAt,
+        ?Uuid $cursorId,
+        int $limit,
+    ): array {
         $this->resolveOwned($actor, $webhookId);
 
-        return $this->deliveries->listForWebhook($webhookId);
+        return $this->deliveries->listForWebhook($webhookId, $cursorCreatedAt, $cursorId, $limit);
     }
 
     /**

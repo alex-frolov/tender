@@ -10,6 +10,7 @@ use App\ProcurementPlan\Presenter\ProcurementPlanPresenter;
 use App\ProcurementPlan\Service\ProcurementPlanService;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Input\Paginator;
+use App\Shared\Repository\CursorDirection;
 use App\Shared\Repository\KeysetCursor;
 
 /**
@@ -45,6 +46,7 @@ final readonly class ListProcurementPlansUseCase implements ProcurementPlanUseCa
             $paginator->cursor,
             $paginator->limitValue(),
             static fn (ProcurementPlan $p): array => [$p->getCreatedAt(), (string) $p->getId()],
+            CursorDirection::DESC,
         );
 
         $items = array_map(

@@ -156,16 +156,58 @@ abstract class AbstractBaseController extends AbstractController
     }
 
     /**
+     * Текст 422-ошибки формы: «поле: сообщение» через «; ».
+     *
+     * Имя поля обязательно: без него ответ вида «This value should not be blank.»
+     * не говорит клиенту, что именно заполнять, — в форме с двумя десятками полей
+     * и вложенными лотами это делает 422 неотлаживаемым. Путь строится от корня:
+     * `lots[0].price_net_minor`. Ошибки самой формы (не привязанные к полю)
+     * выводятся без префикса.
+     *
      * @param FormInterface<null> $form
      */
     protected function formErrorsMessage(FormInterface $form): string
     {
         $messages = [];
         foreach ($form->getErrors(true) as $error) {
-            $messages[] = $error->getMessage();
+            $path = $this->errorFieldPath($error->getOrigin(), $form);
+            $messages[] = '' === $path
+                ? $error->getMessage()
+                : $path.': '.$error->getMessage();
         }
 
         return implode('; ', $messages);
+    }
+
+    /**
+     * Путь до поля с ошибкой относительно корневой формы (`lots[0].title`).
+     * Пустая строка — ошибка принадлежит самой корневой форме.
+     *
+     * @param FormInterface<mixed>|null $origin поле, на котором сработал constraint
+     * @param FormInterface<null>       $root   корневая форма запроса
+     */
+    private function errorFieldPath(?FormInterface $origin, FormInterface $root): string
+    {
+        $segments = [];
+        for ($node = $origin; null !== $node && $node !== $root; $node = $node->getParent()) {
+            $name = $node->getName();
+            if ('' === $name) {
+                continue;
+            }
+            // Элементы коллекций именуются индексом (lots → 0, 1, …).
+            $segments[] = ctype_digit($name) ? '['.$name.']' : $name;
+        }
+
+        $path = '';
+        foreach (array_reverse($segments) as $segment) {
+            if (str_starts_with($segment, '[')) {
+                $path .= $segment;
+            } else {
+                $path .= '' === $path ? $segment : '.'.$segment;
+            }
+        }
+
+        return $path;
     }
 
     /**

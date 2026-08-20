@@ -28,14 +28,10 @@ final readonly class ListTenderLotsUseCase implements TenderUseCase
      */
     public function execute(User $user, string $tenderId): array
     {
-        $tender = $this->tenders->get($user, $tenderId);
-        $lots = $tender->getLots()->toArray();
-
-        // Лоты сортируются по номеру (детерминированный порядок, как при создании).
-        usort($lots, static fn ($a, $b): int => $a->getNumber() <=> $b->getNumber());
-
+        // Порядок лотов (по номеру) задан маппингом Tender::$lots (ORM\OrderBy),
+        // поэтому сортировать здесь нечего: presenter читает ту же коллекцию.
         return [
-            'items' => $this->presenter->lotsList($tender),
+            'items' => $this->presenter->lotsList($this->tenders->get($user, $tenderId)),
         ];
     }
 }

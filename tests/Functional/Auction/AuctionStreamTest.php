@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Auction;
 
 use App\Auction\Controller\AuctionStreamController;
+use App\Auction\Entity\Enum\AuctionStatusEnum;
 use App\Auction\Entity\Enum\AuctionStepModeEnum;
 use App\Auction\Entity\Enum\AuctionTypeEnum;
 use App\Iam\Controller\Auth\TokenController;
@@ -25,7 +26,9 @@ use Symfony\Component\Uid\Uuid;
  *
  * GET /auctions/{id}/stream:
  * - заказчик (владелец тендера) — 200, JWT-ссылка discovery на hub;
- * - допущенный участник (bids admitted) — 200;
+ * - допущенный участник во время торгов (status=trade) — 200;
+ * - допущенный участник до торгов (status=new) — 403: подготовка аукциона
+ *   видна только заказчику (FR-1.5.14, AuctionStatusEnum::visibilityLevel);
  * - наблюдатель (platform_admin) — 200;
  * - сторонняя компания (не участник, не заказчик) — 403;
  * - не аутентифицированный — 401;
@@ -116,13 +119,26 @@ final class AuctionStreamTest extends WebTestCase
         self::assertArrayHasKey('state', $body);
     }
 
-    public function testAdmittedParticipantCanGetStreamDiscovery(): void
+    public function testAdmittedParticipantCanGetStreamDiscoveryDuringTrade(): void
+    {
+        self::client();
+        $ctx = self::auctionWithParties(AuctionStatusEnum::TRADE);
+
+        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $ctx['supplierToken']);
+        self::assertResponseStatusCodeSame(200);
+    }
+
+    /**
+     * До начала торгов аукцион — внутренняя подготовка заказчика (FR-1.5.14):
+     * даже допущенный участник его не видит, пока статус не стал trade.
+     */
+    public function testAdmittedParticipantIsForbiddenBeforeTrade(): void
     {
         self::client();
         $ctx = self::auctionWithParties();
 
         $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $ctx['supplierToken']);
-        self::assertResponseStatusCodeSame(200);
+        self::assertResponseStatusCodeSame(403);
     }
 
     public function testPlatformAdminObserverCanGetStreamDiscovery(): void
@@ -177,7 +193,7 @@ final class AuctionStreamTest extends WebTestCase
     /**
      * @return array{customerToken: string, supplierToken: string, auction: \App\Auction\Entity\Auction}
      */
-    private static function auctionWithParties(): array
+    private static function auctionWithParties(AuctionStatusEnum $status = AuctionStatusEnum::NEW): array
     {
         $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $customerUser = UserFactory::createOne([
@@ -205,6 +221,7 @@ final class AuctionStreamTest extends WebTestCase
                 'stepMode' => AuctionStepModeEnum::FIXED,
                 'bidStepMinor' => 50000,
                 'stepDurationSec' => 600,
+                'status' => $status,
             ])
             ->create();
 

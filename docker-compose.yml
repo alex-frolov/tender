@@ -121,8 +121,13 @@ services:
       # auto-HTTPS и 308-редирект на https://localhost, что делает SSE-хаб
       # недоступным по http:// в dev). Требуется для SSE-нагрузки (k6).
       SERVER_NAME: "http://localhost http://mercure"
+      # cors_origins — origin'ы, которым hub отдаёт CORS-заголовки. Браузер
+      # подключается к hub НАПРЯМУЮ (http://localhost:3008), а страница живёт
+      # на другом origin, поэтому без своего origin в списке EventSource падает
+      # ещё до первого события: 8080 — демо-фронт за nginx, 5173 — Vite
+      # dev-сервер репозитория tender-front.
       MERCURE_EXTRA_DIRECTIVES: |
-        cors_origins http://localhost:8080
+        cors_origins http://localhost:8080 http://localhost:5173 http://127.0.0.1:5173
         anonymous 0
     ports:
       - "3008:80"
@@ -152,6 +157,21 @@ services:
       - ./:/var/www
     # outbox:relay (фоновый) + messenger:consume (основной) — см. docker/worker-entrypoint.sh
     command: ["sh", "/var/www/docker/worker-entrypoint.sh"]
+    # Здоровье воркера = живой outbox:relay, а не живой контейнер: релизер
+    # работает в фоне, и его падение раньше не было видно снаружи (контейнер
+    # оставался Up на messenger:consume, события копились в outbox как pending —
+    # молча пропадали live-события аукциона, webhook'и и почта). Проверяем
+    # свежесть heartbeat-файла, который релизер трогает на каждой итерации.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -f /var/www/var/run/outbox-relay.heartbeat &&
+          test $$(( $$(date +%s) - $$(stat -c %Y /var/www/var/run/outbox-relay.heartbeat) )) -lt 60
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     depends_on:
       app: { condition: service_started }
 

@@ -628,12 +628,70 @@ paths:
                     description: Invalid action / missing reason on reject
                     $ref: '#/components/responses/ValidationError'
 
+    /admin/companies:
+        get:
+            tags: [companies]
+            summary: Company registry for moderation (platform_admin)
+            operationId: listCompanies
+            description: |
+                Every company on the platform, newest first — the platform_admin
+                moderation screen: it shows the verification queue and feeds
+                POST /companies/{companyId}/verify. There is no tenant isolation here
+                by design; access is platform_admin only (403 otherwise).
+                GET /companies stays the actor's OWN company card.
+            parameters:
+                - name: q
+                  in: query
+                  description: Substring search over legal_name and inn
+                  schema: { type: string, maxLength: 255 }
+                - name: status
+                  in: query
+                  schema: { $ref: '#/components/schemas/CompanyStatus' }
+                - $ref: '#/components/parameters/Limit'
+                - $ref: '#/components/parameters/Cursor'
+            responses:
+                '200':
+                    description: Company page
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items: { type: array, items: { $ref: '#/components/schemas/Company' } }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403':
+                    description: No permissions (not platform_admin)
+                    $ref: '#/components/responses/Forbidden'
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     # ================= TENDERS =================
     /tenders:
         get:
             tags: [tenders]
-            summary: List tenders with filters
+            summary: List tenders visible to my company
             operationId: listTenders
+            description: |
+                Tenders the actor's company is allowed to see. Own tenders are always listed,
+                in any status. A tender of another company is listed only in the statuses where
+                the procurement is open to the outside, and who exactly may see it depends on
+                the status:
+
+                  * `draft`, `withdrawn`, `evaluation` — the customer's staff only. These are
+                    the customer's internal stages; such tenders are never listed to anyone else.
+                  * `published`, `accepting_bids`, `bidding` — everyone if the tender is open
+                    (access_type=open); if it is closed (access_type=contract_holders), only the
+                    customer and companies that have an active multi_use (reusable) contract
+                    with that customer.
+                  * `awarding`, `contract`, `closed`, `cancelled` — the customer and the
+                    performer company only (the supplier whose bid won). A contract no longer
+                    grants access here: once the winner is picked the procurement stops being
+                    public even for companies that were entitled to take part.
+
+                Visibility does not grant participation: submitting a bid to a closed tender
+                still requires the contract (409 contract_required) — see
+                GET /tenders/{tenderId}/access.
+                Access: tenders.board.view (all company roles).
             parameters:
                 - $ref: '#/components/parameters/Q'
                 - $ref: '#/components/parameters/TenderStatus'
@@ -673,6 +731,11 @@ paths:
                     content:
                         application/json:
                             schema: { $ref: '#/components/schemas/Tender' }
+                '403':
+                    description: 'No tenders.create permission, or the company is not approved (code=org_pending, FR-1.5.7)'
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Error' }
                 '422': { $ref: '#/components/responses/ValidationError' }
 
     /tenders/{tenderId}:
@@ -680,6 +743,13 @@ paths:
             tags: [tenders]
             summary: Tender card
             operationId: getTender
+            description: |
+                Card of a tender visible to the actor's company — the per-status rule is the
+                same as for GET /tenders (own tender in any status; another company's tender
+                only in the trading statuses, subject to access_type, or after the award only
+                for the performer). A tender that is not visible is indistinguishable from a
+                missing one — 404, so that closed procurements of other companies are not
+                disclosed.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
             responses:
@@ -721,6 +791,11 @@ paths:
                     content:
                         application/json:
                             schema: { $ref: '#/components/schemas/Tender' }
+                '403':
+                    description: 'No tenders.publish permission, or the company is not approved (code=org_pending, FR-1.5.7)'
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Error' }
                 '409': { $ref: '#/components/responses/Conflict' }
 
     /tenders/{tenderId}/withdraw:
@@ -1057,13 +1132,27 @@ paths:
     /auctions:
         get:
             tags: [auctions]
-            summary: List auctions of my company
+            summary: List auctions visible to my company
             operationId: listAuctions
             description: |
-                List of auctions of the actor's company (tenant-isolated). Compact items:
-                id, tender/lot, type, status, prices, timer. No pagination (one auction per
-                lot — the list size is bounded by the business flow). Full detail —
-                GET /auctions/{id}/state. Access: tenders.board.view (all company roles).
+                Auctions the actor's company may see. Two conditions apply in order: the
+                auction's tender must be visible (see GET /tenders), and the auction's own
+                status must be open to the viewer. Own auctions are listed in any status; for
+                another company's auction the status decides:
+
+                  * `draft`, `agreement`, `new`, `scheduled`, `paused`, `choice`, `expired`,
+                    `deleted` — the customer's staff only (preparation, a pause, picking the
+                    winner and housekeeping states are the customer's own decisions);
+                  * `trade` — everyone the tender is visible to: trading is public within the
+                    procurement's audience;
+                  * `approve`, `in_work`, `done_by_performer`, `done`, `claim`,
+                    `done_by_claim`, `cancelled` — the customer and the performer company
+                    (the winner of the lot) only.
+
+                Compact items: id, tender/lot, type, status, prices, timer. No pagination
+                (one auction per lot — the list size is bounded by the business flow).
+                Full detail — GET /auctions/{id}/state.
+                Access: tenders.board.view (all company roles).
             responses:
                 '200':
                     description: List of auctions
@@ -1109,6 +1198,34 @@ paths:
                 '422': { $ref: '#/components/responses/ValidationError' }
                 '429': { $ref: '#/components/responses/RateLimited' }
 
+    /auctions/stream:
+        get:
+            tags: [auctions]
+            summary: 'SSE stream discovery for the auction list (one hub connection, many topics)'
+            operationId: streamAuctions
+            description: |
+                Live updates for the whole auction list (GET /auctions) over a **single** Mercure
+                connection: the response carries the public hub URL, the private topics
+                `auction:{id}` of the company's live auctions (SCHEDULED/TRADE/PAUSED) and one
+                subscribe-JWT covering all of them. The client opens one EventSource passing every
+                topic as a `topic` query parameter and receives the same events as the per-auction
+                stream (`state`, `bid`, `timer`, `status`); every payload carries `auction_id`,
+                so the client knows which row to update.
+                Access: tenders.board.view (all company roles); only auctions of the actor's own
+                tenant are listed, so no extra per-auction check is needed. An empty `topics`
+                array means nothing is live right now — there is nothing to subscribe to.
+                Note: auctions of other companies that GET /auctions shows (visible tenders) are
+                deliberately NOT in this token — subscribe to such an auction individually via
+                GET /auctions/{id}/stream.
+            responses:
+                '200':
+                    description: 'JWT discovery link: hub, private topics, subscribe-JWT'
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/AuctionsStreamDiscovery' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+
     /auctions/{auctionId}/state:
         get:
             tags: [auctions]
@@ -1117,8 +1234,13 @@ paths:
             description: |
                 Status + rules (rules_snapshot) + timer (remaining_sec) + current prices.
                 The source of truth is PostgreSQL (auctions); live fields are current at request time.
-                Access: admitted participants (bids.status = admitted), the customer
-                (tender owner), observers (platform_admin). Everyone else — 403.
+                Access depends on the auction's status (same matrix as GET /auctions): the
+                customer (tender owner) and observers (platform_admin) always; while trading
+                (`trade`) — anyone the tender is visible to, plus admitted participants
+                (bids.status = admitted) even if the tender stopped being visible to them
+                mid-auction; from `approve` onwards — the performer company only; in the
+                preparation, `paused`, `choice` and housekeeping statuses — nobody but the
+                customer. Everyone else — 403.
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
             responses:
@@ -1139,8 +1261,11 @@ paths:
             description: |
                 One-way server→client push via the **Mercure hub**: the client receives a JWT discovery link
                 (public hub URL + private topic `auction:{id}` + subscribe-JWT) and connects to the hub via EventSource.
-                Privacy: subscription is only for admitted participants, the customer and observers (Mercure JWT authorization, sub permission);
-                publishing is done by the core with the publish JWT (REST /auctions/{id}/bids — bids).
+                Privacy: a subscription is issued to whoever may see the auction in its current status
+                (same matrix as GET /auctions — the customer and observers always, during `trade` also
+                everyone the tender is visible to plus admitted participants, from `approve` onwards only
+                the performer company); Mercure JWT authorization, sub permission.
+                Publishing is done by the core with the publish JWT (REST /auctions/{id}/bids — bids).
                 The response includes the current snapshot (`state`) for immediate rendering; the hub sends live events after connecting:
                 `state`, `bid`, `timer`, `status`.
             parameters:
@@ -1164,7 +1289,10 @@ paths:
                 Accepted and rejected bids (append-only) in round order.
                 Anonymity: while the auction accepts bids (TRADE), bidder_id is masked
                 (null); after trading ends, participant identities are revealed.
-                Access: admitted participants, the customer, observers (platform_admin).
+                Access: whoever may see the auction in its current status (same matrix as
+                GET /auctions — the customer and observers always, during `trade` also everyone
+                the tender is visible to plus admitted participants, from `approve` onwards only
+                the performer company).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
                 - { $ref: '#/components/parameters/Cursor' }
@@ -2444,10 +2572,10 @@ paths:
                                 status: { type: string, enum: [active, paused], description: 'Subscription activity (default active)' }
             responses:
                 '201':
-                    description: Subscription created
+                    description: Subscription created (the signing secret is returned once)
                     content:
                         application/json:
-                            schema: { $ref: '#/components/schemas/Webhook' }
+                            schema: { $ref: '#/components/schemas/WebhookWithSecret' }
 
     /webhooks/{webhookId}:
         patch:
@@ -2491,13 +2619,10 @@ paths:
                 - { $ref: '#/components/parameters/WebhookId' }
             responses:
                 '200':
-                    description: New secret (shown once)
+                    description: New secret (shown once); the old secret stops validating immediately
                     content:
                         application/json:
-                            schema:
-                                type: object
-                                properties:
-                                    secret: { type: string }
+                            schema: { $ref: '#/components/schemas/WebhookWithSecret' }
 
     /webhooks/{webhookId}/deliveries:
         get:
@@ -2597,8 +2722,8 @@ paths:
                                 name: { type: string, maxLength: 100 }
                                 scopes:
                                     type: array
-                                    items: { type: string }
-                                    description: ApiKeyScopes catalog (api:tenders:read, api:tenders:write, api:bids:write, api:auctions:bid, api:webhooks:manage, api:keys:manage, api:all …); empty/api:all — full owner access
+                                    items: { $ref: '#/components/schemas/ApiKeyScope' }
+                                    description: Empty or api:all — full owner access; an unknown scope is rejected with 422
                                 expires_at: { type: string, format: date-time, nullable: true }
             responses:
                 '201':
@@ -2611,7 +2736,7 @@ paths:
                                     - type: object
                                       required: [token]
                                       properties:
-                                          token: { type: string, description: raw token, shown once }
+                                          token: { type: string, description: 'raw token, shown once' }
                 '401': { $ref: '#/components/responses/Unauthorized' }
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '422': { $ref: '#/components/responses/ValidationError' }
@@ -2652,7 +2777,7 @@ paths:
                                     - type: object
                                       required: [token]
                                       properties:
-                                          token: { type: string, description: new raw token, shown once }
+                                          token: { type: string, description: 'new raw token, shown once' }
                 '401': { $ref: '#/components/responses/Unauthorized' }
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
@@ -2815,7 +2940,12 @@ components:
         # ---------- Users and companies ----------
         UserRole:
             type: string
-            enum: [admin, manager, agent]
+            description: |
+                Company roles (admin/manager/agent) plus platform_admin — the platform
+                super-admin. platform_admin is created only by the console command
+                app:create:platform-admin and can never be assigned through the API
+                (user invite/update accept company roles only).
+            enum: [admin, manager, agent, platform_admin]
         User:
             type: object
             properties:
@@ -2912,6 +3042,7 @@ components:
             properties:
                 id: { type: string, format: uuid }
                 number: { type: string }
+                customer_id: { type: string, format: uuid, description: 'Customer company (tender tenant) — lets the client tell the customer from a participant' }
                 title: { type: string }
                 description: { type: string, nullable: true }
                 procedure_type: { type: string }
@@ -2924,7 +3055,14 @@ components:
                 status: { $ref: '#/components/schemas/TenderStatus' }
                 access_type: { type: string, enum: [open, contract_holders] }
                 execution_rating: { type: integer, nullable: true }
+                region: { type: string, maxLength: 100, nullable: true }
                 okpd2: { type: string, maxLength: 20, nullable: true, description: 'ОКПД2 код предмета закупки' }
+                timeline:
+                    type: object
+                    nullable: true
+                    description: 'Key dates: bids_end, opening, auction_start, evaluation_end (ISO-8601). Filled in on publication'
+                    additionalProperties: { type: string, format: date-time }
+                deadline: { type: string, format: date-time, nullable: true, description: 'Bid submission deadline — shortcut for timeline.bids_end' }
                 cancellation_reason_code: { type: string, nullable: true }
                 cancellation_reason_text: { type: string, nullable: true }
                 lots: { type: array, items: { $ref: '#/components/schemas/Lot' } }
@@ -2938,6 +3076,9 @@ components:
                 number: { type: string }
                 title: { type: string }
                 status: { $ref: '#/components/schemas/TenderStatus' }
+                aggregated_status:
+                    $ref: '#/components/schemas/TenderStatus'
+                    description: 'Status aggregated over the lots of a multi-lot tender (FR-1.1.3, variant C)'
                 nmck_minor: { type: integer, nullable: true }
                 currency: { type: string }
                 region: { type: string, nullable: true }
@@ -2950,7 +3091,7 @@ components:
             type: object
             required: [title, price_net_minor]
             properties:
-                number: { type: integer }
+                number: { type: integer, deprecated: true, description: 'Ignored: lot numbers are assigned by the server (1..N) and renumbered when a lot is deleted' }
                 title: { type: string, maxLength: 500 }
                 price_net_minor: { type: integer, minimum: 0 }
                 vat_rate: { type: number }
@@ -2986,6 +3127,8 @@ components:
                 price_gross_minor: { type: integer }
                 vat_rate: { type: number }
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }
+                quantity: { type: number, nullable: true }
+                unit: { type: string, nullable: true }
                 execution_start_at: { type: string, format: date-time, nullable: true }
                 trade_end_lead_hours: { type: integer }
                 status: { type: string }
@@ -3180,14 +3323,22 @@ components:
             properties:
                 id: { type: string, format: uuid }
                 tender_id: { type: string, format: uuid }
+                tender_number: { type: string, nullable: true, description: 'Tender number — so the list shows a name instead of a UUID' }
+                tender_title: { type: string, nullable: true }
                 lot_id: { type: string, format: uuid }
+                lot_number: { type: integer, nullable: true }
+                lot_title: { type: string, nullable: true }
                 type: { $ref: '#/components/schemas/AuctionType' }
                 status: { $ref: '#/components/schemas/AuctionStatus' }
                 no_start_price: { type: boolean }
                 current_price_minor: { type: integer, nullable: true }
                 start_price_minor: { type: integer, nullable: true }
+                scheduled_start_at: { type: string, format: date-time, nullable: true, description: 'Planned trading start (SCHEDULED)' }
+                started_at: { type: string, format: date-time, nullable: true, description: 'Actual trading start (TRADE)' }
                 planned_end_at: { type: string, format: date-time, nullable: true }
                 remaining_sec: { type: integer, nullable: true }
+                last_bid_at: { type: string, format: date-time, nullable: true, description: 'When the last accepted bid was placed (null — no bids yet). The bidder stays anonymous.' }
+                last_bid_price_minor: { type: integer, nullable: true, description: 'Price of the last accepted bid, minor units, canonical price_basis (null — no bids yet)' }
                 winner_bid_id: { type: string, format: uuid, nullable: true }
 
         AuctionState:
@@ -3234,9 +3385,45 @@ components:
                 token: { type: string, description: 'subscribe-JWT (sub permission on the topic, HS256)' }
                 expires_in: { type: integer, description: 'subscribe-JWT lifetime (sec)' }
                 state:
-                    type: object
+                    allOf:
+                        - $ref: '#/components/schemas/AuctionLiveSnapshot'
                     description: 'Current snapshot of the auction''s live state (for immediate rendering)'
-                    additionalProperties: true
+        AuctionsStreamDiscovery:
+            type: object
+            description: |
+                JWT discovery link for the auction list: one hub connection subscribed to the
+                private topics of every live auction of the company. Same events as the
+                per-auction stream; the client tells rows apart by `auction_id` in the payload.
+            properties:
+                hub: { type: string, description: 'Public hub URL (/.well-known/mercure)' }
+                topics:
+                    type: array
+                    description: 'Private topics auction:{id} of the live auctions (empty — nothing is live)'
+                    items: { type: string }
+                token: { type: string, description: 'subscribe-JWT (sub permission on every listed topic, HS256)' }
+                expires_in: { type: integer, description: 'subscribe-JWT lifetime (sec)' }
+        AuctionLiveSnapshot:
+            type: object
+            description: |
+                Live snapshot of an auction (Redis) — the payload of every SSE event of the
+                Mercure stream (`state`, `bid`, `timer`, `status`) and of
+                AuctionStreamDiscovery.state. It is NOT the full AuctionState: only the fields
+                that change during trading are published; the immutable rules (type, step_mode,
+                step, limits) come from GET /auctions/{id}/state.
+            properties:
+                auction_id: { type: string, format: uuid }
+                status: { $ref: '#/components/schemas/AuctionStatus' }
+                current_price_minor: { type: integer, nullable: true }
+                start_price_minor: { type: integer, nullable: true }
+                planned_end_at: { type: string, format: date-time, nullable: true, description: 'End of the current step — the client counts the timer down to it' }
+                extensions_count: { type: integer }
+                version: { type: integer }
+                updated_at: { type: string, format: date-time }
+                last_bid_id: { type: string, format: uuid, nullable: true }
+                last_bidder_id: { type: string, format: uuid, nullable: true, description: 'Bidder of the last bid; participants stay anonymous in the UI until trading ends' }
+                last_bid_price_minor: { type: integer, nullable: true }
+                last_bid_round: { type: integer, nullable: true }
+                last_bid_placed_at: { type: string, format: date-time, nullable: true }
         AuctionBidCreate:
             type: object
             required: [price_minor]
@@ -3299,6 +3486,7 @@ components:
             properties:
                 id: { type: string, format: uuid }
                 tender_id: { type: string, format: uuid }
+                company_id: { type: string, format: uuid, description: 'Company that filed the complaint' }
                 status: { type: string, enum: [draft, pending, resolved] }
                 text: { type: string }
                 ground: { type: string }
@@ -3482,8 +3670,19 @@ components:
         NotificationSubscriptionCreate:
             type: object
             required: [channel, events]
+            description: |
+                Subscribe to platform events. Delivery destination is NOT part of the
+                subscription: `email` is sent to the email address of the user who owns
+                the subscription (users.email), so there is no address field here.
+                Only the `email` channel is delivered today (NotificationDeliveryService).
+                `webhook` and `telegram` subscriptions are stored but never delivered:
+                per-tenant HTTP delivery is a separate resource (POST /webhooks, with
+                its own url), and telegram has no transport yet.
             properties:
-                channel: { type: string, enum: [email, webhook, telegram] }
+                channel:
+                    type: string
+                    enum: [email, webhook, telegram]
+                    description: 'Delivery channel. Delivered today: email only (to the subscription owner''s address); webhook/telegram are accepted but not delivered — see POST /webhooks for HTTP delivery'
                 events: { type: array, items: { type: string } }
                 filters:
                     type: object
@@ -3492,6 +3691,7 @@ components:
                 digest: { type: boolean, default: false }
         NotificationSubscription:
             type: object
+            description: 'Subscription of the current user. Destination for email = the owner''s users.email; see NotificationSubscriptionCreate for channel delivery status'
             properties:
                 id: { type: string, format: uuid }
                 channel: { type: string, enum: [email, webhook, telegram] }
@@ -3519,6 +3719,19 @@ components:
                 created_at: { type: string, format: date-time }
 
         # ---------- Webhook ----------
+        WebhookWithSecret:
+            description: |
+                Subscription plus its signing secret. The secret is returned exactly twice in a
+                webhook's life — on creation and on rotation (WH-7) — and never appears in
+                GET responses: only its hash is stored. The client must show it to the user
+                right away, otherwise the only way to learn it is another rotation.
+            allOf:
+                - $ref: '#/components/schemas/Webhook'
+                - type: object
+                  required: [secret]
+                  properties:
+                      secret: { type: string, description: 'HMAC-SHA256 signing secret (shown once)' }
+
         Webhook:
             type: object
             properties:
@@ -3543,13 +3756,43 @@ components:
                 delivered_at: { type: string, format: date-time, nullable: true }
 
         # ---------- API key ----------
+        ApiKeyScope:
+            type: string
+            description: |
+                API key scope — a permission group the key grants (ApiKeyScopes catalog,
+                FR-1.5.13). Format `api:{module}:{operation}`. A key narrows the owner's
+                permissions: empty scopes or `api:all` means full owner access.
+                The catalog is closed — issuing a key with an unknown scope is rejected (422).
+            enum:
+                - api:all
+                - api:profile
+                - api:tenders:read
+                - api:tenders:write
+                - api:tenders:docs
+                - api:tenders:qa
+                - api:tenders:rate
+                - api:bids:prepare
+                - api:bids:write
+                - api:bids:qualify
+                - api:auctions:bid
+                - api:auctions:control
+                - api:contracts:write
+                - api:claims:write
+                - api:execution:write
+                - api:analytics:read
+                - api:exports:export
+                - api:webhooks:manage
+                - api:keys:manage
+                - api:users:manage
+                - api:platform:admin
+
         ApiKey:
             type: object
             description: Company API key (raw token and hash are not returned — the token is shown once at creation/rotation)
             properties:
                 id: { type: string, format: uuid }
                 name: { type: string }
-                scopes: { type: array, items: { type: string }, description: 'ApiKeyScopes catalog; empty/api:all — full owner access' }
+                scopes: { type: array, items: { $ref: '#/components/schemas/ApiKeyScope' }, description: 'Empty or api:all — full owner access' }
                 expires_at: { type: string, format: date-time, nullable: true }
                 last_used_at: { type: string, format: date-time, nullable: true }
                 revoked_at: { type: string, format: date-time, nullable: true, description: Revocation time (after revocation authentication → 401) }

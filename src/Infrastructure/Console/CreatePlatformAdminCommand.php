@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Console;
 
+use App\Iam\Entity\Company;
+use App\Iam\Entity\Enum\CompanyStatusTransition;
+use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\LocaleEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Entity\Enum\UserStatusTransition;
@@ -19,11 +22,11 @@ use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
+use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Workflow\WorkflowInterface;
 
 /**
- * Создание системного суперадминистратора (роль platform_admin, ADR-005:
- * вне тенантов, company_id = null).
+ * Создание системного суперадминистратора (роль platform_admin).
  *
  * Предназначена для bootstrap'а установки (первичный доступ) — не для
  * повседневного управления пользователями (это делает UserManagementService
@@ -32,19 +35,43 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * проставлен) — подтверждение email не требуется (системная учётная запись,
  * создаётся администратором intentionally).
  *
+ * Компания суперадмина (отступление от ADR-005 «company_id = null»): почти все
+ * сервисы tenant-изолированы и требуют компанию актора (InputValue::companyId
+ * → 409 «Actor has no company»), поэтому platform_admin без компании не может
+ * открыть даже список тендеров. Правило привязки:
+ *  1) если platform_admin с компанией уже есть — берём его company_id (все
+ *     суперадмины сидят в одной служебной компании);
+ *  2) иначе — служебная компания-заказчик «Tender Platform Company»
+ *     (зарезервированный ИНН PLATFORM_COMPANY_INN), сразу подтверждённая
+ *     (approve через workflow company_verification: pending-компания упирается
+ *     в org_pending-ограничение CompanyAccessGuard).
+ *
  * Запуск: php bin/console app:create:platform-admin [email] [password]
  */
 #[AsCommand(
     name: 'app:create:platform-admin',
-    description: 'Create a system platform admin (role platform_admin, outside tenants)',
+    description: 'Create a system platform admin (role platform_admin, service tenant)',
 )]
 final class CreatePlatformAdminCommand extends Command
 {
+    /** Название служебной компании суперадминов (создаётся при первом запуске). */
+    public const string PLATFORM_COMPANY_NAME = 'Tender Platform Company';
+
+    /**
+     * Зарезервированный ИНН служебной компании: companies.inn — уникальный
+     * NOT NULL, реального ИНН у площадки в bootstrap'е нет. Значение служит
+     * ключом идемпотентности — повторный bootstrap находит компанию по нему,
+     * а не плодит дубли.
+     */
+    public const string PLATFORM_COMPANY_INN = '0000000000';
+
     public function __construct(
         private readonly EntityManagerInterface $em,
         private readonly UserPasswordHasherInterface $passwordHasher,
         #[Autowire(service: 'state_machine.user_status')]
         private readonly WorkflowInterface $userWorkflow,
+        #[Autowire(service: 'state_machine.company_verification')]
+        private readonly WorkflowInterface $companyWorkflow,
     ) {
         parent::__construct();
     }
@@ -69,11 +96,13 @@ final class CreatePlatformAdminCommand extends Command
             return Command::FAILURE;
         }
 
+        $company = $this->resolvePlatformCompany();
+
         $user = new User(
             email: $email,
             name: 'Platform Admin',
             role: UserRoleEnum::PLATFORM_ADMIN,
-            companyId: null,
+            companyId: $company->getId(),
             locale: LocaleEnum::RU,
         );
         $user->setPasswordHash($this->passwordHasher->hashPassword($user, $password));
@@ -88,14 +117,75 @@ final class CreatePlatformAdminCommand extends Command
         $this->em->flush();
 
         $io->success(\sprintf(
-            'Platform admin created: %s (id=%s, role=%s, status=%s)',
+            'Platform admin created: %s (id=%s, role=%s, status=%s, company=%s "%s")',
             $email,
             (string) $user->getId(),
             $user->getRole()->value,
             $user->getVerificationStatus()->value,
+            (string) $company->getId(),
+            $company->getLegalName(),
         ));
 
         return Command::SUCCESS;
+    }
+
+    /**
+     * Служебная компания суперадминов: компания уже существующего
+     * platform_admin, иначе компания по зарезервированному ИНН, иначе —
+     * создаём подтверждённую компанию-заказчика.
+     */
+    private function resolvePlatformCompany(): Company
+    {
+        $companyId = $this->existingPlatformAdminCompanyId();
+        if (null !== $companyId) {
+            $company = $this->em->getRepository(Company::class)->find($companyId);
+            if (null !== $company) {
+                return $company;
+            }
+        }
+
+        $company = $this->em->getRepository(Company::class)
+            ->findOneBy(['inn' => self::PLATFORM_COMPANY_INN]);
+        if (null !== $company) {
+            return $company;
+        }
+
+        $company = new Company(
+            legalName: self::PLATFORM_COMPANY_NAME,
+            inn: self::PLATFORM_COMPANY_INN,
+            type: CompanyTypeEnum::CUSTOMER,
+        );
+        // pending-компания заблокирована org_pending-ограничением, а подтвердить
+        // её некому (первый суперадмин ещё не создан) — approve сразу.
+        if ($this->companyWorkflow->can($company, CompanyStatusTransition::APPROVE->value)) {
+            $this->companyWorkflow->apply($company, CompanyStatusTransition::APPROVE->value);
+        }
+        $company->markVerified();
+
+        $this->em->persist($company);
+        $this->em->flush();
+
+        return $company;
+    }
+
+    /**
+     * company_id самого раннего platform_admin с привязкой к компании
+     * (все суперадмины делят одну служебную компанию).
+     */
+    private function existingPlatformAdminCompanyId(): ?Uuid
+    {
+        /** @var User|null $existing */
+        $existing = $this->em->getRepository(User::class)->createQueryBuilder('u')
+            ->where('u.role = :role')
+            ->andWhere('u.companyId IS NOT NULL')
+            ->setParameter('role', UserRoleEnum::PLATFORM_ADMIN->value)
+            ->orderBy('u.createdAt', 'ASC')
+            ->addOrderBy('u.id', 'ASC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+
+        return $existing?->getCompanyId();
     }
 
     private function readEmail(InputInterface $input, OutputInterface $output): string

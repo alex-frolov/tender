@@ -134,19 +134,31 @@ final class TenderLotsCrudTest extends WebTestCase
         self::assertSame(100000, $fresh->lotsSumNetMinor());
     }
 
-    public function testAddLotBreaksSumInvariantReturns422(): void
+    /**
+     * FR-1.1.7: НМЦК — производная от лотов (в TenderUpdate её нет), поэтому
+     * добавление второго лота с ценой не ломает инвариант, а поднимает НМЦК.
+     * Иначе второй лот невозможно было бы добавить в принципе.
+     */
+    public function testAddLotWithPriceRaisesNmck(): void
     {
         self::client();
         $tender = $this->tenderWithLots(100000, 1);
         $token = self::login();
 
         $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
-        // добавляем лот с ненулевой ценой — сумма 100000 + 50000 ≠ НМЦК
         $client = self::request('POST', $url, $token, [
             'title' => 'Лот с ценой',
             'price_net_minor' => 50000,
         ]);
-        self::assertResponseStatusCodeSame(422);
+        self::assertResponseStatusCodeSame(201);
+
+        $em = static::getContainer()->get(EntityManagerInterface::class);
+        $em->clear();
+        $fresh = $em->getRepository(Tender::class)->find($tender->getId());
+        self::assertInstanceOf(Tender::class, $fresh);
+        self::assertSame(2, $fresh->lotCount());
+        self::assertSame(150000, $fresh->lotsSumNetMinor());
+        self::assertSame(150000, $fresh->getNmckMinor());
     }
 
     public function testUpdateLot(): void
@@ -161,6 +173,8 @@ final class TenderLotsCrudTest extends WebTestCase
         $client = self::request('PATCH', $url, $token, [
             'title' => 'Изменённый лот',
             'price_net_minor' => 100000,
+            'quantity' => 12.5,
+            'unit' => 'кг',
         ]);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -168,9 +182,16 @@ final class TenderLotsCrudTest extends WebTestCase
         self::assertSame('Изменённый лот', $body['title']);
         self::assertSame(100000, $body['price_net_minor']);
         self::assertSame(120000, $body['price_gross_minor']); // 100000 + 20% НДС
+        // quantity/unit возвращаются в представлении лота — иначе UI не видит сохранённое значение
+        self::assertSame(12.5, $body['quantity']);
+        self::assertSame('кг', $body['unit']);
     }
 
-    public function testUpdateLotBreaksSumInvariantReturns422(): void
+    /**
+     * Цена лота меняется свободно: НМЦК пересчитывается как Σ лотов (FR-1.1.7),
+     * а не отвергает правку с lots_sum_mismatch.
+     */
+    public function testUpdateLotPriceRecalculatesNmck(): void
     {
         self::client();
         $tender = $this->tenderWithLots(100000, 1);
@@ -182,7 +203,36 @@ final class TenderLotsCrudTest extends WebTestCase
         $client = self::request('PATCH', $url, $token, [
             'price_net_minor' => 99999,
         ]);
-        self::assertResponseStatusCodeSame(422);
+        self::assertResponseStatusCodeSame(200);
+
+        $em = static::getContainer()->get(EntityManagerInterface::class);
+        $em->clear();
+        $fresh = $em->getRepository(Tender::class)->find($tender->getId());
+        self::assertInstanceOf(Tender::class, $fresh);
+        self::assertSame(99999, $fresh->getNmckMinor());
+    }
+
+    /**
+     * Номер лота назначает сервер: присланный в теле number игнорируется,
+     * иначе дубликат ронял бы UNIQUE (tender_id, number) в 500.
+     */
+    public function testAddLotIgnoresClientNumber(): void
+    {
+        self::client();
+        $tender = $this->tenderWithLots(100000, 1);
+        $token = self::login();
+
+        $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
+        // number=1 уже занят первым лотом — сервер обязан назначить следующий
+        $client = self::request('POST', $url, $token, [
+            'number' => 1,
+            'title' => 'Лот с чужим номером',
+            'price_net_minor' => 0,
+        ]);
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame(2, $body['number']);
     }
 
     public function testDeleteLotRenumbers(): void

@@ -17,6 +17,10 @@ use Symfony\Component\Uid\Uuid;
  *
  * Подача жалобы (участник, право tenders.qa): лот валидируется
  * принадлежностью тендеру через TenderReadService; аудит append-only.
+ *
+ * Тендер резолвится через resolveVisibleTender (FR-1.5.14): право tenders.qa
+ * субъекта не имеет, поэтому без проверки видимости жалобу можно было бы
+ * подать на любой id площадки, включая чужие черновики. Невидимый → 404.
  */
 final readonly class ComplaintService
 {
@@ -31,18 +35,19 @@ final readonly class ComplaintService
      * Подача жалобы (POST /tenders/{tenderId}/complaints).
      *
      * @throws \App\Shared\Exception\NotFoundException если тендер не найден
-     * @throws ConflictException                       если актор без компании
+     *                                                 или невидим компании
      * @throws ConflictException                       если лот не принадлежит тендеру
      */
     public function file(string $tenderId, CreateComplaintInput $input, Uuid $companyId, string $actorId, ?string $ip = null): Complaint
     {
-        $tender = $this->tenders->resolveTender($tenderId);
+        $tender = $this->tenders->resolveVisibleTender($tenderId, $companyId);
         $lotId = null !== $input->lotId && '' !== $input->lotId
             ? $this->tenders->resolveLot($tender->getId(), $input->lotId)?->getId()
             : null;
 
         $complaint = new Complaint(
             tenderId: $tender->getId(),
+            companyId: $companyId,
             lotId: $lotId,
             text: trim($input->text),
             ground: trim($input->ground),
@@ -59,7 +64,11 @@ final readonly class ComplaintService
             tenantId: (string) $tender->getTenantId(),
             actorType: 'user',
             actorId: $actorId,
-            after: ['tender_id' => $tenderId, 'status' => $complaint->getStatus()->value],
+            after: [
+                'tender_id' => $tenderId,
+                'company_id' => (string) $companyId,
+                'status' => $complaint->getStatus()->value,
+            ],
             ip: $ip,
         );
 

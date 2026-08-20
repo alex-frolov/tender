@@ -33,6 +33,11 @@ final readonly class ContractAccessChecker implements ContractAccessCheckerContr
         }
     }
 
+    public function customersWithActiveMultiUse(Uuid $supplierId): array
+    {
+        return $this->contracts->activeMultiUseCustomerIds($supplierId);
+    }
+
     public function checkReason(Uuid $customerId, Uuid $supplierId): string
     {
         $active = $this->contracts->findActiveMultiUse($customerId, $supplierId);

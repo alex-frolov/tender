@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Iam\Repository;
 
 use App\Iam\Entity\Company;
+use App\Iam\Entity\Enum\CompanyStatusEnum;
 use App\Iam\Exception\CompanyNotFoundException;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
@@ -17,6 +18,9 @@ use Symfony\Component\Uid\Uuid;
  * CompanyNotFoundException (→ 404 через JsonApiExceptionSubscriber). Используется
  * вместо ручного `$em->getRepository(Company::class)->find(...)` в сервисах
  * и контроллерах (см. AGENTS.md, правило entity-bound update forms).
+ *
+ * listPage() — реестр компаний площадки для модерации суперадмином
+ * (GET /admin/companies): keyset-страница по (created_at, id) DESC.
  *
  * @extends ServiceEntityRepository<Company>
  */
@@ -40,5 +44,64 @@ final class CompanyRepository extends ServiceEntityRepository
         }
 
         return $company;
+    }
+
+    /**
+     * Страница реестра компаний (FR-1.5.7, GET /admin/companies): все компании
+     * площадки, новые сверху, keyset-срез по (created_at, id) DESC (AR-6).
+     * Tenant-изоляции здесь нет намеренно — это экран модерации platform_admin
+     * (доступ ограничен CompanyVoter::VERIFY на контроллере).
+     *
+     * $limit вызывающий передаёт как limit+1 — «есть ли следующая страница»
+     * определяется по лишней строке, без COUNT.
+     *
+     * @return list<Company>
+     */
+    public function listPage(
+        ?CompanyStatusEnum $status,
+        ?string $q,
+        ?\DateTimeImmutable $cursorCreatedAt,
+        ?Uuid $cursorId,
+        int $limit,
+    ): array {
+        $qb = $this->createQueryBuilder('c')
+            ->orderBy('c.createdAt', 'DESC')
+            ->addOrderBy('c.id', 'DESC')
+            ->setMaxResults(max(1, $limit));
+
+        if (null !== $status) {
+            $qb->andWhere('c.verificationStatus = :status')
+                ->setParameter('status', $status->value);
+        }
+
+        if (null !== $q && '' !== trim($q)) {
+            // Подстрока без учёта регистра по названию и ИНН — поиск карточки
+            // на экране модерации; точное совпадение не требуется.
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->like('LOWER(c.legalName)', ':q'),
+                    $qb->expr()->like('LOWER(c.inn)', ':q'),
+                ),
+            )->setParameter('q', '%'.mb_strtolower(trim($q)).'%');
+        }
+
+        if (null !== $cursorCreatedAt && null !== $cursorId) {
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->lt('c.createdAt', ':cursorCreatedAt'),
+                    $qb->expr()->andX(
+                        $qb->expr()->eq('c.createdAt', ':cursorCreatedAt'),
+                        $qb->expr()->lt('c.id', ':cursorId'),
+                    ),
+                ),
+            )
+                ->setParameter('cursorCreatedAt', $cursorCreatedAt)
+                ->setParameter('cursorId', $cursorId);
+        }
+
+        /** @var list<Company> $result */
+        $result = $qb->getQuery()->getResult();
+
+        return $result;
     }
 }

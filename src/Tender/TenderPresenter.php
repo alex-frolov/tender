@@ -25,6 +25,10 @@ final readonly class TenderPresenter
         return [
             'id' => (string) $tender->getId(),
             'number' => $tender->getNumber(),
+            // Заказчик тендера (= тенант): клиенту нужен, чтобы отличить свою
+            // роль в процедуре — заказчик рассматривает заявки, поставщик их
+            // подаёт. Идентификатор заказчика в закупке публичен по своей сути.
+            'customer_id' => (string) $tender->getCustomerId(),
             'title' => $tender->getTitle(),
             'description' => $tender->getDescription(),
             'procedure_type' => $tender->getProcedureType()->value,
@@ -37,8 +41,10 @@ final readonly class TenderPresenter
             'status' => $tender->getStatus()->value,
             'access_type' => $tender->getAccessType()->value,
             'execution_rating' => $tender->getExecutionRating(),
+            'region' => $tender->getRegion(),
             'okpd2' => $tender->getOkpd2(),
             'timeline' => $tender->getTimeline(),
+            'deadline' => $this->deadline($tender),
             'cancellation_reason_code' => $tender->getCancellationReasonCode()?->value,
             'cancellation_reason_text' => $tender->getCancellationReasonText(),
             'lots' => array_map(
@@ -140,6 +146,8 @@ final readonly class TenderPresenter
             'price_gross_minor' => $lot->getPriceGrossMinor(),
             'vat_rate' => $lot->getVatRateBps() / 100,
             'price_basis' => $lot->getPriceBasis()->value,
+            'quantity' => $lot->getQuantity(),
+            'unit' => $lot->getUnit(),
             'execution_start_at' => $lot->getExecutionStartAt()?->format('Y-m-d\TH:i:s\Z'),
             'trade_end_lead_hours' => $lot->getTradeEndLeadHours(),
             'status' => $lot->getStatus()->value,

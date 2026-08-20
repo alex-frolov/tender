@@ -9,6 +9,7 @@ use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Question\Controller\QuestionCreateController;
 use App\Question\Controller\QuestionListController;
+use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
@@ -20,7 +21,9 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  *
  * - POST: любой участник с правом tenders.qa (agent/manager/admin);
  * - GET: список вопросов (новые сверху);
- * - Валидация: text обязателен (422).
+ * - Валидация: text обязателен (422);
+ * - Видимость (FR-1.5.14): чужой невидимый тендер (черновик) — 404 и на
+ *   создание, и на список: право tenders.qa субъекта не имеет.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
  */
@@ -86,9 +89,14 @@ final class QuestionCrudTest extends WebTestCase
     }
 
     /**
+     * Контекст: тендер заказчика и агент чужой компании-поставщика.
+     * По умолчанию тендер в accepting_bids — участнической стадии, на которой
+     * открытая закупка видна посторонним (FR-1.5.14); черновик тому же агенту
+     * невидим, и вопросы по нему недоступны.
+     *
      * @return array{token: string, tenderId: string}
      */
-    private static function questionContext(): array
+    private static function questionContext(TenderStatusEnum $status = TenderStatusEnum::ACCEPTING_BIDS): array
     {
         $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
@@ -100,6 +108,7 @@ final class QuestionCrudTest extends WebTestCase
         $tender = TenderFactory::createOne([
             'customerId' => $customer->getId(),
             'createdBy' => $customer->getId(),
+            'status' => $status,
         ]);
 
         return ['token' => self::loginAs((string) $user->getEmail()), 'tenderId' => (string) $tender->getId()];
@@ -141,5 +150,30 @@ final class QuestionCrudTest extends WebTestCase
 
         $client = self::request('POST', $url, $ctx['token'], ['text' => '']);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    /**
+     * Q&A чужого черновика недоступны (FR-1.5.14): невидимый тендер
+     * неотличим от несуществующего — 404, а не 403.
+     */
+    public function testQuestionsOfInvisibleTenderAreNotFound(): void
+    {
+        self::client();
+        $ctx = self::questionContext(TenderStatusEnum::DRAFT);
+
+        $client = self::request(
+            'POST',
+            str_replace('{tenderId}', (string) $ctx['tenderId'], QuestionCreateController::URL),
+            $ctx['token'],
+            ['text' => 'Вопрос по чужому черновику'],
+        );
+        self::assertResponseStatusCodeSame(404);
+
+        $client = self::request(
+            'GET',
+            str_replace('{tenderId}', (string) $ctx['tenderId'], QuestionListController::URL),
+            $ctx['token'],
+        );
+        self::assertResponseStatusCodeSame(404);
     }
 }

@@ -209,17 +209,24 @@ final readonly class UserManagementService
     /**
      * Блокировка/разблокировка пользователя (FR-1.5.8).
      * Допустимые статусы: active / blocked. При блокировке сессии отзываются.
+     *
+     * Переход выбирается по ФАКТИЧЕСКОМУ месту пользователя, а не по целевому
+     * статусу: в active ведут три перехода (unblock из blocked, accept_invite
+     * из invited, verify_email из email_pending), и жёстко выбранный unblock
+     * ломал бы активацию приглашённого админом. Запрос статуса, который уже
+     * стоит, — идемпотентный no-op, а не 409.
      */
     private function setStatus(User $actor, Uuid $companyId, User $user, UserStatusEnum $status, ?string $ip): void
     {
         $before = $user->getVerificationStatus();
+        if ($before === $status) {
+            return;
+        }
 
-        // Статус меняется только через workflow user_status (active → blocked → active).
-        $transition = UserStatusEnum::BLOCKED === $status
-            ? UserStatusTransition::BLOCK->value
-            : UserStatusTransition::UNBLOCK->value;
-        if (!$this->userWorkflow->can($user, $transition)) {
-            throw new StateTransitionException(\sprintf('Cannot %s user from status %s', $transition, $before->value));
+        // Статус меняется только через workflow user_status.
+        $transition = $this->resolveStatusTransition($user, $status);
+        if (null === $transition) {
+            throw new StateTransitionException(\sprintf('Cannot change user status from %s to %s', $before->value, $status->value));
         }
         $this->userWorkflow->apply($user, $transition);
         $this->em->flush();
@@ -281,6 +288,33 @@ final readonly class UserManagementService
             after: ['status' => UserStatusEnum::DELETED->value, 'deleted_at' => $user->getDeletedAt()?->format('Y-m-d\TH:i:s\Z'), 'email_masked' => true],
             ip: $ip,
         );
+    }
+
+    /**
+     * Переход workflow user_status, ведущий в целевой статус из текущего места
+     * пользователя, или null, если такого нет (например, block из deleted).
+     * Кандидаты перечислены явно: новый переход должен попадать сюда осознанно,
+     * а не подбираться по имени.
+     */
+    private function resolveStatusTransition(User $user, UserStatusEnum $target): ?string
+    {
+        $candidates = match ($target) {
+            UserStatusEnum::BLOCKED => [UserStatusTransition::BLOCK],
+            UserStatusEnum::ACTIVE => [
+                UserStatusTransition::UNBLOCK,
+                UserStatusTransition::ACCEPT_INVITE,
+                UserStatusTransition::VERIFY_EMAIL,
+            ],
+            default => [],
+        };
+
+        foreach ($candidates as $candidate) {
+            if ($this->userWorkflow->can($user, $candidate->value)) {
+                return $candidate->value;
+            }
+        }
+
+        return null;
     }
 
     /**

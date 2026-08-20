@@ -51,7 +51,9 @@ final readonly class ProfileService
      */
     public function update(User $user, UpdateMeInput $input, ?string $ip = null): User
     {
-        if (null !== $input->name && $input->name !== $user->getName()) {
+        // Пустая строка — не «стереть имя», а «не менять» (как в админском
+        // UserManagementService::update): иначе PATCH {"name": ""} обнулял бы имя.
+        if (null !== $input->name && '' !== $input->name && $input->name !== $user->getName()) {
             $user->changeName($input->name);
         }
 
@@ -74,7 +76,10 @@ final readonly class ProfileService
             tenantId: null !== $user->getCompanyId() ? (string) $user->getCompanyId() : null,
             actorType: 'user',
             actorId: (string) $user->getId(),
-            after: ['name_changed' => null !== $input->name, 'password_changed' => null !== $input->newPassword],
+            after: [
+                'name_changed' => null !== $input->name && '' !== $input->name,
+                'password_changed' => null !== $input->newPassword,
+            ],
             ip: $ip,
         );
 

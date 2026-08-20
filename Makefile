@@ -6,6 +6,12 @@ COMPOSE      := docker compose
 EXEC         := $(COMPOSE) exec -T
 APP_SERVICE  := app
 
+# memory_limit для PHPUnit/ParaTest/PHPStan: дефолтные 128M в контейнере app
+# не выдерживают smoke/load-тесты и анализ level max (Fatal error: Allowed
+# memory size exhausted). Переопределяется на вызове: make test PHP_MEMORY_LIMIT=2G.
+PHP_MEMORY_LIMIT ?= 1G
+EXEC_TEST    := $(EXEC) -e PHP_MEMORY_LIMIT=$(PHP_MEMORY_LIMIT)
+
 .DEFAULT_GOAL := help
 .PHONY: help up down restart ps logs logs-app shell console composer \
         migrate migrate-test migrate-all test-prepare \
@@ -74,29 +80,29 @@ cs-fixer: ## PHP CS Fixer: применить правки (fix + diff)
 cs-fixer-check: ## PHP CS Fixer: проверка без изменений (dry-run)
 	$(EXEC) $(APP_SERVICE) composer cs-fixer:check
 
-phpstan: ## PHPStan level max (поднятый memory-limit)
-	$(EXEC) $(APP_SERVICE) php vendor/bin/phpstan analyse --no-progress --memory-limit=1G
+phpstan: ## PHPStan level max (memory_limit — PHP_MEMORY_LIMIT, по умолчанию 1G)
+	$(EXEC_TEST) $(APP_SERVICE) composer phpstan
 
 arkitect: ## PHPArkitect: слои + границы модулей
 	$(EXEC) $(APP_SERVICE) composer arkitect
 
-test: ## PHPUnit, весь набор, последовательно (сам готовит test-БД)
-	$(EXEC) $(APP_SERVICE) composer test
+test: ## PHPUnit, весь набор, последовательно (сам готовит test-БД; memory_limit = PHP_MEMORY_LIMIT)
+	$(EXEC_TEST) $(APP_SERVICE) composer test
 
-test-unit: ## Только Unit-тесты
-	$(EXEC) $(APP_SERVICE) composer test:unit
+test-unit: ## Только Unit-тесты (memory_limit = PHP_MEMORY_LIMIT)
+	$(EXEC_TEST) $(APP_SERVICE) composer test:unit
 
 test-parallel: ## PHPUnit через ParaTest (параллельно; smoke/load тесты исключены)
-	$(EXEC) $(APP_SERVICE) composer test:parallel
+	$(EXEC_TEST) $(APP_SERVICE) composer test:parallel
 
 test-smoke: ## Smoke/load тесты, последовательно, один за другим (после test-parallel)
-	$(EXEC) $(APP_SERVICE) composer test:smoke
+	$(EXEC_TEST) $(APP_SERVICE) composer test:smoke
 
 test-coverage: ## PHPUnit с покрытием + проверка порога ≥80%
-	$(EXEC) $(APP_SERVICE) composer test:coverage
+	$(EXEC_TEST) $(APP_SERVICE) composer test:coverage
 
-quality: ## Весь конвейер: lint + phpstan + arkitect + test
-	$(EXEC) $(APP_SERVICE) composer quality
+quality: ## Весь конвейер: lint + cs-fixer + phpstan + arkitect + test
+	$(EXEC_TEST) $(APP_SERVICE) composer quality
 
 # ---------- Нагрузочные тесты ----------
 

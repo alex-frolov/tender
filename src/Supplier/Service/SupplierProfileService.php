@@ -54,6 +54,10 @@ final readonly class SupplierProfileService
             $profile = new SupplierProfile($companyId);
             $this->em->persist($profile);
         }
+        // Снимок ДО мутации: после update() геттер вернул бы уже новое значение,
+        // и в аудите before совпал бы с after (прежние категории потеряны).
+        $before = $profile->getCategories();
+
         $profile->update($input->categories, $input->capabilities, $input->documents);
         $this->em->flush();
 
@@ -64,7 +68,7 @@ final readonly class SupplierProfileService
             tenantId: (string) $companyId,
             actorType: 'user',
             actorId: $actorId,
-            before: ['categories' => $profile->getCategories()],
+            before: ['categories' => $before],
             after: ['categories' => $input->categories],
             ip: $ip,
         );

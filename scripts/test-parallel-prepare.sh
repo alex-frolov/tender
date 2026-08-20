@@ -18,4 +18,8 @@ done
 php bin/console app:test:redis-cleanup --env=test
 
 echo "Running parallel tests with ${PROCESSES} processes (smoke/load tests excluded, run them via composer test:smoke)..."
-exec vendor/bin/paratest --processes="${PROCESSES}" --exclude-group=smoke "$@"
+# Память поднята: дефолтный memory_limit контейнера (128M) не выдерживает
+# smoke/load-сценарии и гидратацию Doctrine на больших наборах. Значение
+# переопределяется через PHP_MEMORY_LIMIT (make test PHP_MEMORY_LIMIT=2G).
+exec php -d memory_limit="${PHP_MEMORY_LIMIT:-1G}" vendor/bin/paratest \
+    --processes="${PROCESSES}" --exclude-group=smoke "$@"

@@ -11,12 +11,14 @@ use App\Tender\Repository\TenderRepository;
 use App\Tender\TenderCatalogPage;
 use App\Tender\TenderCatalogQuery;
 use App\Tender\TenderFilters;
+use App\Tender\TenderVisibility;
 use Symfony\Component\Uid\Uuid;
 
 /**
  * Реализация публичного read-контракта каталога тендеров (FR-1.1.1, AR-6).
  *
  * Read-модель GET /tenders: keyset-пагинация по (created_at, id), страница —
+ * область видимости (TenderVisibility::scopeFor — один запрос к договорам) плюс
  * два index-запроса в TenderRepository (срез тендеров + агрегация статусов/
  * lot_count по id страницы), без гидратации сущностей. Агрегация статуса при
  * мультилоте пересобирается Tender::aggregateStatus() — единый источник истины
@@ -25,17 +27,20 @@ use Symfony\Component\Uid\Uuid;
  */
 final readonly class TenderCatalogQueryService implements TenderCatalogQuery
 {
-    public function __construct(private TenderRepository $tenders)
-    {
+    public function __construct(
+        private TenderRepository $tenders,
+        private TenderVisibility $visibility,
+    ) {
     }
 
-    public function page(Uuid $tenantId, TenderFilters $filters, ?string $cursor, int $limit): TenderCatalogPage
+    public function page(Uuid $viewerCompanyId, TenderFilters $filters, ?string $cursor, int $limit): TenderCatalogPage
     {
         $cursorPos = KeysetCursor::decode($cursor);
         $cursorCreatedAt = $cursorPos?->createdAt;
         $cursorId = $cursorPos?->id;
 
-        $rows = $this->tenders->listCatalogPage($tenantId, $filters, $cursorCreatedAt, $cursorId, $limit + 1);
+        $scope = $this->visibility->scopeFor($viewerCompanyId);
+        $rows = $this->tenders->listCatalogPage($scope, $filters, $cursorCreatedAt, $cursorId, $limit + 1);
 
         $hasMore = \count($rows) > $limit;
         if ($hasMore) {

@@ -60,22 +60,47 @@ final class WebhookDeliveryRepository extends ServiceEntityRepository
     }
 
     /**
-     * Журнал доставок подписки (GET /webhooks/{id}/deliveries), новые сверху.
-     * Полный список — страница лимитируется KeysetCursor-срезом на уровне
-     * UseCase (AR-6); без LIMIT, чтобы не резать ключи последующих страниц.
+     * Страница журнала доставок подписки (GET /webhooks/{id}/deliveries),
+     * новые сверху: keyset-срез по (created_at, id) DESC средствами БД (AR-6).
+     *
+     * Срез делает SQL, а не PHP: журнал подписки не ограничен (дохлый endpoint
+     * копит доставки тысячами), и гидрация всей истории на каждый запрос
+     * стоила бы памяти пропорционально её размеру, а не размеру страницы.
+     * $limit вызывающий передаёт как limit+1 — «есть ли следующая страница»
+     * определяется по лишней строке, без COUNT.
      *
      * @return list<WebhookDelivery>
      */
-    public function listForWebhook(string $webhookId): array
-    {
-        /** @var list<WebhookDelivery> $result */
-        $result = $this->createQueryBuilder('d')
+    public function listForWebhook(
+        string $webhookId,
+        ?\DateTimeImmutable $cursorCreatedAt,
+        ?Uuid $cursorId,
+        int $limit,
+    ): array {
+        $qb = $this->createQueryBuilder('d')
             ->join('d.webhook', 'w')
             ->where('w.id = :webhook')
             ->setParameter('webhook', Uuid::fromString($webhookId))
             ->orderBy('d.createdAt', 'DESC')
-            ->getQuery()
-            ->getResult();
+            ->addOrderBy('d.id', 'DESC')
+            ->setMaxResults(max(1, $limit));
+
+        if (null !== $cursorCreatedAt && null !== $cursorId) {
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->lt('d.createdAt', ':cursorCreatedAt'),
+                    $qb->expr()->andX(
+                        $qb->expr()->eq('d.createdAt', ':cursorCreatedAt'),
+                        $qb->expr()->lt('d.id', ':cursorId'),
+                    ),
+                ),
+            )
+                ->setParameter('cursorCreatedAt', $cursorCreatedAt)
+                ->setParameter('cursorId', $cursorId);
+        }
+
+        /** @var list<WebhookDelivery> $result */
+        $result = $qb->getQuery()->getResult();
 
         return $result;
     }

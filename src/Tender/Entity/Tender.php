@@ -131,8 +131,16 @@ class Tender
     #[ORM\Column(type: 'integer', options: ['default' => 1])]
     private int $version = 1;
 
-    /** @var Collection<int, Lot> */
+    /**
+     * Лоты тендера в порядке номеров: порядок задаётся маппингом, а не
+     * сортировкой на местах — иначе GET /tenders/{id}/lots и карточка тендера
+     * отдавали бы лоты в произвольном порядке выдачи PostgreSQL, не совпадающем
+     * с их номерами (особенно после удаления лота с перенумерацией).
+     *
+     * @var Collection<int, Lot>
+     */
     #[ORM\OneToMany(targetEntity: Lot::class, mappedBy: 'tender', cascade: ['persist', 'remove'], orphanRemoval: true)]
+    #[ORM\OrderBy(['number' => 'ASC'])]
     private Collection $lots;
 
     /**
@@ -497,7 +505,7 @@ class Tender
         }
 
         if ($this->nmckMinor !== $this->lotsSumNetMinor()) {
-            throw new LotsSumMismatchException(\sprintf('Lots sum %d does not match nmck %d', $this->lotsSumNetMinor(), $this->nmckMinor));
+            throw new LotsSumMismatchException($this->lotsSumNetMinor(), $this->nmckMinor, $this->currency);
         }
     }
 

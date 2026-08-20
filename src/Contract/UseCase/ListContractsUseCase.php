@@ -10,6 +10,7 @@ use App\Contract\Entity\Contract;
 use App\Contract\Input\ContractListFiltersInput;
 use App\Iam\Entity\User;
 use App\Shared\Input\Paginator;
+use App\Shared\Repository\CursorDirection;
 use App\Shared\Repository\KeysetCursor;
 
 /**
@@ -32,7 +33,7 @@ final readonly class ListContractsUseCase implements ContractUseCase
 
     /**
      * Keyset-пагинация (AR-6): in-memory срез по (created_at, id) над
-     * отсортированным (новые сверху) списком договоров компании;
+     * отсортированным (новые сверху, DESC) списком договоров компании;
      * next_cursor — единый OPAQUE-курсор контракта.
      *
      * @return array{items: list<array<string, mixed>>, next_cursor: string|null}
@@ -44,6 +45,7 @@ final readonly class ListContractsUseCase implements ContractUseCase
             $paginator->cursor,
             $paginator->limitValue(),
             static fn (Contract $c): array => [$c->getCreatedAt(), (string) $c->getId()],
+            CursorDirection::DESC,
         );
 
         $items = array_map(

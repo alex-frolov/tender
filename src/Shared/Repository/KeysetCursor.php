@@ -74,21 +74,32 @@ final readonly class KeysetCursor
      * In-memory keyset-срез отсортированного списка после курсора (AR-6).
      *
      * Для ограниченных списков (заявки тендера, ставки аукциона, договоры
-     * компании, доставки webhook) пагинация выполняется над уже полученным
-     * списком: элементы, у которых ключ (created_at, id) <= курсора,
-     * пропускаются, из оставшихся берётся страница limit. next_cursor —
-     * ключ последнего элемента страницы, только если остались элементы.
-     * Порядок списка задаёт вызывающий (не меняется страницей).
+     * компании, планы закупок) пагинация выполняется над уже полученным
+     * списком: элементы до позиции курсора включительно пропускаются, из
+     * оставшихся берётся страница limit. next_cursor — ключ последнего
+     * элемента страницы, только если остались элементы.
+     *
+     * Порядок списка задаёт вызывающий и обязан сообщить его в $direction:
+     * «после курсора» для ASC-списка — ключ больше курсора, для DESC-списка —
+     * меньше. Направление не выводится из данных: для DESC-списка сравнение
+     * по ASC-правилу отобрало бы первый же элемент, и вторая страница
+     * оказалась бы копией первой с тем же next_cursor (бесконечный цикл).
      *
      * @template T of object
      *
-     * @param list<T>                                              $items полный отсортированный список
-     * @param callable(T): array{0: \DateTimeImmutable, 1: string} $keyOf ключ элемента: [created_at, id]
+     * @param list<T>                                              $items     полный отсортированный список
+     * @param callable(T): array{0: \DateTimeImmutable, 1: string} $keyOf     ключ элемента: [created_at, id]
+     * @param CursorDirection                                      $direction порядок $items по (created_at, id)
      *
      * @return array{0: list<T>, 1: string|null} [страница, next_cursor]
      */
-    public static function sliceAfter(array $items, ?string $cursor, int $limit, callable $keyOf): array
-    {
+    public static function sliceAfter(
+        array $items,
+        ?string $cursor,
+        int $limit,
+        callable $keyOf,
+        CursorDirection $direction = CursorDirection::ASC,
+    ): array {
         $pos = self::decode($cursor);
         $start = 0;
 
@@ -97,7 +108,11 @@ final readonly class KeysetCursor
                 [$createdAt, $id] = $keyOf($item);
                 $cmp = $createdAt <=> $pos->createdAt;
                 if (0 === $cmp) {
-                    $cmp = strcmp($id, (string) $pos->id);
+                    $cmp = strcmp($id, (string) $pos->id) <=> 0;
+                }
+                // В DESC-списке «дальше по списку» = ключ МЕНЬШЕ курсора.
+                if (CursorDirection::DESC === $direction) {
+                    $cmp = -$cmp;
                 }
                 if ($cmp > 0) {
                     $start = $i;

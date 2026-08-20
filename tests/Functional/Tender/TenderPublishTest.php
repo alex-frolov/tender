@@ -131,6 +131,10 @@ final class TenderPublishTest extends WebTestCase
         self::assertArrayHasKey('bids_end', $body['timeline']);
         self::assertIsString($body['timeline']['bids_start']);
         self::assertIsString($body['timeline']['bids_end']);
+        // deadline — ярлык timeline.bids_end: карточка тендера показывает срок
+        // подачи заявок, не разбирая произвольную мапу timeline.
+        self::assertSame($body['timeline']['bids_end'], $body['deadline']);
+        self::assertArrayHasKey('region', $body);
     }
 
     public function testRepublishReturns409(): void

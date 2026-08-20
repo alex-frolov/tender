@@ -247,6 +247,11 @@ make load             # load tests (all scenarios)
 make cache-clear      # clear dev cache
 ```
 
+PHPUnit, ParaTest and PHPStan run with `memory_limit=1G` (the container's 128M default is not
+enough for the smoke/load tests or level-max analysis). The ceiling is the `PHP_MEMORY_LIMIT`
+variable — `make test PHP_MEMORY_LIMIT=2G`; the `make` targets pass it into the container, and the
+`composer test*` / `composer phpstan` scripts read it themselves.
+
 Console commands defined by the application:
 
 | Command | Purpose |
