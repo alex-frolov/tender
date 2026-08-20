@@ -20,7 +20,11 @@ use Symfony\Component\Console\Output\OutputInterface;
  *   снапшоты восстановимы через AuctionStateService::rebuildAll (UC-15);
  * - ctr:* — Redis-счётчики аналитики (CounterService, ARCH-9): дельта между
  *   снапшотами, после сброса test-БД не имеют смысла (восстанавливаются из
- *   событий).
+ *   событий);
+ * - role_permissions:enabled?* — кэш матрицы прав ПАРАЛЛЕЛЬНЫХ воркеров
+ *   (RolePermissionCache, суффикс = TEST_TOKEN): каждый прогон оставляет по
+ *   ключу на процесс. Шаблон намеренно требует символ после `enabled` —
+ *   ключ без суффикса принадлежит dev-окружению того же Redis и не трогается.
  *
  * Вызывается в `composer test:prepare` ПОСЛЕ сброса test-БД.
  */
@@ -39,7 +43,9 @@ final class TestRedisCleanupCommand extends Command
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $removed = $this->removeByPattern('auction:*') + $this->removeByPattern('ctr:*');
+        $removed = $this->removeByPattern('auction:*')
+            + $this->removeByPattern('ctr:*')
+            + $this->removeByPattern('role_permissions:enabled?*');
         $output->writeln(\sprintf('Redis test keys removed: %d', $removed));
 
         return Command::SUCCESS;

@@ -176,6 +176,38 @@ final class RolePermissionTest extends WebTestCase
         self::assertFalse((bool) $byCode['users.manage']['enabled']);
     }
 
+    /**
+     * Ключ кэша матрицы прав изолирован по воркеру параллельного прогона
+     * (суффикс TEST_TOKEN — как `_test%env(TEST_TOKEN)%` у баз Doctrine).
+     *
+     * Redis у процессов ParaTest общий, а базы разные: с единым ключом воркер,
+     * промахнувшийся мимо кэша, пересобирал бы матрицу из СВОЕЙ базы и затирал
+     * ею ключ соседа, который только что этот набор изменил — отсюда плавающее
+     * падение testUpdateRoleAppliesImmediately. Тест пришпиливает проводку
+     * $keySuffix (config/services/iam.yaml): без неё ключ снова станет общим.
+     */
+    public function testCacheKeyIsIsolatedPerParallelWorker(): void
+    {
+        self::client();
+        $cache = self::getContainer()->get(RolePermissionCache::class);
+        self::assertInstanceOf(RolePermissionCache::class, $cache);
+        $redis = self::getContainer()->get(\Redis::class);
+        self::assertInstanceOf(\Redis::class, $redis);
+
+        $token = getenv('TEST_TOKEN');
+        $expectedKey = 'role_permissions:enabled'.(false === $token ? '' : $token);
+
+        $cache->clear();
+        self::assertSame(0, $redis->exists($expectedKey));
+
+        // промах кэша → сборка из БД → запись под ключом этого процесса
+        $cache->all();
+        self::assertSame(1, $redis->exists($expectedKey));
+
+        $cache->clear();
+        self::assertSame(0, $redis->exists($expectedKey));
+    }
+
     public function testUpdateRoleAppliesImmediately(): void
     {
         self::client();
