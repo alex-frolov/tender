@@ -258,6 +258,64 @@ final class TenderCrudTest extends WebTestCase
         self::assertSame('Санкт-Петербург', $reloaded->getRegion());
     }
 
+    /**
+     * Очистка описания: пустая строка в PATCH обнуляет поле (в отличие от
+     * отсутствующего ключа, который значит «не менять»). Контракт TenderUpdate.
+     */
+    public function testUpdateClearsDescriptionWithEmptyString(): void
+    {
+        self::client();
+        $company = VerifiedUserStory::company();
+        $tender = TenderFactory::createOne([
+            'customerId' => $company->getId(),
+            'createdBy' => $company->getId(),
+            'description' => 'Старое описание',
+        ]);
+        $token = self::login();
+
+        $url = str_replace('{tenderId}', (string) $tender->getId(), TenderUpdateController::URL);
+        $client = self::request('PATCH', $url, $token, [
+            'description' => '',
+            'change_reason' => 'Описание больше не актуально',
+        ]);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertNull($body['description']);
+
+        $em = static::getContainer()->get(EntityManagerInterface::class);
+        $em->clear();
+        $reloaded = $em->getRepository(Tender::class)->find((string) $tender->getId());
+        self::assertNotNull($reloaded);
+        self::assertNull($reloaded->getDescription());
+    }
+
+    /**
+     * Отсутствующий ключ описание не трогает — иначе правка одного поля стирала
+     * бы остальные.
+     */
+    public function testUpdateKeepsDescriptionWhenKeyOmitted(): void
+    {
+        self::client();
+        $company = VerifiedUserStory::company();
+        $tender = TenderFactory::createOne([
+            'customerId' => $company->getId(),
+            'createdBy' => $company->getId(),
+            'description' => 'Старое описание',
+        ]);
+        $token = self::login();
+
+        $url = str_replace('{tenderId}', (string) $tender->getId(), TenderUpdateController::URL);
+        self::request('PATCH', $url, $token, ['title' => 'Только заголовок']);
+        self::assertResponseStatusCodeSame(200);
+
+        $em = static::getContainer()->get(EntityManagerInterface::class);
+        $em->clear();
+        $reloaded = $em->getRepository(Tender::class)->find((string) $tender->getId());
+        self::assertNotNull($reloaded);
+        self::assertSame('Старое описание', $reloaded->getDescription());
+    }
+
     public function testPatchUnknownTenderReturns404(): void
     {
         self::client();
