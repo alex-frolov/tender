@@ -44,9 +44,9 @@ final readonly class TenderDashboardQueryService implements TenderDashboardQuery
         return $this->tenders->countByAggregatedStatus($tenantId);
     }
 
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit): array
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
     {
-        return $this->tenders->upcomingBidDeadlines($tenantId, max(1, $limit));
+        return $this->tenders->upcomingBidDeadlines($tenantId, max(1, $limit), $until);
     }
 
     public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to): array

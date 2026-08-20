@@ -8,6 +8,8 @@ use App\Auction\Entity\Auction;
 use App\Auction\UseCase\ListBidsUseCase;
 use App\Controller\AbstractBaseController;
 use App\Security\AuctionStreamVoter;
+use App\Shared\Form\PaginatorForm;
+use App\Shared\Input\Paginator;
 use Symfony\Bridge\Doctrine\Attribute\MapEntity;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -19,8 +21,9 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  *
  * Query-access-адаптер → ListBidsUseCase (read-модель без мутаций).
  * Анонимность bidder_id («анонимно до конца торгов») — в UseCase/Presenter.
- * Доступ — R7 (AuctionStreamVoter::VIEW): допущенные участники, заказчик,
- * наблюдатели (platform_admin). Контракт: api/openapi.yaml.
+ * Доступ — AuctionStreamVoter::VIEW: все, кому виден тендер аукциона
+ * (FR-1.5.14), плюс допущенные участники, заказчик и наблюдатели
+ * (platform_admin). Контракт: api/openapi.yaml.
  */
 final class AuctionBidListController extends AbstractBaseController
 {
@@ -34,6 +37,10 @@ final class AuctionBidListController extends AbstractBaseController
         Auction $auction,
         ListBidsUseCase $useCase,
     ): JsonResponse {
-        return $this->json($useCase->execute($auction));
+        $paginatorForm = $this->formQuery(PaginatorForm::class, $request);
+        /** @var Paginator $paginator */
+        $paginator = $paginatorForm->getData();
+
+        return $this->json($useCase->execute($auction, $paginator));
     }
 }

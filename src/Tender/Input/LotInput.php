@@ -10,8 +10,14 @@ namespace App\Tender\Input;
  * Обязательные поля лота (title, price_net_minor) — constraints в форме.
  * vat_rate/price_basis/currency, если не заданы, наследуются от тендера в сервисе.
  */
-final class LotInput
+class LotInput
 {
+    /**
+     * Номер лота из тела запроса — ПРИНИМАЕТСЯ ДЛЯ СОВМЕСТИМОСТИ И ИГНОРИРУЕТСЯ:
+     * нумерацию ведёт сервер (TenderService::buildLot), клиентский номер ломал
+     * бы UNIQUE (tender_id, number) и всё равно не пережил бы удаление лота
+     * с перенумерацией.
+     */
     public ?int $number = null;
 
     /** Обязательное поле (NotBlank в форме) — не может быть null при валидной форме. */

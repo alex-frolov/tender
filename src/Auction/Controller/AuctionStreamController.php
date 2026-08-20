@@ -20,7 +20,8 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  * `GET /auctions/{id}/stream` возвращает JWT-ссылку discovery на Mercure hub:
  * клиент подключается через EventSource к приватному topic `auction:{id}`
  * с полученным subscribe-JWT. Тонкий access-адаптер → GetAuctionStreamUseCase.
- * Доступ: допущенные участники, заказчик, наблюдатели (AuctionStreamVoter, R7).
+ * Доступ (AuctionStreamVoter::SUBSCRIBE): все, кому виден тендер аукциона
+ * (FR-1.5.14), плюс допущенные участники, заказчик и наблюдатели.
  * Контракт: api/openapi.yaml.
  */
 final class AuctionStreamController extends AbstractBaseController

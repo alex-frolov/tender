@@ -104,6 +104,80 @@ final class BidRepository extends ServiceEntityRepository
     }
 
     /**
+     * Победитель закупки (FR-1.3.5): существует winning-заявка компании
+     * в тендере ($lotId не задан) либо по конкретному лоту.
+     *
+     * Победа фиксируется статусом заявки при выборе победителя аукциона
+     * (BidResultService::markResults), отдельной таблицы award нет.
+     * Выборку покрывает idx_bids_tender_status (tender_id, status).
+     */
+    public function isWinner(Uuid $tenderId, ?Uuid $lotId, Uuid $supplierId, bool $anyLot = false): bool
+    {
+        $qb = $this->createQueryBuilder('b')
+            ->select('1')
+            ->where('b.tenderId = :tenderId')
+            ->andWhere('b.supplierId = :supplierId')
+            ->andWhere('b.status = :winning')
+            ->setParameter('tenderId', $tenderId)
+            ->setParameter('supplierId', $supplierId)
+            ->setParameter('winning', BidStatusEnum::WINNING->value)
+            ->setMaxResults(1);
+
+        if (!$anyLot) {
+            if (null === $lotId) {
+                $qb->andWhere('b.lotId IS NULL');
+            } else {
+                $qb->andWhere('b.lotId = :lotId')->setParameter('lotId', $lotId);
+            }
+        }
+
+        return null !== $qb->getQuery()->getOneOrNullResult();
+    }
+
+    /**
+     * Тендеры, где компания победила (видимость каталога, FR-1.5.14).
+     *
+     * @return list<Uuid>
+     */
+    public function tenderIdsWonBy(Uuid $supplierId): array
+    {
+        /** @var list<array{tenderId: Uuid}> $rows */
+        $rows = $this->createQueryBuilder('b')
+            ->select('DISTINCT b.tenderId AS tenderId')
+            ->where('b.supplierId = :supplierId')
+            ->andWhere('b.status = :winning')
+            ->setParameter('supplierId', $supplierId)
+            ->setParameter('winning', BidStatusEnum::WINNING->value)
+            ->getQuery()
+            ->getResult();
+
+        return array_map(static fn (array $row): Uuid => $row['tenderId'], $rows);
+    }
+
+    /**
+     * Лоты, где компания победила (видимость списка аукционов, FR-1.5.14).
+     * Заявки на тендер целиком (lot_id = null) сюда не попадают: у аукциона
+     * лот есть всегда.
+     *
+     * @return list<Uuid>
+     */
+    public function lotIdsWonBy(Uuid $supplierId): array
+    {
+        /** @var list<array{lotId: Uuid}> $rows */
+        $rows = $this->createQueryBuilder('b')
+            ->select('DISTINCT b.lotId AS lotId')
+            ->where('b.supplierId = :supplierId')
+            ->andWhere('b.status = :winning')
+            ->andWhere('b.lotId IS NOT NULL')
+            ->setParameter('supplierId', $supplierId)
+            ->setParameter('winning', BidStatusEnum::WINNING->value)
+            ->getQuery()
+            ->getResult();
+
+        return array_map(static fn (array $row): Uuid => $row['lotId'], $rows);
+    }
+
+    /**
      * Допуск участника к аукциону (FR-1.3.2): существует admitted-заявка
      * компании на лот (или тендер при lot_id = null). Ставки принимаются
      * только от допущенных участников (bids.status = admitted, FR-1.2.4).

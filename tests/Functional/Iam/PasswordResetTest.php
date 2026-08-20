@@ -9,8 +9,10 @@ use App\Iam\Controller\Auth\PasswordResetController;
 use App\Iam\Controller\Auth\RefreshController;
 use App\Iam\Controller\Auth\TokenController;
 use App\Iam\Entity\Enum\LocaleEnum;
+use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\PasswordResetToken;
 use App\Iam\Entity\RefreshToken;
+use App\Iam\Entity\User;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
@@ -333,5 +335,38 @@ final class PasswordResetTest extends WebTestCase
         foreach ($tokens as $rt) {
             self::assertTrue($rt->isRevoked(), 'после сброса пароля все refresh-токены отозваны');
         }
+    }
+
+    public function testResetActivatesInvitedUser(): void
+    {
+        self::client();
+        $email = self::uniqueEmail();
+
+        // Приглашённый пользователь: статус INVITED, email не подтверждён (нет пароля).
+        $user = UserFactory::createOne([
+            'email' => $email,
+            'verified' => false,
+        ]);
+        $user->setVerificationStatus(UserStatusEnum::INVITED);
+        self::em()->flush();
+
+        // До сброса пароля вход запрещён (invited — не может логиниться).
+        $client = self::post(TokenController::URL, ['email' => $email, 'password' => self::PASSWORD]);
+        self::assertResponseStatusCodeSame(401);
+
+        $token = self::forgotAndGetToken($email);
+        $client = self::post(PasswordResetController::URL, ['token' => $token, 'new_password' => 'new-secret-456']);
+        self::assertResponseStatusCodeSame(200);
+
+        // После сброса пароля (принятие приглашения) аккаунт активен: вход работает.
+        $client = self::post(TokenController::URL, ['email' => $email, 'password' => 'new-secret-456']);
+        self::assertResponseStatusCodeSame(200);
+
+        // Статус — active, email подтверждён (перечитываем из БД: объект UserFactory
+        // может быть устаревшим после запросов в другом EM).
+        $fresh = self::em()->getRepository(User::class)->find($user->getId());
+        self::assertNotNull($fresh);
+        self::assertSame(UserStatusEnum::ACTIVE, $fresh->getVerificationStatus());
+        self::assertNotNull($fresh->getEmailVerifiedAt());
     }
 }

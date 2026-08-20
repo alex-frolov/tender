@@ -252,3 +252,20 @@ pending ──► ┌──────────┐                 ▲    �
                                            ▼
                                        (back to active / rejected)
 ```
+
+## User status
+
+`users.verification_status` is a workflow (`user_status`):
+`invited / email_pending → active ⇄ blocked`. Статус меняется только через workflow
+(`UserStatusTransition`):
+
+| Transition | from → to | Инициатор |
+|---|---|---|
+| `verify_email` | email_pending → active | подтверждение email / создание платформенного админа |
+| `accept_invite` | invited → active | принятие приглашения (сброс пароля) |
+| `block` | active → blocked | админ (сессии отзываются) |
+| `unblock` | blocked → active | админ |
+
+`markEmailVerified()` фиксирует `email_verified_at` после перехода. Вход разрешён только для
+`active` с подтверждённым email (см. «Authentication flow» выше). Детали:
+[state-machines.md](state-machines.md).

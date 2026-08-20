@@ -10,8 +10,11 @@ use App\Iam\Controller\Auth\TokenController;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Service\RolePermissionCache;
+use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tests\Factory\CompanyFactory;
+use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -131,6 +134,46 @@ final class DashboardTest extends WebTestCase
 
         $client = self::request('GET', DashboardController::URL, $token, ['period' => 'year']);
         self::assertResponseStatusCodeSame(422);
+    }
+
+    public function testDashboardPeriodFiltersDeadlines(): void
+    {
+        self::client();
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'dash-period-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $token = self::loginAs((string) $user->getEmail());
+
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $near = TenderFactory::createOne(['customerId' => $company->getId()]);
+        $near->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $near->setTimeline(['bids_end' => $now->modify('+2 hours')->format('Y-m-d\TH:i:s\Z')]);
+        $far = TenderFactory::createOne(['customerId' => $company->getId()]);
+        $far->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $far->setTimeline(['bids_end' => $now->modify('+60 days')->format('Y-m-d\TH:i:s\Z')]);
+        static::getContainer()->get(EntityManagerInterface::class)->flush();
+
+        // period=day: ближайший дедлайн (через 2 часа) есть, дальний (60 дней) — нет.
+        $client = self::request('GET', DashboardController::URL, $token, ['period' => 'day']);
+        self::assertResponseStatusCodeSame(200);
+        $body = self::json($client);
+        /** @var list<array{entity_id: string}> $deadlines */
+        $deadlines = $body['upcoming_deadlines'];
+        $ids = array_column($deadlines, 'entity_id');
+        self::assertContains((string) $near->getId(), $ids);
+        self::assertNotContains((string) $far->getId(), $ids);
+
+        // Без period горизонт не ограничен — оба дедлайна в ответе.
+        $client = self::request('GET', DashboardController::URL, $token);
+        self::assertResponseStatusCodeSame(200);
+        $body = self::json($client);
+        /** @var list<array{entity_id: string}> $deadlines */
+        $deadlines = $body['upcoming_deadlines'];
+        $ids = array_column($deadlines, 'entity_id');
+        self::assertContains((string) $far->getId(), $ids);
     }
 
     public function testTenderStatsByRegion(): void

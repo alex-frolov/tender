@@ -20,8 +20,9 @@ use Symfony\Component\Security\Http\Attribute\IsGranted;
  * Query-access-адаптер → GetAuctionStateUseCase. Статус + правила
  * (rules_snapshot) + таймер (remaining_sec) + текущие цены; источник
  * истины — PostgreSQL (auctions); live-поля актуальны на момент запроса.
- * Доступ — R7 (AuctionStreamVoter::VIEW): допущенные участники, заказчик,
- * наблюдатели (platform_admin). Контракт: api/openapi.yaml.
+ * Доступ — AuctionStreamVoter::VIEW: все, кому виден тендер аукциона
+ * (FR-1.5.14), плюс круг R7 (допущенные участники, заказчик, наблюдатели
+ * platform_admin). Контракт: api/openapi.yaml.
  */
 final class AuctionStateController extends AbstractBaseController
 {

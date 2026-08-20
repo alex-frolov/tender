@@ -25,6 +25,10 @@ final readonly class TenderPresenter
         return [
             'id' => (string) $tender->getId(),
             'number' => $tender->getNumber(),
+            // Заказчик тендера (= тенант): клиенту нужен, чтобы отличить свою
+            // роль в процедуре — заказчик рассматривает заявки, поставщик их
+            // подаёт. Идентификатор заказчика в закупке публичен по своей сути.
+            'customer_id' => (string) $tender->getCustomerId(),
             'title' => $tender->getTitle(),
             'description' => $tender->getDescription(),
             'procedure_type' => $tender->getProcedureType()->value,
@@ -37,7 +41,10 @@ final readonly class TenderPresenter
             'status' => $tender->getStatus()->value,
             'access_type' => $tender->getAccessType()->value,
             'execution_rating' => $tender->getExecutionRating(),
+            'region' => $tender->getRegion(),
+            'okpd2' => $tender->getOkpd2(),
             'timeline' => $tender->getTimeline(),
+            'deadline' => $this->deadline($tender),
             'cancellation_reason_code' => $tender->getCancellationReasonCode()?->value,
             'cancellation_reason_text' => $tender->getCancellationReasonText(),
             'lots' => array_map(
@@ -55,7 +62,7 @@ final readonly class TenderPresenter
      * FR-1.1.1/1.1.3, AR-6). Роу содержит агрегированный статус (вариант C) и
      * lot_count, посчитанные на стороне БД по id страницы.
      *
-     * @param array{id: string, number: string, title: string, status: TenderStatusEnum, aggregated_status: TenderStatusEnum, nmck_minor: int|string|null, currency: string, region: string|null, deadline: string|null, lot_count: int} $row
+     * @param array{id: string, number: string, title: string, status: TenderStatusEnum, aggregated_status: TenderStatusEnum, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, deadline: string|null, lot_count: int} $row
      *
      * @return array<string, mixed>
      */
@@ -70,6 +77,7 @@ final readonly class TenderPresenter
             'nmck_minor' => $row['nmck_minor'],
             'currency' => $row['currency'],
             'region' => $row['region'],
+            'okpd2' => $row['okpd2'],
             'deadline' => $row['deadline'],
             'lot_count' => $row['lot_count'],
         ];
@@ -93,9 +101,33 @@ final readonly class TenderPresenter
             'nmck_minor' => $tender->getNmckMinor(),
             'currency' => $tender->getCurrency(),
             'region' => $tender->getRegion(),
+            'okpd2' => $tender->getOkpd2(),
             'deadline' => $this->deadline($tender),
             'lot_count' => $tender->lotCount(),
         ];
+    }
+
+    /**
+     * Список лотов тендера (openapi GET /tenders/{tenderId}/lots → {items}).
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function lotsList(Tender $tender): array
+    {
+        return array_values(array_map(
+            fn (Lot $lot): array => $this->lot($lot, $tender),
+            $tender->getLots()->toArray(),
+        ));
+    }
+
+    /**
+     * Презентация одного лота (openapi Lot) — для ответов мутаций лота.
+     *
+     * @return array<string, mixed>
+     */
+    public function singleLot(Lot $lot, Tender $tender): array
+    {
+        return $this->lot($lot, $tender);
     }
 
     /**
@@ -114,6 +146,8 @@ final readonly class TenderPresenter
             'price_gross_minor' => $lot->getPriceGrossMinor(),
             'vat_rate' => $lot->getVatRateBps() / 100,
             'price_basis' => $lot->getPriceBasis()->value,
+            'quantity' => $lot->getQuantity(),
+            'unit' => $lot->getUnit(),
             'execution_start_at' => $lot->getExecutionStartAt()?->format('Y-m-d\TH:i:s\Z'),
             'trade_end_lead_hours' => $lot->getTradeEndLeadHours(),
             'status' => $lot->getStatus()->value,

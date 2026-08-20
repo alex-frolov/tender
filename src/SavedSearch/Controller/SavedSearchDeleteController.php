@@ -7,6 +7,8 @@ namespace App\SavedSearch\Controller;
 use App\Controller\AbstractBaseController;
 use App\SavedSearch\UseCase\DeleteSavedSearchUseCase;
 use App\Security\SavedSearchVoter;
+use App\Shared\Form\EntityIdQueryType;
+use App\Shared\Input\EntityIdInput;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,8 +28,10 @@ final class SavedSearchDeleteController extends AbstractBaseController
     #[IsGranted(SavedSearchVoter::SEARCH)]
     public function delete(Request $request, DeleteSavedSearchUseCase $useCase): JsonResponse
     {
-        $savedSearchId = (string) $request->query->get('savedSearchId', '');
-        $useCase->execute($this->currentUser($request), $savedSearchId);
+        $form = $this->formQuery(EntityIdQueryType::class, $request, options: ['id_field' => 'savedSearchId']);
+        /** @var EntityIdInput $input */
+        $input = $form->getData();
+        $useCase->execute($this->currentUser($request), $input->id);
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
     }

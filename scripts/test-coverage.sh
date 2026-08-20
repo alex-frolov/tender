@@ -34,8 +34,9 @@ php bin/console app:test:redis-cleanup --env=test
 
 # Покрытие собирается pcov'ом (docker-php-ext-enable pcov, задача 7.8). PHPUnit
 # 13 запускает сборку при наличии драйвера; pcov включается автоматически, когда
-# передан --coverage-*. Память поднята (сборка покрытия требует > 128M).
-php -d memory_limit=1G vendor/bin/paratest \
+# передан --coverage-*. Память поднята (сборка покрытия требует > 128M);
+# значение переопределяется через PHP_MEMORY_LIMIT.
+php -d memory_limit="${PHP_MEMORY_LIMIT:-1G}" vendor/bin/paratest \
     --processes="${PROCESSES}" \
     --exclude-group=smoke \
     --coverage-clover="${CLOVER}" \

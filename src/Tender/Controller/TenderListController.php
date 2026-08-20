@@ -6,6 +6,10 @@ namespace App\Tender\Controller;
 
 use App\Controller\AbstractBaseController;
 use App\Security\TenderVoter;
+use App\Shared\Form\PaginatorForm;
+use App\Shared\Input\Paginator;
+use App\Tender\Form\TenderListFiltersType;
+use App\Tender\Input\TenderListFiltersInput;
 use App\Tender\UseCase\ListTendersUseCase;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -13,9 +17,9 @@ use Symfony\Component\Routing\Attribute\Route;
 use Symfony\Component\Security\Http\Attribute\IsGranted;
 
 /**
- * Список тендеров компании (FR-1.1.1). Фильтры: ?status=, ?limit=, ?cursor=.
- * Пагинация — keyset-курсор (AR-6, NFR-22): limit 1..100 (default 20), cursor —
- * OPAQUE-курсор из предыдущего ответа; ответ — {items, next_cursor}.
+ * Список тендеров компании (FR-1.1.1). Фильтры — форма TenderListFiltersType
+ * (?q=, ?status=, ?law_type=, ?region=, ?price_min=, ?price_max=, ?access_type=),
+ * пагинация — форма PaginatorForm (?limit=, ?cursor=, keyset-курсор AR-6/NFR-22).
  * Доступ: право tenders.board.view (admin/manager/agent) через TenderVoter.
  * Оркестрация и презентация — ListTendersUseCase.
  * Контракт: api/openapi.yaml (/tenders GET).
@@ -30,15 +34,18 @@ final class TenderListController extends AbstractBaseController
     {
         $user = $this->currentUser($request);
 
-        $status = $request->query->get('status');
-        $limit = $request->query->get('limit');
-        $cursor = $request->query->get('cursor');
+        $filtersForm = $this->formQuery(TenderListFiltersType::class, $request);
+        /** @var TenderListFiltersInput $filters */
+        $filters = $filtersForm->getData();
+
+        $paginatorForm = $this->formQuery(PaginatorForm::class, $request);
+        /** @var Paginator $paginator */
+        $paginator = $paginatorForm->getData();
 
         return $this->json($useCase->execute(
             user: $user,
-            status: \is_string($status) ? $status : null,
-            limit: \is_string($limit) ? $limit : null,
-            cursor: \is_string($cursor) ? $cursor : null,
+            filters: $filters,
+            paginator: $paginator,
         ));
     }
 }

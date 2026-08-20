@@ -61,12 +61,19 @@ services:
             - '%env(MERCURE_JWT_SECRET_SUBSCRIBE)%'
 
     # Провайдер publish-JWT: право publish на любые topic'и аукциона (ядро).
+    # Селектор — URI-template RFC 6570 (`auction:{id}`), а НЕ глоб: Mercure
+    # считает селектор совпавшим, если он равен topic'у, равен `*` либо
+    # разворачивается в него как шаблон. `auction:*` шаблоном не является —
+    # хаб отвечал 401 на КАЖДУЮ публикацию (`Mercure publish failed`), и
+    # live-события аукциона не доходили до подписчиков вообще: ни новая ставка,
+    # ни шаг цены, ни таймер. Юнит/интеграционные тесты этого не ловят —
+    # там hub замокан, ошибка возникает только на реальном хабе.
     App\Auction\Stream\Mercure\PublishTokenProvider:
         class: Symfony\Component\Mercure\Jwt\FactoryTokenProvider
         arguments:
             - '@App\Auction\Stream\Mercure\PublishJwtFactory'
-            - []         # subscribe: нет
-            - ['auction:*'] # publish: приватные topic'и аукционов
+            - []                # subscribe: нет
+            - ['auction:{id}']  # publish: приватные topic'и аукционов
 
     # Hub для публикации (MERCURE_PUBLISH_URL) + фабрика subscribe-токенов
     # (MERCURE_JWT_SECRET_SUBSCRIBE) для discovery-ссылки клиента.

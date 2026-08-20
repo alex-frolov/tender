@@ -4,6 +4,9 @@
 # используется напрямую). Здесь — минимальный cron-цикл для команд,
 # которые обязаны выполняться регулярно:
 #
+#   auctions:start-scheduled   — старт назначенных торгов (SCHEDULED → TRADE).
+#                                Интервал задаёт точность старта относительно
+#                                scheduled_start_at.
 #   auctions:heartbeat         — heartbeat TRADE-аукционов.
 #                                Интервал ДОЛЖЕН быть < AUCTION_HEARTBEAT_TIMEOUT
 #                                (по умолчанию 300 c), иначе аукционы авто-паузуются
@@ -17,6 +20,7 @@
 # Все команды идемпотентны/безопасны для повторного вызова.
 set -eu
 
+START_SCHEDULED_EVERY_SEC="${START_SCHEDULED_EVERY_SEC:-30}"  # точность старта торгов
 HEARTBEAT_EVERY_SEC="${HEARTBEAT_EVERY_SEC:-30}"      # < AUCTION_HEARTBEAT_TIMEOUT
 SNAPSHOT_EVERY_SEC="${SNAPSHOT_EVERY_SEC:-300}"
 CLEANUP_EVERY_SEC="${CLEANUP_EVERY_SEC:-3600}"
@@ -38,6 +42,7 @@ run_every() {
 
 # heartbeat обязателен в фоне (его отсутствие = авто-пауза торгов)
 run_every "$HEARTBEAT_EVERY_SEC" auctions:heartbeat &
+run_every "$START_SCHEDULED_EVERY_SEC" auctions:start-scheduled &
 run_every "$SNAPSHOT_EVERY_SEC" analytics:counters:snapshot &
 run_every "$CLEANUP_EVERY_SEC" idempotency:cleanup &
 run_every "$DIGEST_EVERY_SEC" notifications:digest:schedule &

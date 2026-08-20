@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Iam\Service;
 
 use App\Iam\Entity\EmailVerificationToken;
+use App\Iam\Entity\Enum\UserStatusTransition;
 use App\Iam\Entity\User;
 use App\Infrastructure\Metrics\RateLimitMetricsCollector;
 use App\Shared\Audit\AuditService;
@@ -15,6 +16,7 @@ use Symfony\Component\Mailer\MailerInterface;
 use Symfony\Component\Mime\Email;
 use Symfony\Component\RateLimiter\RateLimit;
 use Symfony\Component\RateLimiter\RateLimiterFactory;
+use Symfony\Component\Workflow\WorkflowInterface;
 use Symfony\Contracts\Translation\TranslatorInterface;
 use Twig\Environment;
 
@@ -43,6 +45,8 @@ final readonly class EmailVerificationService
         private RateLimitMetricsCollector $rateLimitMetrics,
         private Environment $twig,
         private TranslatorInterface $translator,
+        #[Autowire(service: 'state_machine.user_status')]
+        private WorkflowInterface $userWorkflow,
         private int $tokenTtl,
         private string $verifyUrlTemplate,
         private string $from,
@@ -104,6 +108,11 @@ final readonly class EmailVerificationService
         }
 
         if (null === $user->getEmailVerifiedAt()) {
+            // email_pending → active по workflow user_status; markEmailVerified
+            // дополнительно фиксирует email_verified_at (маркировка не хранит дату).
+            if ($this->userWorkflow->can($user, UserStatusTransition::VERIFY_EMAIL->value)) {
+                $this->userWorkflow->apply($user, UserStatusTransition::VERIFY_EMAIL->value);
+            }
             $user->markEmailVerified();
         }
         $this->em->flush();

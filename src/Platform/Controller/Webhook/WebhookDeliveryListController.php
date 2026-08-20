@@ -7,6 +7,8 @@ namespace App\Platform\Controller\Webhook;
 use App\Controller\AbstractBaseController;
 use App\Platform\UseCase\ListWebhookDeliveriesUseCase;
 use App\Security\WebhookVoter;
+use App\Shared\Form\PaginatorForm;
+use App\Shared\Input\Paginator;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -26,6 +28,10 @@ final class WebhookDeliveryListController extends AbstractBaseController
     #[IsGranted(WebhookVoter::MANAGE)]
     public function list(Request $request, string $webhookId, ListWebhookDeliveriesUseCase $useCase): JsonResponse
     {
-        return $this->json($useCase->execute($this->currentUser($request), $webhookId));
+        $paginatorForm = $this->formQuery(PaginatorForm::class, $request);
+        /** @var Paginator $paginator */
+        $paginator = $paginatorForm->getData();
+
+        return $this->json($useCase->execute($this->currentUser($request), $webhookId, $paginator));
     }
 }

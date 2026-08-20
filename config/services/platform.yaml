@@ -19,6 +19,12 @@ services:
 
     App\Platform\WebhookDeliveryService:
 
+    # Настройки платформы (доменный часовой пояс FR-1.5.16) — публичная
+    # точка входа для контроллеров/тестов.
+    App\Platform\Service\PlatformSettingsService:
+        arguments:
+            $defaultTimezone: '%platform_timezone_default%'
+
     # Декоратор проверки прав: при аутентификации по API-ключу набор прав
     # сужается scopes ключа. PermissionCheckerInterface
     # (интерфейс модуля Iam) алиасится на декоратор — все permission-Voter'ы

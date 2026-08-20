@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Document\Service;
 
 use App\Contract\ContractReadService;
+use App\Document\DocumentPresenter;
 use App\Document\DocumentService as DocumentServiceContract;
 use App\Document\Entity\Document;
 use App\Document\Entity\DocumentType;
@@ -71,6 +72,7 @@ final class DocumentService implements DocumentServiceContract
         private readonly CompanyAccessGuard $companyGuard,
         private readonly ContractReadService $contracts,
         private readonly TenderReadService $tenders,
+        private readonly DocumentPresenter $presenter,
         private readonly int $maxFileBytes,
     ) {
     }
@@ -197,6 +199,14 @@ final class DocumentService implements DocumentServiceContract
         $document = $this->resolveForRead($actor, $documentId);
 
         return $document;
+    }
+
+    public function present(User $actor, string $documentId): array
+    {
+        $document = $this->get($actor, $documentId);
+        $downloadUrl = str_replace('{documentId}', $documentId, DocumentPresenter::DOWNLOAD_URL);
+
+        return $this->presenter->single($document, $downloadUrl);
     }
 
     public function download(User $actor, string $documentId): array

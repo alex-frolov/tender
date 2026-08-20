@@ -60,23 +60,68 @@ final class WebhookDeliveryRepository extends ServiceEntityRepository
     }
 
     /**
-     * Журнал доставок подписки (GET /webhooks/{id}/deliveries), новые сверху.
+     * Страница журнала доставок подписки (GET /webhooks/{id}/deliveries),
+     * новые сверху: keyset-срез по (created_at, id) DESC средствами БД (AR-6).
+     *
+     * Срез делает SQL, а не PHP: журнал подписки не ограничен (дохлый endpoint
+     * копит доставки тысячами), и гидрация всей истории на каждый запрос
+     * стоила бы памяти пропорционально её размеру, а не размеру страницы.
+     * $limit вызывающий передаёт как limit+1 — «есть ли следующая страница»
+     * определяется по лишней строке, без COUNT.
      *
      * @return list<WebhookDelivery>
      */
-    public function listForWebhook(string $webhookId): array
-    {
-        /** @var list<WebhookDelivery> $result */
-        $result = $this->createQueryBuilder('d')
+    public function listForWebhook(
+        string $webhookId,
+        ?\DateTimeImmutable $cursorCreatedAt,
+        ?Uuid $cursorId,
+        int $limit,
+    ): array {
+        $qb = $this->createQueryBuilder('d')
             ->join('d.webhook', 'w')
             ->where('w.id = :webhook')
             ->setParameter('webhook', Uuid::fromString($webhookId))
             ->orderBy('d.createdAt', 'DESC')
-            ->setMaxResults(100)
-            ->getQuery()
-            ->getResult();
+            ->addOrderBy('d.id', 'DESC')
+            ->setMaxResults(max(1, $limit));
+
+        if (null !== $cursorCreatedAt && null !== $cursorId) {
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->lt('d.createdAt', ':cursorCreatedAt'),
+                    $qb->expr()->andX(
+                        $qb->expr()->eq('d.createdAt', ':cursorCreatedAt'),
+                        $qb->expr()->lt('d.id', ':cursorId'),
+                    ),
+                ),
+            )
+                ->setParameter('cursorCreatedAt', $cursorCreatedAt)
+                ->setParameter('cursorId', $cursorId);
+        }
+
+        /** @var list<WebhookDelivery> $result */
+        $result = $qb->getQuery()->getResult();
 
         return $result;
+    }
+
+    /**
+     * Число доставок тенанта за период (GET /usage webhooks): [from, now).
+     * Считает через связь доставка → webhook (tenant_id webhook'а).
+     */
+    public function countForTenantPeriod(Uuid $tenantId, \DateTimeImmutable $from): int
+    {
+        $count = $this->createQueryBuilder('d')
+            ->select('COUNT(d.id)')
+            ->join('d.webhook', 'w')
+            ->where('w.tenantId = :tenant')
+            ->andWhere('d.createdAt >= :from')
+            ->setParameter('tenant', $tenantId)
+            ->setParameter('from', $from)
+            ->getQuery()
+            ->getSingleScalarResult();
+
+        return (int) $count;
     }
 
     /**

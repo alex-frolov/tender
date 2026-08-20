@@ -6,14 +6,17 @@ namespace App\Auction\Repository;
 
 use App\Auction\Entity\Auction;
 use App\Auction\Entity\AuctionBid;
+use App\Auction\Entity\Enum\AuctionBidStatusEnum;
 use App\Auction\Entity\Enum\AuctionStatusEnum;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Uid\Uuid;
 
 /**
  * Read-запросы к аукционам (FR-1.3, AM-5): поиск по id, аукцион лота,
- * аукционы тендера. Проверки принадлежности (tenant/роли) — в сервисах.
+ * аукционы тендера, последние ставки страницы списка. Проверки принадлежности
+ * (tenant/роли) — в сервисах.
  *
  * @extends ServiceEntityRepository<Auction>
  */
@@ -154,13 +157,15 @@ final class AuctionRepository extends ServiceEntityRepository
     /**
      * Ближайшие окончания живых торгов (AM-13, GET /dashboard upcoming_deadlines):
      * аукционы в TRADE с planned_end_at в будущем, отсортированные по сроку.
+     * $until — верхняя граница горизонта дедлайнов (period day/week/month
+     * дашборда): null = без ограничения.
      *
      * @return list<array{auction_id: string, tender_id: string, deadline_at: string}>
      */
-    public function upcomingTradeEnds(Uuid $tenantId, int $limit): array
+    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
     {
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $rows = $this->createQueryBuilder('a')
+        $qb = $this->createQueryBuilder('a')
             ->select('a.id', 'a.tenderId', 'a.plannedEndAt')
             ->where('a.tenantId = :tenantId')
             ->andWhere('a.status = :trade')
@@ -170,9 +175,12 @@ final class AuctionRepository extends ServiceEntityRepository
             ->setParameter('trade', AuctionStatusEnum::TRADE->value)
             ->setParameter('now', $now)
             ->orderBy('a.plannedEndAt', 'ASC')
-            ->setMaxResults($limit)
-            ->getQuery()
-            ->getArrayResult();
+            ->setMaxResults($limit);
+        if (null !== $until) {
+            $qb->andWhere('a.plannedEndAt <= :until')->setParameter('until', $until);
+        }
+
+        $rows = $qb->getQuery()->getArrayResult();
 
         /** @var list<array{id: string, tenderId: string, plannedEndAt: \DateTimeImmutable|string}> $rows */
         $items = [];
@@ -251,6 +259,195 @@ SQL;
     }
 
     /**
+     * Запланированные аукционы, чей момент старта уже наступил
+     * (SCHEDULED, scheduled_start_at <= now). Источник для планировщика
+     * (auctions:start-scheduled): без него SCHEDULED → TRADE не происходит
+     * и торги никогда не начинаются.
+     *
+     * @return list<Auction>
+     */
+    public function listDueForTrading(\DateTimeImmutable $now): array
+    {
+        /** @var list<Auction> $result */
+        $result = $this->createQueryBuilder('a')
+            ->where('a.status = :scheduled')
+            ->andWhere('a.scheduledStartAt IS NOT NULL')
+            ->andWhere('a.scheduledStartAt <= :now')
+            ->setParameter('scheduled', AuctionStatusEnum::SCHEDULED->value)
+            ->setParameter('now', $now)
+            ->orderBy('a.scheduledStartAt', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        return $result;
+    }
+
+    /**
+     * Список аукционов компании-тенанта (GET /auctions).
+     * Сортировка: сначала активные/ближайшие (по planned_end_at/created_at),
+     * затем остальные — по created_at DESC. Без пагинации — размер списка
+     * аукционов компании ограничен бизнес-процессами (по одному на лот).
+     *
+     * @return list<Auction>
+     */
+    public function listForTenant(Uuid $tenantId): array
+    {
+        /** @var list<Auction> $result */
+        $result = $this->createQueryBuilder('a')
+            ->where('a.tenantId = :tenantId')
+            ->setParameter('tenantId', $tenantId)
+            ->orderBy('a.plannedEndAt', 'DESC')
+            ->addOrderBy('a.createdAt', 'DESC')
+            ->getQuery()
+            ->getResult();
+
+        return $result;
+    }
+
+    /**
+     * Тендеры, по которым у компании-зрителя МОЖЕТ быть видимый аукцион
+     * (GET /auctions): вход для фильтра видимости тендеров
+     * (TenderVisibility::filterVisible).
+     *
+     * Кандидаты сразу сужаются условием видимости самого аукциона (FR-1.5.14),
+     * а не собираются по всей таблице: иначе стоимость запроса росла бы с
+     * объёмом площадки, а не с тем, что зрителю вообще доступно (NFR-22).
+     * Три ветки — ровно те, что дают видимость:
+     *   - свои аукционы (tenant_id зрителя) — в любом статусе;
+     *   - чужие в публичных статусах ($publicStatuses — фаза торгов);
+     *   - чужие на лотах, выигранных компанией ($wonLotIds) — стадии исполнения.
+     * Пустой список в ветку не добавляется: `IN ()` в DQL невалиден.
+     *
+     * @param Uuid         $viewerCompanyId компания-зритель (тенант актора)
+     * @param list<string> $publicStatuses  статусы, видимые всем зрителям тендера
+     * @param list<Uuid>   $wonLotIds       лоты, выигранные компанией-зрителем
+     *
+     * @return list<Uuid> id тендеров (без дублей)
+     */
+    public function distinctTenderIds(Uuid $viewerCompanyId, array $publicStatuses, array $wonLotIds): array
+    {
+        $qb = $this->createQueryBuilder('a')
+            ->select('DISTINCT a.tenderId AS tender_id');
+
+        $visible = $qb->expr()->orX($qb->expr()->eq('a.tenantId', ':viewerCompany'));
+        $qb->setParameter('viewerCompany', $viewerCompanyId);
+
+        if ([] !== $publicStatuses) {
+            $visible->add($qb->expr()->in('a.status', ':publicStatuses'));
+            $qb->setParameter('publicStatuses', $publicStatuses);
+        }
+
+        if ([] !== $wonLotIds) {
+            $visible->add($qb->expr()->in('a.lotId', ':wonLots'));
+            $qb->setParameter('wonLots', $wonLotIds);
+        }
+
+        /** @var list<array{tender_id: string|Uuid}> $rows */
+        $rows = $qb->where($visible)
+            ->getQuery()
+            ->getArrayResult();
+
+        // DQL-проекция uuid-колонки отдаёт Uuid-объект, а не строку.
+        return array_map(
+            static fn (array $row): Uuid => $row['tender_id'] instanceof Uuid
+                ? $row['tender_id']
+                : Uuid::fromString($row['tender_id']),
+            $rows,
+        );
+    }
+
+    /**
+     * Аукционы по набору тендеров (GET /auctions после фильтра видимости).
+     * Сортировка та же, что в listForTenant(). Пустой набор → пустой список
+     * (IN () в DQL не выражается).
+     *
+     * @param list<Uuid> $tenderIds
+     *
+     * @return list<Auction>
+     */
+    public function listForTenders(array $tenderIds): array
+    {
+        if ([] === $tenderIds) {
+            return [];
+        }
+
+        /** @var list<Auction> $result */
+        $result = $this->createQueryBuilder('a')
+            ->where('a.tenderId IN (:tenderIds)')
+            ->setParameter('tenderIds', $tenderIds)
+            ->orderBy('a.plannedEndAt', 'DESC')
+            ->addOrderBy('a.createdAt', 'DESC')
+            ->getQuery()
+            ->getResult();
+
+        return $result;
+    }
+
+    /**
+     * Последняя принятая ставка по каждому из аукционов (AuctionListItem.
+     * last_bid_at / last_bid_price_minor, GET /auctions): в списке нужно видеть,
+     * когда торговались в последний раз и по какой цене.
+     *
+     * Одним запросом на всю страницу (DISTINCT ON, без N+1). Учитываются только
+     * accepted-ставки: отклонённые остаются в истории (append-only, PR-9),
+     * но на цену не влияют. Цена — в канонической базе (PR-6), как и
+     * auctions.current_price_minor рядом в той же строке списка. Личность
+     * участника не отдаётся — анонимность торгов (AuctionBid.bidder_id) не
+     * затрагивается.
+     *
+     * Нативным SQL: DISTINCT ON — расширение PostgreSQL, в DQL не выражается.
+     *
+     * @param list<Uuid> $auctionIds
+     *
+     * @return array<string, array{placed_at: \DateTimeImmutable, price_minor: int}> auction_id → последняя ставка
+     */
+    public function lastAcceptedBids(array $auctionIds): array
+    {
+        if ([] === $auctionIds) {
+            return [];
+        }
+
+        $sql = <<<'SQL'
+SELECT DISTINCT ON (b.auction_id)
+       b.auction_id::text AS auction_id,
+       b.price_minor      AS price_minor,
+       b.placed_at        AS placed_at
+FROM auction_bids b
+WHERE b.auction_id IN (:ids)
+  AND b.status = :accepted
+ORDER BY b.auction_id, b.placed_at DESC, b.round DESC
+SQL;
+
+        $rows = $this->getEntityManager()->getConnection()->executeQuery(
+            $sql,
+            [
+                'ids' => array_map(static fn (Uuid $id): string => (string) $id, $auctionIds),
+                'accepted' => AuctionBidStatusEnum::ACCEPTED->value,
+            ],
+            ['ids' => ArrayParameterType::STRING],
+        )->fetchAllAssociative();
+
+        /** @var list<array{auction_id: string, price_minor: int|string, placed_at: string}> $rows */
+        $result = [];
+        foreach ($rows as $row) {
+            $placedAt = \DateTimeImmutable::createFromFormat(
+                'Y-m-d H:i:s',
+                (string) $row['placed_at'],
+                new \DateTimeZone('UTC'),
+            );
+            if (false === $placedAt) {
+                continue;
+            }
+            $result[(string) $row['auction_id']] = [
+                'placed_at' => $placedAt,
+                'price_minor' => (int) $row['price_minor'],
+            ];
+        }
+
+        return $result;
+    }
+
+    /**
      * История ставок аукциона (GET /auctions/{id}/bids, AM-5): принятые и
      * отклонённые ставки (append-only, PR-9) в порядке раундов — хронология
      * торгов. Анонимность bidder_id (до конца торгов) — на уровне представления.
@@ -288,7 +485,7 @@ SQL;
             ->where('b.auction = :auction')
             ->andWhere('b.status = :accepted')
             ->setParameter('auction', $auction)
-            ->setParameter('accepted', \App\Auction\Entity\Enum\AuctionBidStatusEnum::ACCEPTED->value)
+            ->setParameter('accepted', AuctionBidStatusEnum::ACCEPTED->value)
             ->orderBy('b.priceMinor', 'ASC')
             ->addOrderBy('b.placedAt', 'ASC')
             ->setMaxResults(1)
@@ -314,7 +511,7 @@ SQL;
             ->andWhere('b.status = :accepted')
             ->setParameter('auction', $auction)
             ->setParameter('bidId', $auctionBidId)
-            ->setParameter('accepted', \App\Auction\Entity\Enum\AuctionBidStatusEnum::ACCEPTED->value)
+            ->setParameter('accepted', AuctionBidStatusEnum::ACCEPTED->value)
             ->setMaxResults(1)
             ->getQuery()
             ->getOneOrNullResult();
@@ -334,7 +531,7 @@ SQL;
             ->where('b.auction = :auction')
             ->andWhere('b.status = :accepted')
             ->setParameter('auction', $auction)
-            ->setParameter('accepted', \App\Auction\Entity\Enum\AuctionBidStatusEnum::ACCEPTED->value)
+            ->setParameter('accepted', AuctionBidStatusEnum::ACCEPTED->value)
             ->getQuery()
             ->getSingleScalarResult();
     }

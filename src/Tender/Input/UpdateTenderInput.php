@@ -19,6 +19,8 @@ final class UpdateTenderInput
 
     public ?string $region = null;
 
+    public ?string $okpd2 = null;
+
     /** @var array<string, string>|null ключевые даты таймлайна */
     public ?array $timeline = null;
 

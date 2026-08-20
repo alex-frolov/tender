@@ -4,16 +4,26 @@ declare(strict_types=1);
 
 namespace App\Tender\Repository;
 
+use App\Tender\Entity\Enum\AccessTypeEnum;
 use App\Tender\Entity\Enum\LotStatusEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
+use App\Tender\Entity\Enum\TenderVisibilityLevelEnum;
 use App\Tender\Entity\Tender;
+use App\Tender\TenderFilters;
+use App\Tender\TenderVisibilityScope;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
+use Doctrine\ORM\QueryBuilder;
 use Doctrine\Persistence\ManagerRegistry;
 use Symfony\Component\Uid\Uuid;
 
 /**
  * Read-оптимизированные запросы к тендерам (FR-1.1.1/1.1.3).
  *
+ * - listCatalogPage()/filterVisibleIds(): выборка по правилу видимости
+ *   (applyVisibility: свои в любом статусе + чужие на торговых стадиях
+ *   (открытые и закрытые по договору) + чужие после определения победителя,
+ *   если зритель и есть исполнитель, FR-1.5.14) — договор и победитель
+ *   попадают в условие списком id, а не построчной проверкой.
  * - listForTenant(): eager-загрузка лотов (JOIN + addSelect) — один запрос вместо
  *   N+1 на lotCount()/aggregatedStatus() в списке.
  * - aggregatedStatuses(): агрегация статуса при мультилоте на стороне БД через
@@ -58,26 +68,32 @@ final class TenderRepository extends ServiceEntityRepository
     }
 
     /**
-     * Срез каталога тендеров компании (read-модель, FR-1.1.1, AR-6/NFR-22).
+     * Срез каталога тендеров, видимых компании (read-модель, FR-1.1.1, AR-6/NFR-22).
+     *
+     * Видимость (FR-1.5.14) — условие applyVisibility(): свои тендеры + чужие
+     * опубликованные открытые + чужие опубликованные закрытые заказчиков
+     * из scope->contractCustomerIds. Проверка договора не делается построчно —
+     * список заказчиков подставляется в IN одним параметром.
      *
      * Keyset-пагинация: условие «следующая страница» — (created_at, id) строго
      * меньше позиции курсора при ORDER BY created_at DESC, id DESC. Возвращает
      * до $limit строк-проекций БЕЗ гидратации сущностей (getArrayResult) —
      * O(limit) строк и памяти независимо от размера каталога. Вызывающий
      * запрашивает limit+1, чтобы определить наличие следующей страницы.
-     * Покрывается композитными индексами idx_tenders_catalog_* (миграция
-     * Version20260813160000): равенство tenant_id [+ status] → диапазон
-     * created_at → tiebreaker id.
+     * Свою часть выборки покрывают idx_tenders_catalog_* (миграция
+     * Version20260813160000: tenant_id [+ status] → created_at → id), чужую —
+     * idx_tenders_catalog_access (Version20260819120000: access_type, status →
+     * created_at → id).
      *
-     * @param Uuid                    $tenantId        компания-тенант
-     * @param TenderStatusEnum|null   $status          фильтр по статусу
+     * @param TenderVisibilityScope   $scope           компания-зритель + заказчики с договором
+     * @param TenderFilters           $filters         фильтры каталога (q/status/law_type/region/price/access)
      * @param \DateTimeImmutable|null $cursorCreatedAt created_at позиции курсора (null — первая страница)
      * @param Uuid|null               $cursorId        id позиции курсора (tiebreaker, null — первая страница)
      * @param int                     $limit           размер страницы
      *
-     * @return list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}>
+     * @return list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}>
      */
-    public function listCatalogPage(Uuid $tenantId, ?TenderStatusEnum $status, ?\DateTimeImmutable $cursorCreatedAt, ?Uuid $cursorId, int $limit): array
+    public function listCatalogPage(TenderVisibilityScope $scope, TenderFilters $filters, ?\DateTimeImmutable $cursorCreatedAt, ?Uuid $cursorId, int $limit): array
     {
         $qb = $this->createQueryBuilder('t')
             ->select(
@@ -88,17 +104,58 @@ final class TenderRepository extends ServiceEntityRepository
                 't.nmckMinor AS nmck_minor',
                 't.currency AS currency',
                 't.region AS region',
+                't.okpd2 AS okpd2',
                 't.timeline AS timeline',
                 't.createdAt AS created_at',
             )
-            ->where('t.tenantId = :tenantId')
-            ->setParameter('tenantId', $tenantId)
             ->orderBy('t.createdAt', 'DESC')
             ->addOrderBy('t.id', 'DESC')
             ->setMaxResults(max(1, $limit));
 
-        if (null !== $status) {
-            $qb->andWhere('t.status = :status')->setParameter('status', $status->value);
+        $this->applyVisibility($qb, $scope);
+
+        if (null !== $filters->status) {
+            $qb->andWhere('t.status = :status')->setParameter('status', $filters->status->value);
+        }
+
+        if (null !== $filters->lawType) {
+            $qb->andWhere('t.lawType = :lawType')->setParameter('lawType', $filters->lawType->value);
+        }
+
+        if (null !== $filters->region && '' !== $filters->region) {
+            // Подстрока без учёта регистра (ILIKE); точное совпадение не требуется.
+            $qb->andWhere('LOWER(t.region) LIKE :region')
+                ->setParameter('region', '%'.mb_strtolower($filters->region).'%');
+        }
+
+        if (null !== $filters->okpd2 && '' !== $filters->okpd2) {
+            // Код ОКПД2 (префиксный поиск, как в каталоге 44-ФЗ): совпадение
+            // по началу кода (ILIKE) — фильтр из openapi (параметр okpd2).
+            $qb->andWhere('t.okpd2 IS NOT NULL')
+                ->andWhere('LOWER(t.okpd2) LIKE :okpd2')
+                ->setParameter('okpd2', mb_strtolower($filters->okpd2).'%');
+        }
+
+        if (null !== $filters->priceMin) {
+            $qb->andWhere('t.nmckMinor >= :priceMin')->setParameter('priceMin', $filters->priceMin);
+        }
+        if (null !== $filters->priceMax) {
+            $qb->andWhere('t.nmckMinor <= :priceMax')->setParameter('priceMax', $filters->priceMax);
+        }
+
+        if (null !== $filters->accessType) {
+            $qb->andWhere('t.accessType = :accessType')->setParameter('accessType', $filters->accessType->value);
+        }
+
+        if (null !== $filters->q && '' !== $filters->q) {
+            // Поиск по номеру/названию/описанию (полнотекст — упрощённо: ILIKE по трём полям).
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->like('LOWER(t.number)', ':q'),
+                    $qb->expr()->like('LOWER(t.title)', ':q'),
+                    $qb->expr()->like('LOWER(t.description)', ':q'),
+                ),
+            )->setParameter('q', '%'.mb_strtolower($filters->q).'%');
         }
 
         if (null !== $cursorCreatedAt && null !== $cursorId) {
@@ -115,10 +172,103 @@ final class TenderRepository extends ServiceEntityRepository
                 ->setParameter('cursorId', $cursorId);
         }
 
-        /** @var list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}> $result */
+        /** @var list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}> $result */
         $result = $qb->getQuery()->getArrayResult();
 
         return $result;
+    }
+
+    /**
+     * Фильтр набора тендеров по видимости (TenderVisibility::filterVisible):
+     * одним запросом на весь набор — для списков других модулей (GET /auctions),
+     * где проверка видимости построчно дала бы N+1.
+     *
+     * @param list<Uuid> $tenderIds
+     *
+     * @return list<Uuid> видимые id
+     */
+    public function filterVisibleIds(array $tenderIds, TenderVisibilityScope $scope): array
+    {
+        if ([] === $tenderIds) {
+            return [];
+        }
+
+        $qb = $this->createQueryBuilder('t')
+            ->select('t.id AS id')
+            ->where('t.id IN (:ids)')
+            ->setParameter('ids', $tenderIds);
+
+        $this->applyVisibility($qb, $scope);
+
+        /** @var list<array{id: string|Uuid}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
+
+        // DQL-проекция uuid-колонки отдаёт Uuid-объект, а не строку.
+        return array_map(
+            static fn (array $row): Uuid => $row['id'] instanceof Uuid ? $row['id'] : Uuid::fromString($row['id']),
+            $rows,
+        );
+    }
+
+    /**
+     * Условие видимости тендера для компании-зрителя (FR-1.1.1, FR-1.5.14),
+     * единое для каталога и для фильтра по набору id:
+     *
+     *   t.tenant_id = :viewer                       -- свои, в любом статусе
+     *   OR (t.status <> 'draft' AND (               -- чужие, вышедшие из черновика
+     *        t.access_type = 'open'
+     *        OR (t.access_type = 'contract_holders'
+     *            AND t.customer_id IN (:contractCustomers))))
+     *
+     * Ветка закрытых тендеров добавляется только если договоры есть: пустой
+     * IN () в DQL не выражается, а без договоров ветка всё равно ложна.
+     */
+    private function applyVisibility(QueryBuilder $qb, TenderVisibilityScope $scope): void
+    {
+        // Своё видно всегда и в любом статусе.
+        $visible = $qb->expr()->orX($qb->expr()->eq('t.tenantId', ':viewerCompany'));
+        $qb->setParameter('viewerCompany', $scope->companyId);
+
+        // Торговая стадия: открытый тендер — всем, закрытый — только тем,
+        // у кого с заказчиком есть действующий многоразовый договор.
+        $access = $qb->expr()->orX($qb->expr()->eq('t.accessType', ':accessOpen'));
+        $qb->setParameter('accessOpen', AccessTypeEnum::OPEN->value);
+
+        if ([] !== $scope->contractCustomerIds) {
+            $access->add($qb->expr()->andX(
+                $qb->expr()->eq('t.accessType', ':accessContractHolders'),
+                $qb->expr()->in('t.customerId', ':contractCustomers'),
+            ));
+            $qb->setParameter('accessContractHolders', AccessTypeEnum::CONTRACT_HOLDERS->value)
+                ->setParameter('contractCustomers', $scope->contractCustomerIds);
+        }
+
+        $visible->add($qb->expr()->andX(
+            $qb->expr()->in('t.status', ':participantStatuses'),
+            $access,
+        ));
+        $qb->setParameter(
+            'participantStatuses',
+            TenderStatusEnum::valuesWithVisibility(TenderVisibilityLevelEnum::PARTICIPANTS),
+        );
+
+        // После определения победителя закупка остаётся видимой только
+        // исполнителю. Пустой список — условие не добавляем вовсе: `IN ()`
+        // в DQL невалиден, а пустое множество и так ничего не даёт.
+        if ([] !== $scope->wonTenderIds) {
+            $visible->add($qb->expr()->andX(
+                $qb->expr()->in('t.status', ':winnerStatuses'),
+                $qb->expr()->in('t.id', ':wonTenders'),
+            ));
+            $qb->setParameter(
+                'winnerStatuses',
+                TenderStatusEnum::valuesWithVisibility(TenderVisibilityLevelEnum::OWNER_AND_WINNER),
+            )->setParameter('wonTenders', $scope->wonTenderIds);
+        }
+
+        // Статусы уровня OWNER_ONLY (draft/withdrawn/evaluation) не попадают
+        // ни в одну ветку — чужой тендер в них не виден никому.
+        $qb->andWhere($visible);
     }
 
     /**
@@ -230,11 +380,13 @@ final class TenderRepository extends ServiceEntityRepository
     /**
      * Ближайшие дедлайны приёма заявок (FR-1.1.4/1.1.7, AM-13): тендеры компании
      * с непустым таймлайном (bids_end ещё в будущем), отсортированные по сроку.
-     * Ограничение — $limit; результат для GET /dashboard upcoming_deadlines.
+     * Ограничение — $limit; $until — верхняя граница горизонта дедлайнов
+     * (period day/week/month дашборда): null = без ограничения.
+     * Результат для GET /dashboard upcoming_deadlines.
      *
      * @return list<array{tender_id: string, deadline_at: string}> до $limit записей
      */
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit): array
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
     {
         /** @var list<array{id: string, status: string, timeline: array<string, string>|null}> $rows */
         $rows = $this->createQueryBuilder('t')
@@ -262,6 +414,9 @@ final class TenderRepository extends ServiceEntityRepository
                 continue;
             }
             if ($deadline <= $now) {
+                continue;
+            }
+            if (null !== $until && $deadline > $until) {
                 continue;
             }
             $items[] = ['tender_id' => (string) $row['id'], 'deadline_at' => $deadlineAt];

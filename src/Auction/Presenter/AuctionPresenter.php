@@ -7,6 +7,7 @@ namespace App\Auction\Presenter;
 use App\Auction\Entity\Auction;
 use App\Auction\Entity\AuctionBid;
 use App\Auction\Entity\Enum\AuctionStatusEnum;
+use App\Tender\TenderLotLabel;
 
 /**
  * Публичное представление аукциона (openapi schemas AuctionState / AuctionBid).
@@ -70,6 +71,51 @@ final class AuctionPresenter
     }
 
     /**
+     * Элемент списка аукционов компании (openapi AuctionListItem, GET /auctions).
+     * Компактное представление для списка: id, тендер/лот, тип, статус, цены,
+     * даты старта/окончания, таймер. Полная детализация — GET /auctions/{id}/state.
+     *
+     * Подписи тендера и лота (номер/название) передаёт вызывающий use-case:
+     * в списке нужны читаемые имена, а не голые UUID, но сам Auction их не хранит
+     * (данные принадлежат модулю Tender и грузятся через его публичный контракт).
+     *
+     * Последняя ставка (last_bid_at/last_bid_price_minor) также приходит извне —
+     * одной выборкой на всю страницу (AuctionRepository::lastAcceptedBids), а не
+     * обходом коллекции ставок каждого аукциона. Личность участника не
+     * раскрывается: анонимность (AuctionBid.bidder_id) сохраняется, цена и
+     * время торгов публичны — как и current_price_minor в этой же строке.
+     *
+     * @param TenderLotLabel|null                                         $label   подписи тендера/лота (null — только id)
+     * @param array{placed_at: \DateTimeImmutable, price_minor: int}|null $lastBid последняя принятая ставка (null — ставок не было)
+     *
+     * @return array<string, mixed>
+     */
+    public function listItem(Auction $auction, ?TenderLotLabel $label = null, ?array $lastBid = null): array
+    {
+        return [
+            'id' => (string) $auction->getId(),
+            'tender_id' => (string) $auction->getTenderId(),
+            'tender_number' => $label?->tenderNumber,
+            'tender_title' => $label?->tenderTitle,
+            'lot_id' => (string) $auction->getLotId(),
+            'lot_number' => $label?->lotNumber,
+            'lot_title' => $label?->lotTitle,
+            'type' => $auction->getType()->value,
+            'status' => $auction->getStatus()->value,
+            'no_start_price' => $auction->isNoStartPrice(),
+            'current_price_minor' => $auction->getCurrentPriceMinor(),
+            'start_price_minor' => $auction->getStartPriceMinor(),
+            'scheduled_start_at' => $auction->getScheduledStartAt()?->format('Y-m-d\TH:i:s\Z'),
+            'started_at' => $auction->getStartedAt()?->format('Y-m-d\TH:i:s\Z'),
+            'planned_end_at' => $auction->getPlannedEndAt()?->format('Y-m-d\TH:i:s\Z'),
+            'remaining_sec' => $this->remainingSec($auction, new \DateTimeImmutable('now', new \DateTimeZone('UTC'))),
+            'last_bid_at' => null === $lastBid ? null : $lastBid['placed_at']->format('Y-m-d\TH:i:s\Z'),
+            'last_bid_price_minor' => $lastBid['price_minor'] ?? null,
+            'winner_bid_id' => null !== $auction->getWinnerBidId() ? (string) $auction->getWinnerBidId() : null,
+        ];
+    }
+
+    /**
      * Ставка аукциона (openapi AuctionBid).
      *
      * @return array<string, mixed>
@@ -92,11 +138,12 @@ final class AuctionPresenter
     }
 
     /**
-     * История ставок аукциона (openapi GET /auctions/{id}/bids).
+     * История ставок аукциона (openapi GET /auctions/{id}/bids): только строки,
+     * оболочку {items, next_cursor} собирает ListBidsUseCase.
      *
      * @param list<AuctionBid> $bids
      *
-     * @return array{items: list<array<string, mixed>>, next_cursor: null}
+     * @return list<array<string, mixed>>
      */
     public function bidList(array $bids, bool $revealBidder): array
     {
@@ -105,7 +152,7 @@ final class AuctionPresenter
             $items[] = $this->bid($bid, $revealBidder);
         }
 
-        return ['items' => $items, 'next_cursor' => null];
+        return $items;
     }
 
     /**

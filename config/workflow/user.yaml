@@ -1,0 +1,40 @@
+framework:
+    workflows:
+        user_status:
+            type: state_machine
+            marking_store:
+                type: method
+                property: verificationStatus
+            supports:
+                - App\Iam\Entity\User
+            initial_marking: !php/enum App\Iam\Entity\Enum\UserStatusEnum::EMAIL_PENDING->value
+            places:
+                - !php/enum App\Iam\Entity\Enum\UserStatusEnum::INVITED->value
+                - !php/enum App\Iam\Entity\Enum\UserStatusEnum::EMAIL_PENDING->value
+                - !php/enum App\Iam\Entity\Enum\UserStatusEnum::ACTIVE->value
+                - !php/enum App\Iam\Entity\Enum\UserStatusEnum::BLOCKED->value
+                - !php/enum App\Iam\Entity\Enum\UserStatusEnum::DELETED->value
+            transitions:
+                !php/enum App\Iam\Entity\Enum\UserStatusTransition::VERIFY_EMAIL->value:
+                    from: !php/enum App\Iam\Entity\Enum\UserStatusEnum::EMAIL_PENDING->value
+                    to: !php/enum App\Iam\Entity\Enum\UserStatusEnum::ACTIVE->value
+                !php/enum App\Iam\Entity\Enum\UserStatusTransition::ACCEPT_INVITE->value:
+                    from: !php/enum App\Iam\Entity\Enum\UserStatusEnum::INVITED->value
+                    to: !php/enum App\Iam\Entity\Enum\UserStatusEnum::ACTIVE->value
+                !php/enum App\Iam\Entity\Enum\UserStatusTransition::BLOCK->value:
+                    from:
+                        - !php/enum App\Iam\Entity\Enum\UserStatusEnum::ACTIVE->value
+                    to: !php/enum App\Iam\Entity\Enum\UserStatusEnum::BLOCKED->value
+                !php/enum App\Iam\Entity\Enum\UserStatusTransition::UNBLOCK->value:
+                    from: !php/enum App\Iam\Entity\Enum\UserStatusEnum::BLOCKED->value
+                    to: !php/enum App\Iam\Entity\Enum\UserStatusEnum::ACTIVE->value
+                # Мягкое удаление (терминальное): любой статус → deleted.
+                # Дальнейшие переходы (verify_email/accept_invite/block/unblock)
+                # из deleted невозможны — workflow запрещает.
+                !php/enum App\Iam\Entity\Enum\UserStatusTransition::DELETE->value:
+                    from:
+                        - !php/enum App\Iam\Entity\Enum\UserStatusEnum::INVITED->value
+                        - !php/enum App\Iam\Entity\Enum\UserStatusEnum::EMAIL_PENDING->value
+                        - !php/enum App\Iam\Entity\Enum\UserStatusEnum::ACTIVE->value
+                        - !php/enum App\Iam\Entity\Enum\UserStatusEnum::BLOCKED->value
+                    to: !php/enum App\Iam\Entity\Enum\UserStatusEnum::DELETED->value

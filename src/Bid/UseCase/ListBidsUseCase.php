@@ -6,7 +6,10 @@ namespace App\Bid\UseCase;
 
 use App\Bid\BidPresenter;
 use App\Bid\BidService;
+use App\Bid\Entity\Bid;
 use App\Iam\Entity\User;
+use App\Shared\Input\Paginator;
+use App\Shared\Repository\KeysetCursor;
 use App\Tender\TenderReadService;
 
 /**
@@ -29,22 +32,33 @@ final readonly class ListBidsUseCase implements BidUseCase
     }
 
     /**
-     * @return array{items: list<array<string, mixed>>, next_cursor: null}
+     * Keyset-пагинация (AR-6): срез по (created_at, id) выполняется in-memory
+     * над отфильтрованным списком (лимитированные по тендеру наборы),
+     * next_cursor — из KeysetCursor::sliceAfter; курсор контракта единый.
+     *
+     * @return array{items: list<array<string, mixed>>, next_cursor: string|null}
      */
-    public function execute(User $user, string $tenderId): array
+    public function execute(User $user, string $tenderId, Paginator $paginator): array
     {
         $tender = $this->tenders->resolveTender($tenderId);
 
         $companyId = $user->getCompanyId();
         $isCustomer = null !== $companyId && $tender->getTenantId()->equals($companyId);
 
+        [$page, $nextCursor] = KeysetCursor::sliceAfter(
+            $this->bids->listForCompany($user, $tender),
+            $paginator->cursor,
+            $paginator->limitValue(),
+            static fn (Bid $bid): array => [$bid->getCreatedAt(), (string) $bid->getId()],
+        );
+
         $items = [];
-        foreach ($this->bids->listForCompany($user, $tender) as $bid) {
+        foreach ($page as $bid) {
             $items[] = null !== $tender->getBidsOpenedAt()
                 ? $this->presenter->opened($bid, $isCustomer)
                 : $this->presenter->metadata($bid);
         }
 
-        return ['items' => $items, 'next_cursor' => null];
+        return ['items' => $items, 'next_cursor' => $nextCursor];
     }
 }

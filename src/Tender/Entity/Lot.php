@@ -241,6 +241,60 @@ class Lot
         $this->touch();
     }
 
+    /**
+     * Обновление полей лота (FR-1.1.7, PATCH /tenders/{tenderId}/lots/{lotId}).
+     * Изменяются только указанные поля (null = не менять); пустая строка/[] =
+     * очистить значение. price_net_minor/vat_rate — только через setPrice:
+     * price_gross_minor пересчитывается MoneyService (net→gross, PR-3).
+     *
+     * @param array<string, mixed>|null $deliveryTerms
+     */
+    public function update(string $title, ?int $priceNetMinor, ?int $vatRateBps, ?PriceBasisEnum $priceBasis, ?float $quantity, ?string $unit, ?array $deliveryTerms, ?\DateTimeImmutable $executionStartAt, ?int $tradeEndLeadHours, ?float $securityPercent): void
+    {
+        if ('' !== $title) {
+            $this->title = $title;
+        }
+        if (null !== $priceNetMinor) {
+            $this->priceNetMinor = $priceNetMinor;
+            $this->priceGrossMinor = (new MoneyService())->netToGross($priceNetMinor, $this->vatRateBps);
+        }
+        if (null !== $vatRateBps) {
+            $this->vatRateBps = $vatRateBps;
+            $this->priceGrossMinor = (new MoneyService())->netToGross($this->priceNetMinor, $vatRateBps);
+        }
+        if (null !== $priceBasis) {
+            $this->priceBasis = $priceBasis;
+        }
+        if (null !== $quantity) {
+            $this->quantity = $quantity;
+        }
+        if (null !== $unit) {
+            $this->unit = '' === $unit ? null : $unit;
+        }
+        if (null !== $deliveryTerms) {
+            $this->deliveryTerms = [] === $deliveryTerms ? null : $deliveryTerms;
+        }
+        if (null !== $executionStartAt) {
+            $this->executionStartAt = $executionStartAt;
+        }
+        if (null !== $tradeEndLeadHours) {
+            $this->tradeEndLeadHours = $tradeEndLeadHours;
+        }
+        if (null !== $securityPercent) {
+            $this->securityPercent = $securityPercent;
+        }
+        $this->touch();
+    }
+
+    /**
+     * Перемещение индекса (после удаления лота перенумеровка 1..N).
+     */
+    public function renumber(int $number): void
+    {
+        $this->number = $number;
+        $this->touch();
+    }
+
     private function touch(): void
     {
         $this->updatedAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));

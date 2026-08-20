@@ -139,7 +139,7 @@ quality gate
 ```bash
 docker compose exec -T app composer lint          # php -l src tests
 docker compose exec -T app composer cs-fixer:check # PHP CS Fixer (dry-run)
-docker compose exec -T app composer phpstan        # PHPStan level max (raise memory limit)
+docker compose exec -T app composer phpstan        # PHPStan level max
 docker compose exec -T app composer arkitect       # PHPArkitect layers + module boundaries
 docker compose exec -T app composer test           # PHPUnit (full suite)
 docker compose exec -T app composer quality        # everything above
@@ -147,9 +147,17 @@ docker compose exec -T app composer quality        # everything above
 
 Notes:
 
-- **PHPStan** in the container fails on `memory_limit=128M`. Run it with a raised limit:
-  `docker compose exec -T app php vendor/bin/phpstan analyse --no-progress --memory-limit=1G`
-  (after clearing `var/cache/phpstan`).
+- **Memory limit — `PHP_MEMORY_LIMIT`, 1G by default.** The container defaults to
+  `memory_limit=128M`, which is not enough for PHPUnit/ParaTest (smoke/load tests abort with
+  `Allowed memory size exhausted`) nor for PHPStan at level max. Every `composer test*` and
+  `composer phpstan` script runs PHP as `php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/…`,
+  and the `make` targets pass the variable into the container. Do not append `--memory-limit` /
+  `-d memory_limit` by hand — raise the ceiling instead:
+  `make test PHP_MEMORY_LIMIT=2G` or `docker compose exec -T -e PHP_MEMORY_LIMIT=2G app composer test`.
+  A direct `php bin/phpunit tests/...` bypasses the composer script and keeps the 128M default —
+  fine for one test file, not for the full suite or the smoke group.
+- If PHPStan behaves oddly, clear its cache first:
+  `docker compose exec -T app bash -c 'rm -rf var/cache/phpstan'`.
 - The **full PHPUnit run takes significantly more than 120 seconds**. For a quick local check, run
   only the relevant directory, e.g. `php bin/phpunit tests/Functional/Tender/...`.
 - The **parallel run** is `composer test:parallel` (brianium/paratest). It prepares a worker DB

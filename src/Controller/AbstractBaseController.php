@@ -62,9 +62,14 @@ abstract class AbstractBaseController extends AbstractController
      * различать «поле не передано» и «явный null» (PATCH со сбросом): дефолты
      * DTO сохраняются для отсутствующих полей (clearMissing=false).
      *
+     * $clearMissing — флаг submit() формы (по умолчанию = $strict). Для
+     * entity-bound update форм (data_class = Entity, $data = сущность) всегда
+     * передавать clearMissing: false: отсутствующие в теле поля сохраняют
+     * текущие значения сущности (PATCH-семантика), а не очищаются.
+     *
      * @return FormInterface<null>
      */
-    protected function formInput(string $type, Request $request, bool $strict = false, ?object $data = null): FormInterface
+    protected function formInput(string $type, Request $request, bool $strict = false, ?object $data = null, ?bool $clearMissing = null): FormInterface
     {
         $dataBody = $this->jsonBody($request);
         if ($strict && null === $dataBody && '' !== trim((string) $request->getContent())) {
@@ -75,7 +80,49 @@ abstract class AbstractBaseController extends AbstractController
         $formType = $type;
         /** @var FormInterface<null> $form */
         $form = $this->createForm($formType, $data, ['csrf_protection' => false]);
-        $form->submit($dataBody ?? [], $strict);
+        $form->submit($dataBody ?? [], $clearMissing ?? $strict);
+
+        if (!$form->isValid()) {
+            throw new ValidationException($this->formErrorsMessage($form));
+        }
+
+        return $form;
+    }
+
+    /**
+     * Создать и засабмитить форму из GET-query-параметров (validation-by-form
+     * для списков/фильтров, AM: PaginatorForm, TenderListFiltersType и т.п.).
+     * В отличие от formInput (JSON-тело), источник данных — $request->query->all().
+     * Из query берутся ТОЛЬКО ключи, объявленные в форме (остальные игнорируются) —
+     * это позволяет нескольким формам (фильтры + пагинатор) жить на одном query.
+     * Невалидные данные → ValidationException (422) через JsonApiExceptionSubscriber.
+     *
+     * @param array<string, mixed> $options опции формы (например id_field для EntityIdQueryType)
+     *
+     * @return FormInterface<null>
+     */
+    protected function formQuery(string $type, Request $request, ?object $data = null, array $options = []): FormInterface
+    {
+        /** @var class-string<FormTypeInterface<object>> $formType */
+        $formType = $type;
+        /** @var FormInterface<null> $form */
+        $form = $this->createForm($formType, $data, ['csrf_protection' => false] + $options);
+        /** @var array<string, mixed> $query */
+        $query = $request->query->all();
+
+        // Оставляем только ключи, объявленные полями формы (для compound-форм —
+        // имена детей) — чужие query-параметры не приводят к «extra fields».
+        $allowed = [];
+        foreach ($form->all() as $child) {
+            $allowed[] = $child->getName();
+        }
+        if ([] === $allowed) {
+            $allowed = array_keys($query);
+        }
+        /** @var array<string, mixed> $submitted */
+        $submitted = array_intersect_key($query, array_flip($allowed));
+
+        $form->submit($submitted, false);
 
         if (!$form->isValid()) {
             throw new ValidationException($this->formErrorsMessage($form));
@@ -109,16 +156,58 @@ abstract class AbstractBaseController extends AbstractController
     }
 
     /**
+     * Текст 422-ошибки формы: «поле: сообщение» через «; ».
+     *
+     * Имя поля обязательно: без него ответ вида «This value should not be blank.»
+     * не говорит клиенту, что именно заполнять, — в форме с двумя десятками полей
+     * и вложенными лотами это делает 422 неотлаживаемым. Путь строится от корня:
+     * `lots[0].price_net_minor`. Ошибки самой формы (не привязанные к полю)
+     * выводятся без префикса.
+     *
      * @param FormInterface<null> $form
      */
     protected function formErrorsMessage(FormInterface $form): string
     {
         $messages = [];
         foreach ($form->getErrors(true) as $error) {
-            $messages[] = $error->getMessage();
+            $path = $this->errorFieldPath($error->getOrigin(), $form);
+            $messages[] = '' === $path
+                ? $error->getMessage()
+                : $path.': '.$error->getMessage();
         }
 
         return implode('; ', $messages);
+    }
+
+    /**
+     * Путь до поля с ошибкой относительно корневой формы (`lots[0].title`).
+     * Пустая строка — ошибка принадлежит самой корневой форме.
+     *
+     * @param FormInterface<mixed>|null $origin поле, на котором сработал constraint
+     * @param FormInterface<null>       $root   корневая форма запроса
+     */
+    private function errorFieldPath(?FormInterface $origin, FormInterface $root): string
+    {
+        $segments = [];
+        for ($node = $origin; null !== $node && $node !== $root; $node = $node->getParent()) {
+            $name = $node->getName();
+            if ('' === $name) {
+                continue;
+            }
+            // Элементы коллекций именуются индексом (lots → 0, 1, …).
+            $segments[] = ctype_digit($name) ? '['.$name.']' : $name;
+        }
+
+        $path = '';
+        foreach (array_reverse($segments) as $segment) {
+            if (str_starts_with($segment, '[')) {
+                $path .= $segment;
+            } else {
+                $path .= '' === $path ? $segment : '.'.$segment;
+            }
+        }
+
+        return $path;
     }
 
     /**

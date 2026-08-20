@@ -86,4 +86,14 @@ final class BidFactory extends PersistentObjectFactory
     {
         return $this->afterInstantiate(static fn (Bid $bid) => $bid->setStatus(BidStatusEnum::ADMITTED));
     }
+
+    /**
+     * Победившая заявка (bids.status = winning, FR-1.3.5): её поставщик и есть
+     * компания-исполнитель — от неё зависит видимость закупки после
+     * определения победителя (FR-1.5.14).
+     */
+    public function winning(): static
+    {
+        return $this->afterInstantiate(static fn (Bid $bid) => $bid->setStatus(BidStatusEnum::WINNING));
+    }
 }

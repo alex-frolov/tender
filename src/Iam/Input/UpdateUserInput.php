@@ -12,6 +12,8 @@ namespace App\Iam\Input;
  */
 final class UpdateUserInput
 {
+    public ?string $name = null;
+
     public ?string $role = null;
 
     public ?string $status = null;

@@ -60,3 +60,9 @@ yarn-error.log
 /nbproject/*
 
 .dockerhub.secrets
+
+# graphify skill output (generated, not source)
+/graphify-out/
+
+# local agent guidance, not part of the project source
+/CLAUDE.md

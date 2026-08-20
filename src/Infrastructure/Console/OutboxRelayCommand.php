@@ -15,9 +15,14 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 /**
  * Релизер outbox: публикует pending-события в RabbitMQ.
  *
- * Запуск: php bin/console outbox:relay [--limit=100] [--once]
+ * Запуск: php bin/console outbox:relay [--limit=100] [--once] [--heartbeat=PATH]
  * - без --once — бесконечный цикл с паузой (для супервизора/контейнера worker);
- * - --once — один батч (для cron).
+ * - --once — один батч (для cron);
+ * - --heartbeat — файл, mtime которого обновляется на каждой итерации цикла
+ *   (healthcheck контейнера worker). Без него смерть релизера не видна снаружи:
+ *   контейнер остаётся Up на messenger:consume, а события копятся в outbox
+ *   в статусе pending — молча отваливаются live-события аукциона (Mercure),
+ *   webhook-доставка и почта.
  */
 #[AsCommand(name: 'outbox:relay', description: 'Relay pending outbox events to RabbitMQ')]
 final class OutboxRelayCommand extends Command
@@ -34,7 +39,8 @@ final class OutboxRelayCommand extends Command
         $this
             ->addOption('limit', null, InputOption::VALUE_OPTIONAL, 'Batch size', '100')
             ->addOption('once', null, InputOption::VALUE_NONE, 'Relay one batch and exit')
-            ->addOption('pause', null, InputOption::VALUE_OPTIONAL, 'Pause between batches (sec)', (string) self::DEFAULT_PAUSE_SECONDS);
+            ->addOption('pause', null, InputOption::VALUE_OPTIONAL, 'Pause between batches (sec)', (string) self::DEFAULT_PAUSE_SECONDS)
+            ->addOption('heartbeat', null, InputOption::VALUE_REQUIRED, 'Touch this file on every loop iteration (container healthcheck)');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -43,8 +49,11 @@ final class OutboxRelayCommand extends Command
         $limit = $this->intOption($input, 'limit', 100);
         $pause = $this->intOption($input, 'pause', self::DEFAULT_PAUSE_SECONDS);
         $once = (bool) $input->getOption('once');
+        $heartbeat = $input->getOption('heartbeat');
+        $heartbeatPath = \is_string($heartbeat) && '' !== $heartbeat ? $heartbeat : null;
 
         while (true) {
+            $this->touchHeartbeat($heartbeatPath);
             $sent = $this->relayer->relay($limit);
             if ($once) {
                 $io->success(\sprintf('Relayed %d outbox event(s)', $sent));
@@ -59,6 +68,26 @@ final class OutboxRelayCommand extends Command
                 usleep($pause * 1_000_000);
             }
         }
+    }
+
+    /**
+     * Отметка «релизер жив» для healthcheck'а: пишется до каждой выборки
+     * батча, поэтому устаревает и при падении процесса, и при его зависании.
+     * Сбой записи не должен ронять релей — heartbeat вторичен по отношению
+     * к доставке событий.
+     */
+    private function touchHeartbeat(?string $path): void
+    {
+        if (null === $path) {
+            return;
+        }
+
+        $dir = \dirname($path);
+        if (!is_dir($dir) && !@mkdir($dir, 0o775, true) && !is_dir($dir)) {
+            return;
+        }
+
+        @touch($path);
     }
 
     private function intOption(InputInterface $input, string $name, int $default): int

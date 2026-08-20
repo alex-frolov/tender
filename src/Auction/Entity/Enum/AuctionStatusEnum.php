@@ -57,6 +57,50 @@ enum AuctionStatusEnum: string
     }
 
     /**
+     * Круг видимости аукциона в этом статусе (FR-1.5.14).
+     *
+     * Матрица:
+     *   created, draft, agreement, new, scheduled,
+     *   paused, choice, expired, deleted            — только заказчик;
+     *   trade                                       — все, кому виден тендер;
+     *   approve, in_work, done_by_performer, done,
+     *   claim, done_by_claim, cancelled             — заказчик и исполнитель.
+     *
+     * Публична ровно фаза торгов: до неё идёт подготовка заказчика, после
+     * APPROVE — исполнение по конкретному победителю. PAUSED и CHOICE наружу
+     * закрыты намеренно: пауза и выбор победителя — решения заказчика.
+     */
+    public function visibilityLevel(): AuctionVisibilityLevelEnum
+    {
+        return match ($this) {
+            self::CREATED, self::DRAFT, self::AGREEMENT, self::NEW, self::SCHEDULED,
+            self::PAUSED, self::CHOICE, self::EXPIRED, self::DELETED => AuctionVisibilityLevelEnum::OWNER_ONLY,
+            self::TRADE => AuctionVisibilityLevelEnum::TENDER_VIEWERS,
+            self::APPROVE, self::IN_WORK, self::DONE_BY_PERFORMER, self::DONE,
+            self::CLAIM, self::DONE_BY_CLAIM, self::CANCELLED => AuctionVisibilityLevelEnum::OWNER_AND_WINNER,
+        };
+    }
+
+    /**
+     * Статусы с заданным кругом видимости — для SQL-условий списков
+     * (`status IN (...)`), где перечислять статусы руками нельзя: новый статус
+     * обязан пройти через match выше, иначе PHP бросит UnhandledMatchError.
+     *
+     * @return list<string>
+     */
+    public static function valuesWithVisibility(AuctionVisibilityLevelEnum $level): array
+    {
+        $values = [];
+        foreach (self::cases() as $case) {
+            if ($case->visibilityLevel() === $level) {
+                $values[] = $case->value;
+            }
+        }
+
+        return $values;
+    }
+
+    /**
      * Статусы, в которых ставки принимаются (FR-1.3.2): только TRADE.
      * В SCHEDULED/PAUSED и прочих — отклонение с причиной.
      */

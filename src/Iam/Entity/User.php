@@ -218,6 +218,11 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         $this->role = $role;
     }
 
+    public function changeName(string $name): void
+    {
+        $this->name = $name;
+    }
+
     public function changeLocale(LocaleEnum $locale): void
     {
         $this->locale = $locale;
@@ -252,7 +257,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     }
 
     /**
-     * Soft-delete с маскированием email (FR-1.5.9).
+     * Мягкое удаление с маскированием email (FR-1.5.9): статус → deleted.
+     * Статус меняется только через workflow user_status (переход delete);
+     * deletedAt и maskedEmail — вспомогательные данные для аудита/восстановления.
      */
     public function softDelete(): void
     {

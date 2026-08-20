@@ -12,6 +12,7 @@ use App\Bid\Repository\BidRepository;
 use App\Bid\Service\BidTransaction;
 use App\Contract\ContractAccessChecker;
 use App\Iam\CompanyAccessGuard;
+use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\User;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\StateTransitionException;
@@ -238,8 +239,9 @@ final readonly class BidService
         $users = $this->em->getRepository(User::class)
             ->createQueryBuilder('u')
             ->where('u.companyId = :companyId')
-            ->andWhere('u.deletedAt IS NULL')
+            ->andWhere('u.verificationStatus <> :deleted')
             ->setParameter('companyId', $bid->getSupplierId())
+            ->setParameter('deleted', UserStatusEnum::DELETED->value)
             ->getQuery()
             ->getResult();
 

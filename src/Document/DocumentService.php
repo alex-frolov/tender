@@ -45,6 +45,19 @@ interface DocumentService
     public function get(User $actor, string $documentId): Document;
 
     /**
+     * Презентация документа в форме openapi Document (с версиями и
+     * download_url). Кросс-модульный ответ (например, скан договора
+     * POST /contracts/{contractId}/scan) — через этот контракт, чтобы не
+     * пробивать границу модуля к внутреннему Presenter'у.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws Exception\DocumentNotFoundException     если документ не найден (в т.ч. чужой tenant)
+     * @throws Exception\DocumentAccessDeniedException если нет прав по видимости
+     */
+    public function present(User $actor, string $documentId): array;
+
+    /**
      * Контент текущей версии (скачивание). Проверяет видимость как и get().
      *
      * @return array{content: string, mimeType: string, originalName: string}

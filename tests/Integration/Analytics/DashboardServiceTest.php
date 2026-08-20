@@ -128,6 +128,79 @@ final class DashboardServiceTest extends KernelTestCase
         $this->dashboard->get(new User('admin@test.ru', 'Admin', UserRoleEnum::PLATFORM_ADMIN));
     }
 
+    public function testDashboardPeriodLimitsDeadlineHorizon(): void
+    {
+        $company = CompanyFactory::new()->approved()->create();
+        $companyId = $company->getId();
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        // Близкие дедлайны: приём заявок через 2 часа, окончание торгов через 5 часов.
+        $nearTender = TenderFactory::createOne([
+            'customerId' => $companyId,
+            'nmckMinor' => 100_000,
+        ]);
+        $nearLot = LotFactory::createOne(['tender' => $nearTender, 'priceNetMinor' => 100_000]);
+        $nearLot->setStatus(LotStatusEnum::ACCEPTING_BIDS);
+        $nearTender->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $nearTender->setTimeline(['bids_end' => $now->modify('+2 hours')->format('Y-m-d\TH:i:s\Z')]);
+        $nearAuction = AuctionFactory::new()->forTender($nearTender, $nearLot)->create();
+        $nearAuction->setStatus(AuctionStatusEnum::TRADE);
+        $nearAuction->setPlannedEndAt($now->modify('+5 hours'));
+
+        // Дальние дедлайны: приём заявок через 5 дней (вне day, в week),
+        // окончание торгов через 20 дней (вне week, в month).
+        $farTender = TenderFactory::createOne([
+            'customerId' => $companyId,
+            'nmckMinor' => 200_000,
+        ]);
+        $farLot = LotFactory::createOne(['tender' => $farTender, 'priceNetMinor' => 200_000]);
+        $farLot->setStatus(LotStatusEnum::ACCEPTING_BIDS);
+        $farTender->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $farTender->setTimeline(['bids_end' => $now->modify('+5 days')->format('Y-m-d\TH:i:s\Z')]);
+        $farAuction = AuctionFactory::new()->forTender($farTender, $farLot)->create();
+        $farAuction->setStatus(AuctionStatusEnum::TRADE);
+        $farAuction->setPlannedEndAt($now->modify('+20 days'));
+        $this->em->flush();
+
+        $actor = self::actor($companyId);
+
+        $day = $this->deadlineEntities($this->dashboard->get($actor, 'day'));
+        self::assertSame(
+            [(string) $nearTender->getId(), (string) $nearAuction->getId()],
+            $day,
+        );
+
+        $week = $this->deadlineEntities($this->dashboard->get($actor, 'week'));
+        self::assertSame(
+            [(string) $nearTender->getId(), (string) $nearAuction->getId(), (string) $farTender->getId()],
+            $week,
+        );
+
+        $month = $this->deadlineEntities($this->dashboard->get($actor, 'month'));
+        self::assertCount(4, $month);
+        self::assertContains((string) $nearTender->getId(), $month);
+        self::assertContains((string) $nearAuction->getId(), $month);
+        self::assertContains((string) $farTender->getId(), $month);
+        self::assertContains((string) $farAuction->getId(), $month);
+
+        $all = $this->deadlineEntities($this->dashboard->get($actor));
+        self::assertCount(4, $all);
+    }
+
+    /**
+     * @param array{active_tenders: int, my_bids: int, my_contracts: int,
+     *             upcoming_deadlines: list<array{entity_type: string, entity_id: string, deadline_at: string}>} $dashboard
+     *
+     * @return list<string> entity_id дедлайнов в порядке ответа
+     */
+    private function deadlineEntities(array $dashboard): array
+    {
+        return array_map(
+            static fn (array $deadline): string => $deadline['entity_id'],
+            $dashboard['upcoming_deadlines'],
+        );
+    }
+
     public function testStatsByRegionGroupsTendersWithReductionAndContractAmounts(): void
     {
         $company = CompanyFactory::new()->approved()->create();
