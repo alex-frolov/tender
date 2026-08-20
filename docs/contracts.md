@@ -121,6 +121,8 @@ tracked in `documents_refs`.
 | `amountMinor` | security amount |
 | `status` | `pending`, `active`, `released`, `forfeited` |
 
+- `GET /securities` — deposits visible to the actor's company: on its own procedures (as the
+  customer) and provided by it (as the performer); optional `kind` / `status` filters.
 - `POST /securities/{id}/forfeit` — customer forfeits the security (contract context).
 - `POST /securities/{id}/release` — security is released.
 

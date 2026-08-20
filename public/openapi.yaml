@@ -1587,6 +1587,44 @@ paths:
                     $ref: '#/components/responses/Conflict'
 
     # ================= SECURITY DEPOSIT =================
+    /securities:
+        get:
+            tags: [contracts]
+            summary: Security deposits of the actor's company (own procedures and own deposits)
+            description: |
+                Returns deposits where the actor's company is the customer (deposits on its
+                procedures) or the performer (deposits it provided). Optional filters by kind
+                (bid/contract) and status. Access: any employee of the company (agent is the
+                minimum role) — releasing and forfeiting stay behind their own permissions.
+            operationId: listSecurities
+            parameters:
+                - name: kind
+                  in: query
+                  required: false
+                  schema: { type: string, enum: [bid, contract] }
+                - name: status
+                  in: query
+                  required: false
+                  schema: { $ref: '#/components/schemas/SecurityStatus' }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Security deposit list
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Security' }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /securities/{securityId}/release:
         post:
             tags: [contracts]
@@ -2060,6 +2098,42 @@ paths:
 
     # ================= CLAIMS =================
     /claims:
+        get:
+            tags: [contracts]
+            summary: Claims of the actor's company (as customer and as performer)
+            description: |
+                Both sides of a dispute see it: the list returns claims where the actor's
+                company is the customer or the performer. Optional filters by contract and
+                status. Access: any employee of the company (agent is the minimum role) —
+                filing and resolving a claim stay with the customer (claims.manage).
+            operationId: listClaims
+            parameters:
+                - name: contract_id
+                  in: query
+                  required: false
+                  schema: { type: string, format: uuid }
+                - name: status
+                  in: query
+                  required: false
+                  schema: { type: string, enum: [draft, submitted, resolved_rejected, resolved_accepted, cancelled] }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Claim list
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Claim' }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
         post:
             tags: [contracts]
             summary: Create a claim (APPROVE/IN_WORK/DONE_BY_PERFORMER → CLAIM)
@@ -3636,12 +3710,40 @@ components:
             properties:
                 id: { type: string, format: uuid }
                 contract_id: { type: string, format: uuid }
+                auction_id: { type: string, format: uuid, nullable: true }
                 stage: { type: string, enum: [approve, in_work, done_by_performer] }
                 reason: { type: string }
-                amount_minor: { type: integer }
+                description: { type: string, nullable: true }
+                amount_minor: { type: integer, description: 'Claim amount, minor units' }
                 status: { type: string, enum: [draft, submitted, resolved_rejected, resolved_accepted, cancelled] }
                 resolution: { type: string, nullable: true }
                 resolved_at: { type: string, format: date-time, nullable: true }
+                document_ids:
+                    type: array
+                    nullable: true
+                    items: { type: string, format: uuid }
+                created_at: { type: string, format: date-time }
+
+        Security:
+            type: object
+            description: |
+                Security deposit for a bid or for contract performance (FR-1.4.1/1.4.2).
+                Money is in integer minor units.
+            properties:
+                id: { type: string, format: uuid }
+                kind: { type: string, enum: [bid, contract] }
+                entity_type: { type: string, description: 'What the deposit secures (bid / contract)' }
+                entity_id: { type: string, format: uuid }
+                supplier_id: { type: string, format: uuid }
+                type: { type: string, enum: [blocked_funds, guarantee] }
+                amount_minor: { type: integer }
+                calculation_basis: { type: string, enum: [nmck, first_bid] }
+                basis_amount_minor: { type: integer, nullable: true }
+                currency: { type: string, minLength: 3, maxLength: 3 }
+                status: { $ref: '#/components/schemas/SecurityStatus' }
+                valid_until: { type: string, format: date-time, nullable: true }
+                external_ref: { type: string, nullable: true }
+                created_at: { type: string, format: date-time }
 
         # ---------- Companies ----------
         PriceBasis:

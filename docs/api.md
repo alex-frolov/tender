@@ -191,8 +191,10 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/contracts/{contractId}/tenders` | bind a tender |
 | GET | `/contract-types` | list contract types |
 | POST | `/contract-types` | create contract type |
+| GET | `/claims` | list claims of the actor's company (both sides) |
 | POST | `/claims` | create a claim |
 | POST | `/claims/{claimId}/resolve` | resolve a claim |
+| GET | `/securities` | list security deposits of the actor's company |
 | POST | `/securities/{securityId}/forfeit` | forfeit security |
 | POST | `/securities/{securityId}/release` | release security |
 

@@ -50,6 +50,25 @@ final readonly class SecurityService
     }
 
     /**
+     * Обеспечение, видимое компании актора: по её процедурам (как заказчику)
+     * и внесённое ею (как исполнителю). Чужое обеспечение не отдаётся —
+     * party-фильтрация выполняется здесь, а не в контроллере.
+     *
+     * @return list<Security>
+     *
+     * @throws ConflictException если у актора нет компании
+     */
+    public function list(User $actor, ?string $kind = null, ?string $status = null): array
+    {
+        $companyId = $actor->getCompanyId();
+        if (null === $companyId) {
+            throw new ConflictException('Actor has no company');
+        }
+
+        return $this->securities->listForCompany($companyId, $kind, $status);
+    }
+
+    /**
      * Обеспечение заявки (FR-1.4.1). База — НМЦК тендера (nmck) или первая
      * ставка (first_bid, B5 при no_start_price). В MVP фиксирует факт и срок;
      * способ — блокировка средств (blocked_funds) либо гарантия (guarantee).
