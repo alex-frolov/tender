@@ -283,6 +283,31 @@ SQL;
     }
 
     /**
+     * Торгующиеся аукционы, у которых окно торгов уже закрыто по времени
+     * (TRADE, planned_end_at <= now). Источник для планировщика
+     * (auctions:finish-expired): истечение таймера само по себе TRADE → CHOICE
+     * не выполняет, и без этой команды торги остаются открытыми бесконечно
+     * (heartbeat при этом продолжает считать их живыми).
+     *
+     * @return list<Auction>
+     */
+    public function listExpiredTrading(\DateTimeImmutable $now): array
+    {
+        /** @var list<Auction> $result */
+        $result = $this->createQueryBuilder('a')
+            ->where('a.status = :trade')
+            ->andWhere('a.plannedEndAt IS NOT NULL')
+            ->andWhere('a.plannedEndAt <= :now')
+            ->setParameter('trade', AuctionStatusEnum::TRADE->value)
+            ->setParameter('now', $now)
+            ->orderBy('a.plannedEndAt', 'ASC')
+            ->getQuery()
+            ->getResult();
+
+        return $result;
+    }
+
+    /**
      * Список аукционов компании-тенанта (GET /auctions).
      * Сортировка: сначала активные/ближайшие (по planned_end_at/created_at),
      * затем остальные — по created_at DESC. Без пагинации — размер списка

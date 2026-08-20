@@ -12,7 +12,9 @@ use Symfony\Component\HttpFoundation\Response;
  *
  * Коды (openapi POST /auctions/{id}/bids): bid_rejected — цена вне допустимого
  * по типу аукциона/лимитам (FR-1.3.2, PR-5); auction_not_trade — ставки только
- * в TRADE; duplicate_bid — повторная ставка участника на ход/окно.
+ * в TRADE; duplicate_bid — повторная ставка участника на ход/окно;
+ * auction_window_closed — окно торгов закрыто по времени (planned_end_at
+ * пройден, а перевод в CHOICE ещё не выполнен).
  *
  * reason — человекочитаемая причина (detail), попадает в message исключения.
  * Реализует ApiException → JsonApiExceptionSubscriber отвечает 409 {code}.

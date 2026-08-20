@@ -157,6 +157,11 @@ admitted participant.
 - `auctions:recover` rebuilds Redis snapshots from PostgreSQL and **auto-pauses** any TRADE auction
   whose heartbeat is missing or older than the timeout.
 - `auctions:state:rebuild` rebuilds snapshots only.
+- `auctions:finish-expired` closes trading whose window has passed (TRADE, `planned_end_at <= now`)
+  by applying `finish` as the system actor. Without it the timer expiring changes nothing: the
+  auction stays in TRADE (and heartbeat keeps refreshing it), because `finish` is otherwise only
+  triggered by the customer. Bids placed after `planned_end_at` are rejected with
+  `auction_window_closed` — the status alone is not enough to decide whether the window is open.
 
 ```
 TRADE ── heartbeat timeout (idle > AUCTION_HEARTBEAT_TIMEOUT) ──► PAUSED ── resume ──► TRADE

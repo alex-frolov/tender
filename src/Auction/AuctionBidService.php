@@ -468,6 +468,7 @@ final readonly class AuctionBidService
                 $auction,
                 $bidderId,
                 $idempotencyKey,
+                $now,
                 $validateAndCommit,
                 &$isReplay,
             ): AuctionBid {
@@ -484,6 +485,18 @@ final readonly class AuctionBidService
 
                 if (!$locked->getStatus()->acceptsBids()) {
                     throw new BidRejectedException('Bids are accepted only in TRADE', 'auction_not_trade');
+                }
+
+                // Окно торгов закрыто по времени (FR-1.3.3). Статуса тут мало:
+                // TRADE → CHOICE делает заказчик (finish / выбор победителя) или
+                // команда auctions:finish-expired, и между истечением planned_end_at
+                // и этим переходом аукцион остаётся в TRADE. Без проверки времени
+                // ставки принимались бы после окончания торгов — тем дольше, чем
+                // позже заказчик их закроет. planned_end_at уже учитывает
+                // антиснайпинговые продления (AuctionTimer).
+                $plannedEnd = $locked->getPlannedEndAt();
+                if (null !== $plannedEnd && $now > $plannedEnd) {
+                    throw new BidRejectedException('Trading window is closed (planned end passed)', 'auction_window_closed');
                 }
 
                 $rules = $locked->getRulesSnapshot();

@@ -1340,7 +1340,7 @@ paths:
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade)'
+                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed)'
                     $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
                 '429': { $ref: '#/components/responses/RateLimited' }
@@ -3849,6 +3849,7 @@ components:
                 - bid_rejected (409) — the bid failed validation (price/step/limits)
                 - duplicate_bid (409) — duplicate bid (idempotency)
                 - auction_not_trade (409) — the auction is not in TRADE
+                - auction_window_closed (409) — the trading window is closed by time (planned_end_at has passed) while the auction is still in TRADE
                 - contract_required (409) — DONE without a valid contract (B2)
                 - access_denied (409) — closed tender without an active framework contract
                 - org_pending (403) — the company is not approved by the superadmin: the customer cannot create tenders, the performer cannot submit bids

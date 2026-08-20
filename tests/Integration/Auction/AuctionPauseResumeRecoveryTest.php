@@ -250,9 +250,20 @@ final class AuctionPauseResumeRecoveryTest extends KernelTestCase
         $this->admittedBid($auction, $supplierA);
         $this->admittedBid($auction, $supplierB);
 
-        // Две принятые ставки до «сбоя».
-        $this->bidService->placeReductionFixedBid($auction, $supplierA, self::START_MINOR - self::STEP_MINOR);
-        $this->bidService->placeReductionFixedBid($auction, $supplierB, self::START_MINOR - 2 * self::STEP_MINOR);
+        // Две принятые ставки до «сбоя» — внутри окна торгов (старт заморожен
+        // на фиксированной дате, поэтому момент ставки задаём явно).
+        $this->bidService->placeReductionFixedBid(
+            $auction,
+            $supplierA,
+            self::START_MINOR - self::STEP_MINOR,
+            now: $start->modify('+1 minute'),
+        );
+        $this->bidService->placeReductionFixedBid(
+            $auction,
+            $supplierB,
+            self::START_MINOR - 2 * self::STEP_MINOR,
+            now: $start->modify('+2 minutes'),
+        );
 
         // «Сбой»: heartbeat и снапшоты потеряны (Redis упал).
         $this->trackKeys($auction);

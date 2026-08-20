@@ -11,6 +11,11 @@
 #                                Интервал ДОЛЖЕН быть < AUCTION_HEARTBEAT_TIMEOUT
 #                                (по умолчанию 300 c), иначе аукционы авто-паузуются
 #                                (heartbeat_timeout).
+#   auctions:finish-expired    — закрытие торгов с истёкшим planned_end_at
+#                                (TRADE → CHOICE). Без неё аукцион с истёкшим
+#                                таймером остаётся в TRADE навсегда, а heartbeat
+#                                продолжает считать его живым. Интервал задаёт
+#                                задержку между концом окна и переходом в CHOICE.
 #   analytics:counters:snapshot — перенос Redis-счётчиков в analytics_counters
 #                                (снапшот аналитики).
 #   idempotency:cleanup        — удаление протухших idempotency-ключей.
@@ -21,6 +26,7 @@
 set -eu
 
 START_SCHEDULED_EVERY_SEC="${START_SCHEDULED_EVERY_SEC:-30}"  # точность старта торгов
+FINISH_EXPIRED_EVERY_SEC="${FINISH_EXPIRED_EVERY_SEC:-30}"    # задержка закрытия истёкших торгов
 HEARTBEAT_EVERY_SEC="${HEARTBEAT_EVERY_SEC:-30}"      # < AUCTION_HEARTBEAT_TIMEOUT
 SNAPSHOT_EVERY_SEC="${SNAPSHOT_EVERY_SEC:-300}"
 CLEANUP_EVERY_SEC="${CLEANUP_EVERY_SEC:-3600}"
@@ -43,6 +49,7 @@ run_every() {
 # heartbeat обязателен в фоне (его отсутствие = авто-пауза торгов)
 run_every "$HEARTBEAT_EVERY_SEC" auctions:heartbeat &
 run_every "$START_SCHEDULED_EVERY_SEC" auctions:start-scheduled &
+run_every "$FINISH_EXPIRED_EVERY_SEC" auctions:finish-expired &
 run_every "$SNAPSHOT_EVERY_SEC" analytics:counters:snapshot &
 run_every "$CLEANUP_EVERY_SEC" idempotency:cleanup &
 run_every "$DIGEST_EVERY_SEC" notifications:digest:schedule &

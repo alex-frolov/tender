@@ -88,7 +88,14 @@ final class AuctionBidServiceTest extends KernelTestCase
         $this->admittedBid($auction, $supplierId);
 
         $price = self::START_MINOR - self::STEP_MINOR; // ровно current − step (PR-5)
-        $bid = $this->bidService->placeReductionFixedBid($auction, $supplierId, $price);
+        // Момент ставки задаём явно (внутри окна торгов): старт заморожен на
+        // фиксированной дате, а окно закрывается по planned_end_at.
+        $bid = $this->bidService->placeReductionFixedBid(
+            $auction,
+            $supplierId,
+            $price,
+            now: $start->modify('+1 minute'),
+        );
 
         // Ставка сохранена (append-only), раунд 1, каноническая база.
         self::assertInstanceOf(AuctionBid::class, $bid);
@@ -195,6 +202,28 @@ final class AuctionBidServiceTest extends KernelTestCase
             self::fail('Expected BidRejectedException');
         } catch (BidRejectedException $e) {
             self::assertSame('auction_not_trade', $e->getErrorCode());
+        }
+    }
+
+    /**
+     * Окно торгов закрыто по времени: аукцион всё ещё TRADE (перевод в CHOICE
+     * делает заказчик или auctions:finish-expired), но planned_end_at пройден —
+     * ставка отклоняется. Без этой проверки торги принимали бы ставки сколь
+     * угодно долго после окончания.
+     */
+    public function testBidAfterPlannedEndIsRejected(): void
+    {
+        $auction = $this->tradingAuction(
+            startAt: new \DateTimeImmutable('-2 hours', new \DateTimeZone('UTC')),
+        );
+        $supplierId = Uuid::v4();
+        $this->admittedBid($auction, $supplierId);
+
+        try {
+            $this->bidService->placeReductionFixedBid($auction, $supplierId, self::START_MINOR - self::STEP_MINOR);
+            self::fail('Expected BidRejectedException');
+        } catch (BidRejectedException $e) {
+            self::assertSame('auction_window_closed', $e->getErrorCode());
         }
     }
 
