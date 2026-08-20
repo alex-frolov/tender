@@ -14,6 +14,13 @@ use App\Iam\Repository\RolePermissionRepository;
  * ключом в Redis: {role: {code: enabled}}. PermissionCheckService читает
  * отсюда в первую очередь; RolePermissionService инвалидирует кэш при
  * изменении набора — изменение применяется немедленно.
+ *
+ * $keySuffix разводит ключ по воркерам параллельного прогона (ParaTest).
+ * Базы уже изолированы (doctrine dbname_suffix `_test%env(TEST_TOKEN)%`),
+ * а Redis у процессов общий: с единым ключом воркер, промахнувшийся мимо
+ * кэша, пересобирал бы матрицу из СВОЕЙ базы и затирал ею ключ соседа,
+ * который только что этот набор изменил. Вне тестов TEST_TOKEN не задан,
+ * суффикс пуст и ключ остаётся прежним.
  */
 final class RolePermissionCache
 {
@@ -22,7 +29,16 @@ final class RolePermissionCache
     public function __construct(
         private readonly \Redis $redis,
         private readonly RolePermissionRepository $rolePermissions,
+        private readonly string $keySuffix = '',
     ) {
+    }
+
+    /**
+     * Ключ кэша текущего процесса (см. $keySuffix).
+     */
+    private function key(): string
+    {
+        return self::KEY.$this->keySuffix;
     }
 
     /**
@@ -49,7 +65,7 @@ final class RolePermissionCache
      */
     public function clear(): void
     {
-        $this->redis->del(self::KEY);
+        $this->redis->del($this->key());
     }
 
     /**
@@ -57,7 +73,7 @@ final class RolePermissionCache
      */
     private function cached(): ?array
     {
-        $raw = $this->redis->get(self::KEY);
+        $raw = $this->redis->get($this->key());
         if (!\is_string($raw)) {
             return null;
         }
@@ -97,7 +113,7 @@ final class RolePermissionCache
     {
         $json = json_encode($map, \JSON_UNESCAPED_UNICODE);
         if (false !== $json) {
-            $this->redis->set(self::KEY, $json);
+            $this->redis->set($this->key(), $json);
         }
     }
 }
