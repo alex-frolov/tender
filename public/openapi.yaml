@@ -3018,12 +3018,17 @@ components:
                     items: { $ref: '#/components/schemas/LotCreate' }
         TenderUpdate:
             type: object
-            description: Edit allowed fields before the bid submission deadline
+            description: >-
+                Edit allowed fields before the bid submission deadline.
+                PATCH semantics: an omitted property is left unchanged. For the
+                optional fields (description, region, okpd2) an empty string
+                clears the value — the tender card then reports it as null.
+                title cannot be cleared: an empty string there is ignored.
             properties:
-                title: { type: string, maxLength: 500 }
-                description: { type: string, maxLength: 10000 }
-                region: { type: string, maxLength: 100 }
-                okpd2: { type: string, maxLength: 20, description: 'ОКПД2 код предмета закупки' }
+                title: { type: string, maxLength: 500, description: 'Empty string is ignored, not an error: a tender always has a title' }
+                description: { type: string, maxLength: 10000, description: 'Empty string clears the description' }
+                region: { type: string, maxLength: 100, description: 'Empty string clears the region' }
+                okpd2: { type: string, maxLength: 20, description: 'ОКПД2 код предмета закупки; пустая строка очищает поле' }
                 timeline: { type: object, additionalProperties: { type: string, format: date-time } }
                 change_reason: { type: string, maxLength: 1000 }
         CancelTenderRequest:

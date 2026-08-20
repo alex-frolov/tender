@@ -29,16 +29,25 @@ final class TenderUpdateType extends AbstractType
                 'required' => false,
                 'constraints' => [new Length(max: 500)],
             ])
+            // empty_data: '' обязателен для очищаемых полей. По умолчанию форма
+            // приводит присланную пустую строку к null, а null в UpdateTenderInput
+            // означает «ключа не было, не менять» — из-за этого очистка через
+            // TenderService (там '' → null в сущности) была недостижима.
+            // Отсутствующий ключ сюда не попадает: formInput сабмитит с
+            // clearMissing: false, то есть несабмиченное поле остаётся null.
             ->add('description', TextType::class, [
                 'required' => false,
+                'empty_data' => '',
                 'constraints' => [new Length(max: 10000)],
             ])
             ->add('region', TextType::class, [
                 'required' => false,
+                'empty_data' => '',
                 'constraints' => [new Length(max: 100)],
             ])
             ->add('okpd2', TextType::class, [
                 'required' => false,
+                'empty_data' => '',
                 'constraints' => [new Length(max: 20)],
             ])
             ->add('timeline', CollectionType::class, [
