@@ -244,7 +244,7 @@ final class TenderVoter extends Voter
 | Переменная | Назначение |
 |---|---|
 | `DATABASE_URL` | PostgreSQL (doctrine) |
-| `REDIS_URL` | Redis (rate limit, состояние) |
+| `REDIS_URL` | Redis (rate limit, состояние). Формат — `redis://host:port`, **без пути**: номер БД дописывает конфиг из параметра `redis_db` (0 в dev/prod, 1 в тестах) |
 | `RABBITMQ_URL` / `MESSENGER_TRANSPORT_DSN` | AMQP (messenger, очередь `tender_events`) |
 | `MESSENGER_EMAILS_DSN` | AMQP-канал почты (отдельная очередь `tender_emails`; письма async через messenger) |
 | `MERCURE_URL`, `MERCURE_PUBLIC_URL`, `MERCURE_PUBLISH_URL`, `MERCURE_JWT_SECRET_PUBLISH`, `MERCURE_JWT_SECRET_SUBSCRIBE`, `MERCURE_SUBSCRIBE_TTL` | SSE-стримы аукционов: publish/subscribe JWT (HS256) |
@@ -261,8 +261,9 @@ final class TenderVoter extends Voter
 - `tests/Integration` — сервисы с контейнером/внешними ресурсами.
 - Rate limit в тестах = 3/мин на IP (config/packages/test/rate_limiter.yaml): каждый запрос с уникального IP — через `$client->setServerParameter('REMOTE_ADDR', ...)` на ОДНОМ клиенте.
 - Изоляция БД — **dama/doctrine-test-bundle** (config/packages/test/dama_doctrine_test_bundle.yaml + PHPUnitExtension в phpunit.dist.xml): каждый тест в транзакции BEGIN...ROLLBACK, ручная чистка (DQL DELETE) НЕ нужна. Пропуск отката — `#[SkipDatabaseRollback]`, если тест управляет транзакциями сам.
+- **Изоляция Redis — параметр `redis_db`** (`config/services/infrastructure.yaml`): dev/prod — db 0, тесты — db 1 (`when@test`), тот же приём, что `dbname_suffix: _test` у Doctrine. Номер БД задаётся параметром, а не в `REDIS_URL`: последний приходит переменной окружения контейнера, а такие переменные `.env.test` не перекрывает. Без разделения поднятый dev-стек ломает прогон: `analytics:counters:snapshot` из планировщика сканирует `ctr:*` ВСЕХ тенантов и удаляет перенесённые в PG ключи — счётчики теста исчезали между инкрементом и проверкой (`AnalyticsE2ETest`). `app:test:redis-cleanup` (в `composer test:prepare`) чистит ту же db 1.
 - **`composer test` самовосстанавливается**: перед прогоном выполняется `composer test:prepare` (drop+create+migrate test-БД) — мусор от прерванного/упавшего прогона стирается автоматически. Ручной сброс в любой момент: `composer test:prepare`. Для точечного прогона без сброса — `php bin/phpunit tests/...` напрямую.
-- **`#[SkipDatabaseRollback]`-тесты обязаны чистить созданное в `tearDown()`** (выполняется и при падении assert), а не в конце тела теста. Общая реализация — трейт `App\Tests\Support\AuctionDataCleanerTrait` (DELETE по цепочке FK + точечная чистка Redis-ключей `auction:state:*`/`auction:heartbeat:*`; тестовый Redis общий с dev — глобальный FLUSHALL не использовать). Новые тесты с реальными COMMIT используют этот трейт.
+- **`#[SkipDatabaseRollback]`-тесты обязаны чистить созданное в `tearDown()`** (выполняется и при падении assert), а не в конце тела теста. Общая реализация — трейт `App\Tests\Support\AuctionDataCleanerTrait` (DELETE по цепочке FK + точечная чистка Redis-ключей `auction:state:*`/`auction:heartbeat:*`; db 1 общая у параллельных воркеров — глобальный FLUSHALL/FLUSHDB не использовать). Новые тесты с реальными COMMIT используют этот трейт.
 
 ### Фабрики (`tests/Factory`, namespace `App\Tests\Factory`)
 
