@@ -8,13 +8,13 @@ use App\Contract\Entity\ContractStage;
 use App\Contract\Entity\ContractTender;
 use App\Contract\Exception\ContractNotFoundException;
 use App\Contract\Input\ContractStageCreateInput;
+use App\Contract\Repository\ContractStageRepository;
 use App\Contract\Repository\ContractTenderRepository;
 use App\Iam\Entity\User;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\ValidationException;
 use Doctrine\ORM\EntityManagerInterface;
-use Doctrine\ORM\EntityRepository;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -30,6 +30,7 @@ final readonly class ContractStageService
         private EntityManagerInterface $em,
         private AuditService $audit,
         private ContractTenderRepository $contractTenders,
+        private ContractStageRepository $stages,
     ) {
     }
 
@@ -65,7 +66,7 @@ final readonly class ContractStageService
 
         $stage = new ContractStage(
             contractTenderId: $contractTender->getId(),
-            number: $input->number ?? $this->nextNumber($contractTender),
+            number: $input->number ?? $this->stages->nextNumber($contractTender->getId()),
             title: trim($input->title),
             amountMinor: $input->amountMinor,
             dueAt: $dueAt,
@@ -98,19 +99,5 @@ final readonly class ContractStageService
         if (!$contract->getCustomerId()->equals($companyId) && !$contract->getSupplierId()->equals($companyId)) {
             throw new ContractNotFoundException('Contract tender not found');
         }
-    }
-
-    private function nextNumber(ContractTender $contractTender): int
-    {
-        /** @var EntityRepository<ContractStage> $repo */
-        $repo = $this->em->getRepository(ContractStage::class);
-        $max = $repo->createQueryBuilder('s')
-            ->select('MAX(s.number)')
-            ->where('s.contractTenderId = :contractTenderId')
-            ->setParameter('contractTenderId', $contractTender->getId())
-            ->getQuery()
-            ->getSingleScalarResult();
-
-        return (int) $max + 1;
     }
 }

@@ -28,6 +28,8 @@ final readonly class GetContractUseCase implements ContractUseCase
      */
     public function execute(User $user, string $contractId): array
     {
-        return $this->presenter->single($this->contracts->get($user, $contractId));
+        // withStages: этапы исполнения нужны именно в карточке договора —
+        // в списке они не показываются и стоили бы запроса на каждую строку.
+        return $this->presenter->single($this->contracts->get($user, $contractId), withStages: true);
     }
 }

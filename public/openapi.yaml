@@ -2132,7 +2132,7 @@ paths:
                     application/json:
                         schema:
                             type: object
-                            required: [tender_id, award_id, price_net_minor]
+                            required: [tender_id, price_net_minor]
                             properties:
                                 tender_id: { type: string, format: uuid }
                                 lot_id: { type: string, format: uuid, nullable: true }
@@ -3716,7 +3716,7 @@ components:
         ContractType:
             type: object
             properties:
-                id: { type: string, format: uuid }
+                id: { type: string, description: 'Numeric identifier rendered as a string (contract types are a small platform-wide catalog, not per-tenant records)' }
                 code: { type: string }
                 name: { type: string }
                 is_single_use: { type: boolean }
@@ -3725,7 +3725,7 @@ components:
             type: object
             required: [contract_type_id, customer_id, supplier_id, scope]
             properties:
-                contract_type_id: { type: string, format: uuid }
+                contract_type_id: { type: string, description: 'ContractType.id' }
                 source: { $ref: '#/components/schemas/ContractSource' }
                 customer_id: { type: string, format: uuid }
                 supplier_id: { type: string, format: uuid }
@@ -3771,9 +3771,17 @@ components:
                 contract_id: { type: string, format: uuid }
                 tender_id: { type: string, format: uuid }
                 lot_id: { type: string, format: uuid, nullable: true }
-                award_id: { type: string, format: uuid }
+                award_id: { type: string, format: uuid, nullable: true }
                 price_net_minor: { type: integer }
                 status: { $ref: '#/components/schemas/ContractTenderStatus' }
+                stages:
+                    type: array
+                    description: |
+                        Execution stages of this binding, ordered by number. Present only in
+                        GET /contracts/{contractId}: the contract list does not show stages,
+                        and loading them per row would be an N+1. An absent key means "not
+                        requested", an empty array means "no stages".
+                    items: { $ref: '#/components/schemas/ContractStage' }
         ContractStage:
             type: object
             properties:

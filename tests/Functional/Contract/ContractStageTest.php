@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional\Contract;
 
+use App\Contract\Controller\ContractGetController;
+use App\Contract\Controller\ContractListController;
 use App\Contract\Controller\ContractStageCreateController;
 use App\Contract\Entity\Contract;
 use App\Contract\Entity\ContractTender;
@@ -162,6 +164,65 @@ final class ContractStageTest extends WebTestCase
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertSame(2, $body['number']);
+    }
+
+    /**
+     * Этапы читаются в карточке договора: до этого их можно было только создать,
+     * и после перезагрузки страницы созданный этап исчезал из виду.
+     * В списке договоров ключ stages отсутствует — там этапы не запрашиваются.
+     */
+    public function testStagesAreReadableInContractCard(): void
+    {
+        self::client();
+        $ctx = self::stageContext();
+        $stageUrl = str_replace(
+            '{contractTenderId}',
+            (string) $ctx['contractTender']->getId(),
+            ContractStageCreateController::URL,
+        );
+
+        self::request('POST', $stageUrl, $ctx['customerToken'], [
+            'title' => 'Этап 1: поставка',
+            'amount_minor' => 100_000,
+        ]);
+        self::assertResponseStatusCodeSame(201);
+
+        $contractId = (string) $ctx['contractTender']->getContract()->getId();
+        $client = self::request(
+            'GET',
+            str_replace('{contractId}', $contractId, ContractGetController::URL),
+            $ctx['customerToken'],
+        );
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsArray($body['tenders']);
+        /** @var list<array<string, mixed>> $tenders */
+        $tenders = $body['tenders'];
+        self::assertNotEmpty($tenders);
+        self::assertIsArray($tenders[0]['stages']);
+        /** @var list<array<string, mixed>> $stages */
+        $stages = $tenders[0]['stages'];
+        self::assertCount(1, $stages);
+        self::assertSame('Этап 1: поставка', $stages[0]['title']);
+        self::assertSame(1, $stages[0]['number']);
+
+        // В списке договоров этапы не отдаются: ключа нет вовсе.
+        $client = self::request('GET', ContractListController::URL, $ctx['customerToken']);
+        self::assertResponseStatusCodeSame(200);
+        $list = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($list);
+        self::assertIsArray($list['items']);
+        /** @var list<array<string, mixed>> $items */
+        $items = $list['items'];
+        foreach ($items as $item) {
+            self::assertIsArray($item['tenders']);
+            /** @var list<array<string, mixed>> $bound */
+            $bound = $item['tenders'];
+            foreach ($bound as $row) {
+                self::assertArrayNotHasKey('stages', $row);
+            }
+        }
     }
 
     public function testCreateStageWithExplicitNumber(): void
