@@ -29,6 +29,7 @@ final readonly class ComplaintPresenter
             'ground' => $complaint->getGround(),
             'document_ids' => $complaint->getDocumentIds(),
             'resolution' => $complaint->getResolution(),
+            'created_at' => $complaint->getCreatedAt()->format('Y-m-d\TH:i:s\Z'),
         ];
     }
 }

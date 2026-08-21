@@ -12,4 +12,19 @@ enum ComplaintStatusEnum: string
     case DRAFT = 'draft';
     case PENDING = 'pending';
     case RESOLVED = 'resolved';
+
+    /**
+     * Пары value => value для ChoiceType в формах (label == value).
+     *
+     * @return array<string, string>
+     */
+    public static function getValues(): array
+    {
+        $values = [];
+        foreach (self::cases() as $case) {
+            $values[$case->value] = $case->value;
+        }
+
+        return $values;
+    }
 }

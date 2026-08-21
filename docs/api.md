@@ -153,6 +153,8 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/tenders/{tenderId}/questions` | questions and answers |
 | POST | `/tenders/{tenderId}/questions` | ask a question |
 | POST | `/tenders/{tenderId}/questions/{questionId}/answer` | answer a question (customer) |
+| POST | `/tenders/{tenderId}/complaints` | file a complaint |
+| GET | `/complaints` | complaints filed by the company and against its tenders |
 
 ### Bids
 

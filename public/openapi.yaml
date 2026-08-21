@@ -1754,6 +1754,45 @@ paths:
                 '404': { $ref: '#/components/responses/NotFound' }
                 '422': { $ref: '#/components/responses/ValidationError' }
 
+    /complaints:
+        get:
+            tags: [tenders]
+            summary: Complaints visible to the actor's company
+            description: |
+                Both sides of a dispute see it: complaints filed by the company and
+                complaints filed against its own procedures. Optional filters by tender
+                and status. Access: the same `tenders.qa` permission that files a
+                complaint; the scope of "my procedures" is built from the company's own
+                tenders, never from a request parameter.
+            operationId: listComplaints
+            parameters:
+                - name: tender_id
+                  in: query
+                  required: false
+                  schema: { type: string, format: uuid }
+                - name: status
+                  in: query
+                  required: false
+                  schema: { type: string, enum: [draft, pending, resolved] }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Complaint list
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Complaint' }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /tenders/{tenderId}/complaints:
         post:
             tags: [tenders]
@@ -3607,11 +3646,13 @@ components:
                 id: { type: string, format: uuid }
                 tender_id: { type: string, format: uuid }
                 company_id: { type: string, format: uuid, description: 'Company that filed the complaint' }
+                lot_id: { type: string, format: uuid, nullable: true }
                 status: { type: string, enum: [draft, pending, resolved] }
                 text: { type: string }
                 ground: { type: string }
                 document_ids: { type: array, items: { type: string, format: uuid } }
                 resolution: { type: string, nullable: true }
+                created_at: { type: string, format: date-time }
 
         # ---------- Documents ----------
         DocumentVisibility:

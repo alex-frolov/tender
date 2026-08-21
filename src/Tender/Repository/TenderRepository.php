@@ -318,6 +318,28 @@ final class TenderRepository extends ServiceEntityRepository
     }
 
     /**
+     * Только идентификаторы тендеров компании-заказчика.
+     *
+     * Нужны потребителям, которым сами тендеры не требуются — например
+     * списку жалоб: заказчик видит жалобы на свои процедуры, а гидратировать
+     * ради этого весь каталог тендеров с лотами незачем.
+     *
+     * @return list<Uuid>
+     */
+    public function idsForTenant(Uuid $tenantId): array
+    {
+        /** @var list<array{id: Uuid}> $rows */
+        $rows = $this->createQueryBuilder('t')
+            ->select('t.id')
+            ->where('t.tenantId = :tenantId')
+            ->setParameter('tenantId', $tenantId)
+            ->getQuery()
+            ->getResult();
+
+        return array_map(static fn (array $row): Uuid => $row['id'], $rows);
+    }
+
+    /**
      * Тендеры компании актора с eager-загрузкой лотов (fix N+1 на lotCount()).
      *
      * @return list<Tender>
