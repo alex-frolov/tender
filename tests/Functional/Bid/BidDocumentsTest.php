@@ -17,6 +17,7 @@ use App\Tests\Factory\DocumentTypeFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -39,6 +40,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class BidDocumentsTest extends WebTestCase
 {
+    use TenderLotTrait;
+
     private static ?KernelBrowser $client = null;
 
     /** @var list<string> временные файлы теста */
@@ -171,6 +174,7 @@ final class BidDocumentsTest extends WebTestCase
             $token,
             [
                 'supplier_id' => (string) $supplierCompany->getId(),
+                'lot_id' => self::firstLotId($tender),
                 'part1' => ['consent' => true],
                 'price_minor' => 9000,
                 'price_basis' => 'net',
@@ -248,6 +252,7 @@ final class BidDocumentsTest extends WebTestCase
             $ctx['token'],
             [
                 'supplier_id' => $ctx['supplierId'],
+                'lot_id' => self::firstLotId($otherTender),
                 'part1' => ['consent' => true],
                 'price_minor' => 9000,
                 'price_basis' => 'net',

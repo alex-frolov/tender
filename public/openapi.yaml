@@ -1110,6 +1110,11 @@ paths:
                 answer is 409 {access_denied} and the detail names the reason
                 (contract_required | contract_expired | contract_terminated), the same
                 values as GET /tenders/{tenderId}/access.
+
+                lot_id is required whenever the tender has lots (422 validation_error
+                otherwise) and must be omitted when it has none: admission to trading is
+                matched by the (tender, lot) pair, so a lot-less bid would never admit its
+                supplier to a lot auction.
                 Access: the bids.submit permission.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
@@ -3466,7 +3471,14 @@ components:
             required: [supplier_id]
             properties:
                 supplier_id: { type: string, format: uuid }
-                lot_id: { type: string, format: uuid, nullable: true }
+                lot_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: |
+                        The lot the bid is for. Required when the tender has lots (422
+                        otherwise): admission to trading is matched by the (tender, lot)
+                        pair. Null only for a tender without lots (a single subject).
                 part1:
                     type: object
                     description: 'Consent, characteristics (confidential until opening)'

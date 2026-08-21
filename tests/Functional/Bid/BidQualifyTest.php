@@ -15,6 +15,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -36,6 +37,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class BidQualifyTest extends WebTestCase
 {
+    use TenderLotTrait;
+
     private static ?KernelBrowser $client = null;
 
     protected function tearDown(): void
@@ -140,10 +143,11 @@ final class BidQualifyTest extends WebTestCase
     /**
      * @return array<string, mixed>
      */
-    private static function bidPayload(string $supplierId): array
+    private static function bidPayload(string $supplierId, string $lotId): array
     {
         return [
             'supplier_id' => $supplierId,
+            'lot_id' => $lotId,
             'part1' => ['consent' => true, 'characteristics' => ['marker' => 'QUALIFY-'.random_int(1000, 999999)]],
             'part2_document_ids' => [],
             'price_minor' => 900000,
@@ -165,9 +169,14 @@ final class BidQualifyTest extends WebTestCase
     /**
      * Подача заявки и возврат её id.
      */
-    private static function submitBid(string $tenderId, string $supplierToken, string $supplierId): string
+    private static function submitBid(Tender $tender, string $supplierToken, string $supplierId): string
     {
-        $client = self::request('POST', self::submitUrl($tenderId), $supplierToken, self::bidPayload($supplierId));
+        $client = self::request(
+            'POST',
+            self::submitUrl((string) $tender->getId()),
+            $supplierToken,
+            self::bidPayload($supplierId, self::firstLotId($tender)),
+        );
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
@@ -182,7 +191,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         $client = self::request(
             'POST',
@@ -215,7 +224,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         $client = self::request(
             'POST',
@@ -244,7 +253,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         $client = self::request(
             'POST',
@@ -261,7 +270,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         $client = self::request(
             'POST',
@@ -278,7 +287,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         // другой заказчик пытается рассмотреть чужую заявку → 404 (tenant-изоляция)
         $other = self::customerTender();
@@ -297,7 +306,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         // отзыв заявки поставщиком → submitted → withdrawn; рассмотрение уже невозможно
         $client = self::request(
@@ -323,7 +332,7 @@ final class BidQualifyTest extends WebTestCase
         $ctx = self::customerTender();
         $tender = $ctx['tender'];
         $supplier = self::supplier();
-        $bidId = self::submitBid((string) $tender->getId(), $supplier['token'], $supplier['supplierId']);
+        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
 
         $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $agent = UserFactory::createOne([

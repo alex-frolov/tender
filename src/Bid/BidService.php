@@ -121,6 +121,17 @@ final readonly class BidService
 
         $lot = $this->tenders->resolveLot($tender->getId(), $lotId);
 
+        // Заявка «на тендер целиком» (lot_id = null) у тендера с лотами —
+        // тупик: аукцион создаётся по лоту, а допуск к торгам сверяется парой
+        // (тендер, лот) — BidRepository::isAdmitted. Такую заявку можно подать
+        // и даже допустить, но торговаться по ней нельзя: аукцион ответит
+        // «Only admitted participants». Отклоняем на входе, а не оставляем
+        // участника выяснять это на старте торгов. lot_id остаётся
+        // необязательным для тендеров без лотов (единый предмет закупки).
+        if (null === $lot && !$tender->getLots()->isEmpty()) {
+            throw new ValidationException('lot_id is required: this tender has lots');
+        }
+
         $existing = $this->bids->findDuplicate($tender->getId(), $lot?->getId(), $supplierId);
         if (null !== $existing) {
             return $this->replace($actor, $existing, $lot, $part1, $part2Ref, $priceMinor, $priceBasis, $vatRate, $ip);

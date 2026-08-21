@@ -20,6 +20,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Workflow\WorkflowInterface;
@@ -39,6 +40,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class BidOpeningTest extends KernelTestCase
 {
+    use TenderLotTrait;
+
     private EntityManagerInterface $em;
     private BidService $bidService;
     private BidOpeningService $opening;
@@ -79,7 +82,7 @@ final class BidOpeningTest extends KernelTestCase
         $bid1 = $this->bidService->submit(
             actor: $supplier1,
             tender: $tender,
-            lotId: null,
+            lotId: self::firstLotId($tender),
             part1: ['consent' => true, 'characteristics' => ['marker' => 'SECRET-A']],
             part2Ref: ['11111111-1111-4111-8111-111111111111'],
             priceMinor: 900000,
@@ -89,7 +92,7 @@ final class BidOpeningTest extends KernelTestCase
         $bid2 = $this->bidService->submit(
             actor: $supplier2,
             tender: $tender,
-            lotId: null,
+            lotId: self::firstLotId($tender),
             part1: ['consent' => true, 'characteristics' => ['marker' => 'SECRET-B']],
             part2Ref: ['22222222-2222-4222-8222-222222222222'],
             priceMinor: 850000,
@@ -175,7 +178,7 @@ final class BidOpeningTest extends KernelTestCase
         $this->bidService->submit(
             actor: $this->supplierUser(),
             tender: $tender,
-            lotId: null,
+            lotId: self::firstLotId($tender),
             part1: ['consent' => true],
             part2Ref: [],
             priceMinor: 900000,
@@ -206,7 +209,7 @@ final class BidOpeningTest extends KernelTestCase
         $bid = $this->bidService->submit(
             actor: $supplier,
             tender: $tender,
-            lotId: null,
+            lotId: self::firstLotId($tender),
             part1: ['consent' => true, 'characteristics' => ['marker' => 'WITHDRAWN-SECRET']],
             part2Ref: [],
             priceMinor: 900000,

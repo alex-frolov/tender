@@ -16,6 +16,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -34,6 +35,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class IdempotencyMiddlewareTest extends WebTestCase
 {
+    use TenderLotTrait;
+
     private static ?KernelBrowser $client = null;
 
     protected function tearDown(): void
@@ -145,10 +148,11 @@ final class IdempotencyMiddlewareTest extends WebTestCase
      *
      * @return array<string, mixed>
      */
-    private static function bidPayload(string $supplierId, int $price = 900000): array
+    private static function bidPayload(string $supplierId, string $lotId, int $price = 900000): array
     {
         return [
             'supplier_id' => $supplierId,
+            'lot_id' => $lotId,
             'part1' => ['consent' => true, 'characteristics' => ['marker' => 'FIXED']],
             'part2_document_ids' => ['11111111-1111-4111-8111-111111111111'],
             'price_minor' => $price,
@@ -163,7 +167,7 @@ final class IdempotencyMiddlewareTest extends WebTestCase
         $tender = self::acceptingBidsTender();
         $supplier = self::supplier();
         $url = self::submitUrl((string) $tender->getId());
-        $payload = self::bidPayload($supplier['supplierId']);
+        $payload = self::bidPayload($supplier['supplierId'], self::firstLotId($tender));
         $key = 'key-'.random_int(1000, 999999);
 
         // 1. первый запрос — создаёт заявку (201)
@@ -198,11 +202,11 @@ final class IdempotencyMiddlewareTest extends WebTestCase
         $url = self::submitUrl((string) $tender->getId());
         $key = 'key-conflict-'.random_int(1000, 999999);
 
-        self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], 900000), $key);
+        self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender), 900000), $key);
         self::assertResponseStatusCodeSame(201);
 
         // тот же ключ, другой payload (цена) → 409 idempotency_conflict
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], 850000), $key);
+        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender), 850000), $key);
         self::assertResponseStatusCodeSame(409);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -233,7 +237,7 @@ final class IdempotencyMiddlewareTest extends WebTestCase
         $em->flush();
 
         // запрос с этим ключом → выполняется как новый (201, без replay/конфликта)
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId']), $key);
+        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)), $key);
         self::assertResponseStatusCodeSame(201);
 
         // истёкшая запись удалена, создана новая
@@ -249,7 +253,7 @@ final class IdempotencyMiddlewareTest extends WebTestCase
         $supplier = self::supplier();
         $url = self::submitUrl((string) $tender->getId());
 
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId']));
+        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
         self::assertResponseStatusCodeSame(201);
     }
 }
