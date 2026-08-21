@@ -150,6 +150,9 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/tenders/{tenderId}/cancel` | cancel with reason |
 | GET | `/tenders/{tenderId}/access` | check participation access |
 | POST | `/tenders/{tenderId}/rating` | rate closed tender |
+| GET | `/tenders/{tenderId}/questions` | questions and answers |
+| POST | `/tenders/{tenderId}/questions` | ask a question |
+| POST | `/tenders/{tenderId}/questions/{questionId}/answer` | answer a question (customer) |
 
 ### Bids
 

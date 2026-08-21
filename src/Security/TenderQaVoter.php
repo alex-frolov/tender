@@ -13,16 +13,19 @@ use Symfony\Component\Security\Core\Authorization\Voter\Voter;
 /**
  * Voter прав на вопросы/ответы по тендеру (FR-1.2.9).
  *
- * Вопросы и жалобы — право tenders.qa (группа customer, каталог
+ * Вопросы, ответы и жалобы — право tenders.qa (группа customer, каталог
  * domain/permissions.md): admin — всегда, manager/agent — по настройке.
  * Subject не используется: принадлежность лота/тендера проверяет сервис
- * (TenderQuestionService через TenderReadService).
+ * (TenderQuestionService через TenderReadService). Там же проверяется сторона
+ * для ANSWER: отвечает только заказчик процедуры, тогда как спрашивают
+ * этим же правом и участники.
  *
  * @extends Voter<string, null>
  */
 final class TenderQaVoter extends Voter
 {
     final public const string ASK = 'TenderQaAsk';
+    final public const string ANSWER = 'TenderQaAnswer';
     final public const string LIST = 'TenderQaList';
     final public const string FILE_COMPLAINT = 'TenderQaFileComplaint';
 
@@ -31,6 +34,7 @@ final class TenderQaVoter extends Voter
     /** @var array<string, string> атрибут → permission code */
     private const array CODES = [
         self::ASK => self::CODE,
+        self::ANSWER => self::CODE,
         self::LIST => self::CODE,
         self::FILE_COMPLAINT => self::CODE,
     ];

@@ -1713,6 +1713,47 @@ paths:
                         application/json:
                             schema: { $ref: '#/components/schemas/Question' }
 
+    /tenders/{tenderId}/questions/{questionId}/answer:
+        post:
+            tags: [tenders]
+            summary: Answer a tender question (customer)
+            description: |
+                Publishes the customer's clarification: the answer and its publication
+                time are set together, so a question counts as clarified exactly when
+                participants can see the answer. Answering again is allowed — a
+                clarification can be corrected, and `published_at` moves with it.
+
+                Access: the `tenders.qa` permission (participants ask with the same one),
+                plus the party check in the service — only the tender's customer may
+                answer. A tender of another company and a question from another tender
+                are indistinguishable to the caller: both answer 404.
+            operationId: answerQuestion
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+                - name: questionId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [answer]
+                            properties:
+                                answer: { type: string, minLength: 1, maxLength: 4000 }
+            responses:
+                '200':
+                    description: Answer published
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Question' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /tenders/{tenderId}/complaints:
         post:
             tags: [tenders]
