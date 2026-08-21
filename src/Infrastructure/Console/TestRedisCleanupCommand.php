@@ -21,12 +21,14 @@ use Symfony\Component\Console\Output\OutputInterface;
  * - ctr:* — Redis-счётчики аналитики (CounterService, ARCH-9): дельта между
  *   снапшотами, после сброса test-БД не имеют смысла (восстанавливаются из
  *   событий);
- * - role_permissions:enabled?* — кэш матрицы прав ПАРАЛЛЕЛЬНЫХ воркеров
- *   (RolePermissionCache, суффикс = TEST_TOKEN): каждый прогон оставляет по
- *   ключу на процесс. Шаблон намеренно требует символ после `enabled` —
- *   ключ без суффикса принадлежит dev-окружению того же Redis и не трогается.
+ * - role_permissions:enabled* — кэш матрицы прав (RolePermissionCache, суффикс
+ *   = TEST_TOKEN): параллельный прогон оставляет по ключу на воркера,
+ *   последовательный — один ключ без суффикса. Шаблон берёт и его: dev-ключ
+ *   лежит в другой БД Redis (параметр redis_db: тесты — 1, dev — 0), поэтому
+ *   исключать безсуффиксный ключ, как раньше, больше не нужно.
  *
- * Вызывается в `composer test:prepare` ПОСЛЕ сброса test-БД.
+ * Вызывается в `composer test:prepare` ПОСЛЕ сброса test-БД — в тестовой БД
+ * Redis (redis_db=1), ключи dev-стека командой не затрагиваются.
  */
 #[AsCommand(name: 'app:test:redis-cleanup')]
 final class TestRedisCleanupCommand extends Command
@@ -45,7 +47,7 @@ final class TestRedisCleanupCommand extends Command
     {
         $removed = $this->removeByPattern('auction:*')
             + $this->removeByPattern('ctr:*')
-            + $this->removeByPattern('role_permissions:enabled?*');
+            + $this->removeByPattern('role_permissions:enabled*');
         $output->writeln(\sprintf('Redis test keys removed: %d', $removed));
 
         return Command::SUCCESS;
