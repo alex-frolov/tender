@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace App\Contract\UseCase;
 
 use App\Contract\ClaimService;
-use App\Contract\Entity\Claim;
 use App\Contract\Input\ResolveClaimInput;
+use App\Contract\Presenter\ClaimPresenter;
 use App\Iam\Entity\User;
 
 /**
@@ -19,8 +19,10 @@ use App\Iam\Entity\User;
  */
 final readonly class ResolveClaimUseCase implements ContractUseCase
 {
-    public function __construct(private ClaimService $claims)
-    {
+    public function __construct(
+        private ClaimService $claims,
+        private ClaimPresenter $presenter,
+    ) {
     }
 
     /**
@@ -36,14 +38,6 @@ final readonly class ResolveClaimUseCase implements ContractUseCase
             $ip,
         );
 
-        return [
-            'id' => (string) $claim->getId(),
-            'contract_id' => (string) $claim->getContractId(),
-            'stage' => $claim->getStage()->value,
-            'amount_minor' => $claim->getAmountMinor(),
-            'status' => $claim->getStatus()->value,
-            'resolution' => $claim->getResolution(),
-            'resolved_at' => $claim->getResolvedAt()?->format('Y-m-d\TH:i:s\Z'),
-        ];
+        return $this->presenter->single($claim);
     }
 }

@@ -1,0 +1,54 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Contract\Controller;
+
+use App\Contract\Form\ClaimListFiltersType;
+use App\Contract\Input\ClaimListFiltersInput;
+use App\Contract\UseCase\ListClaimsUseCase;
+use App\Controller\AbstractBaseController;
+use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Shared\Form\PaginatorForm;
+use App\Shared\Input\Paginator;
+use Symfony\Component\HttpFoundation\JsonResponse;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Http\Attribute\IsGranted;
+
+/**
+ * Список претензий компании актора (GET /claims): и как заказчика, и как
+ * исполнителя. Необязательные фильтры ?contract_id= и ?status= — форма
+ * ClaimListFiltersType.
+ *
+ * Доступ: любой сотрудник компании (agent — минимальная роль): претензия —
+ * часть исполнения договора, её видят обе стороны; выставляет и урегулирует
+ * её только заказчик (ClaimVoter на соответствующих контроллерах).
+ * Party-фильтрация — в ClaimService (чужие претензии не отдаются).
+ * Контракт: api/openapi.yaml (/claims GET).
+ */
+final class ClaimListController extends AbstractBaseController
+{
+    public const string URL = '/api/v1/claims';
+
+    #[Route(self::URL, name: 'claim_list', methods: [Request::METHOD_GET])]
+    #[IsGranted(UserRoleEnum::AGENT->value)]
+    public function list(Request $request, ListClaimsUseCase $useCase): JsonResponse
+    {
+        $user = $this->currentUser($request);
+
+        $filterForm = $this->formQuery(ClaimListFiltersType::class, $request);
+        /** @var ClaimListFiltersInput $filter */
+        $filter = $filterForm->getData();
+
+        $paginatorForm = $this->formQuery(PaginatorForm::class, $request);
+        /** @var Paginator $paginator */
+        $paginator = $paginatorForm->getData();
+
+        return $this->json($useCase->execute(
+            user: $user,
+            filter: $filter,
+            paginator: $paginator,
+        ));
+    }
+}

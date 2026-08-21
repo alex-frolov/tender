@@ -63,6 +63,25 @@ final readonly class ClaimService
     }
 
     /**
+     * Претензии, видимые компании актора: и как заказчику, и как исполнителю
+     * (обе стороны разбирательства видят его целиком). Чужие претензии
+     * не отдаются — party-фильтрация выполняется здесь, а не в контроллере.
+     *
+     * @return list<Claim>
+     *
+     * @throws ConflictException если у актора нет компании
+     */
+    public function list(User $actor, ?string $contractId = null, ?string $status = null): array
+    {
+        $companyId = $actor->getCompanyId();
+        if (null === $companyId) {
+            throw new ConflictException('Actor has no company');
+        }
+
+        return $this->claims->listForCompany($companyId, $contractId, $status);
+    }
+
+    /**
      * Создание претензии (T29/T33/T35). Только заказчик. Договор и аукцион
      * должны быть в стадии, соответствующей stage.
      *

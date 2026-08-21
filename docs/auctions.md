@@ -16,7 +16,13 @@ POST /auctions/{id}/bids
 AuctionBidController  (#[IsGranted(AuctionVoter::BID)])
    │  validate form (price_minor) · Idempotency-Key
    ▼
-PlaceBidUseCase ──► AuctionBidService::placeBid()
+PlaceBidUseCase
+   │  actor company · price_minor present
+   │  closed tender (contract_holders): active framework contract
+   │      (ContractAccessChecker, 409 access_denied) — re-checked here because
+   │      the contract may have ended after the bid was admitted
+   ▼
+AuctionBidService::placeBid()
    │  dispatch by type/step-mode
    ▼
 transactionalBid():  BEGIN
@@ -157,6 +163,11 @@ admitted participant.
 - `auctions:recover` rebuilds Redis snapshots from PostgreSQL and **auto-pauses** any TRADE auction
   whose heartbeat is missing or older than the timeout.
 - `auctions:state:rebuild` rebuilds snapshots only.
+- `auctions:finish-expired` closes trading whose window has passed (TRADE, `planned_end_at <= now`)
+  by applying `finish` as the system actor. Without it the timer expiring changes nothing: the
+  auction stays in TRADE (and heartbeat keeps refreshing it), because `finish` is otherwise only
+  triggered by the customer. Bids placed after `planned_end_at` are rejected with
+  `auction_window_closed` — the status alone is not enough to decide whether the window is open.
 
 ```
 TRADE ── heartbeat timeout (idle > AUCTION_HEARTBEAT_TIMEOUT) ──► PAUSED ── resume ──► TRADE

@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace App\Contract;
 
 use App\Contract\Entity\Contract;
+use App\Contract\Entity\ContractStage;
 use App\Contract\Entity\ContractType;
+use App\Contract\Presenter\ContractStagePresenter;
+use App\Contract\Repository\ContractStageRepository;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * Публичное представление договора (openapi schema Contract, AM-9).
@@ -14,6 +18,12 @@ use App\Contract\Entity\ContractType;
  */
 final readonly class ContractPresenter
 {
+    public function __construct(
+        private ContractStageRepository $stages,
+        private ContractStagePresenter $stagePresenter,
+    ) {
+    }
+
     /**
      * Тип договора (openapi schema ContractType): is_single_use — производная
      * от default_scope (FR-1.4.6); template_ref в ядре не хранится.
@@ -32,13 +42,34 @@ final readonly class ContractPresenter
     }
 
     /**
+     * @param bool $withStages включать этапы исполнения по каждой привязке.
+     *                         Только для карточки договора: в списке договоров
+     *                         этапы не показываются, а выборка на каждый договор
+     *                         дала бы N+1
+     *
      * @return array<string, mixed>
      */
-    public function single(Contract $contract): array
+    public function single(Contract $contract, bool $withStages = false): array
     {
-        $tenders = [];
+        $bound = [];
         foreach ($contract->getTenders() as $tender) {
-            $tenders[] = $this->tender($tender);
+            $bound[] = $tender;
+        }
+
+        // Этапы берутся одним запросом на все привязки договора.
+        $stagesByTender = $withStages
+            ? $this->stages->listForContractTenders(array_map(
+                static fn (Entity\ContractTender $t): Uuid => $t->getId(),
+                $bound,
+            ))
+            : null;
+
+        $tenders = [];
+        foreach ($bound as $tender) {
+            $tenders[] = $this->tender(
+                $tender,
+                null === $stagesByTender ? null : ($stagesByTender[(string) $tender->getId()] ?? []),
+            );
         }
 
         return [
@@ -69,11 +100,16 @@ final readonly class ContractPresenter
     /**
      * contract_tenders (openapi ContractTender): привязка тендера к договору.
      *
+     * @param list<ContractStage>|null $stages этапы привязки; null — не запрашивались
+     *                                         (список договоров), и ключ `stages`
+     *                                         в ответе отсутствует: пустой массив
+     *                                         читался бы как «этапов нет»
+     *
      * @return array<string, mixed>
      */
-    public function tender(Entity\ContractTender $tender): array
+    public function tender(Entity\ContractTender $tender, ?array $stages = null): array
     {
-        return [
+        $payload = [
             'id' => (string) $tender->getId(),
             'contract_id' => (string) $tender->getContract()->getId(),
             'tender_id' => (string) $tender->getTenderId(),
@@ -82,5 +118,14 @@ final readonly class ContractPresenter
             'price_net_minor' => $tender->getPriceNetMinor(),
             'status' => $tender->getStatus()->value,
         ];
+
+        if (null !== $stages) {
+            $payload['stages'] = array_map(
+                fn (ContractStage $stage): array => $this->stagePresenter->single($stage),
+                $stages,
+            );
+        }
+
+        return $payload;
     }
 }

@@ -16,6 +16,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -34,6 +35,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class BidFlowTest extends WebTestCase
 {
+    use TenderLotTrait;
+
     private static ?KernelBrowser $client = null;
 
     protected function tearDown(): void
@@ -143,10 +146,11 @@ final class BidFlowTest extends WebTestCase
     /**
      * @return array<string, mixed>
      */
-    private static function bidPayload(string $supplierId, int $price = 900000): array
+    private static function bidPayload(string $supplierId, string $lotId, int $price = 900000): array
     {
         return [
             'supplier_id' => $supplierId,
+            'lot_id' => $lotId,
             'part1' => ['consent' => true, 'characteristics' => ['marker' => 'SECRET-'.random_int(1000, 999999)]],
             'part2_document_ids' => ['11111111-1111-4111-8111-111111111111'],
             'price_minor' => $price,
@@ -163,7 +167,7 @@ final class BidFlowTest extends WebTestCase
         $url = self::submitUrl((string) $tender->getId());
 
         // 1. подача заявки (FR-1.2.1): 201, статус submitted, содержимое скрыто
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId']));
+        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
@@ -175,7 +179,7 @@ final class BidFlowTest extends WebTestCase
         self::assertIsString($bidId);
 
         // 2. повторная подача на тот же лот до конца приёма = замена (FR-1.2.5)
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], 850000));
+        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender), 850000));
         self::assertResponseStatusCodeSame(201);
         $replaced = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($replaced);
@@ -203,7 +207,7 @@ final class BidFlowTest extends WebTestCase
         $workflow->apply($tender, TenderStatusTransition::CANCEL->value);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
 
-        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $supplier['token'], self::bidPayload($supplier['supplierId']));
+        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
         self::assertResponseStatusCodeSame(409);
     }
 
@@ -214,7 +218,7 @@ final class BidFlowTest extends WebTestCase
         $supplier = self::supplier();
         $url = self::submitUrl((string) $tender->getId());
 
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId']));
+        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
@@ -231,7 +235,7 @@ final class BidFlowTest extends WebTestCase
         $owner = self::supplier();
         $other = self::supplier();
 
-        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $owner['token'], self::bidPayload($owner['supplierId']));
+        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $owner['token'], self::bidPayload($owner['supplierId'], self::firstLotId($tender)));
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
@@ -254,7 +258,7 @@ final class BidFlowTest extends WebTestCase
         ]);
         $token = self::loginAs((string) $agent->getEmail());
 
-        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $token, self::bidPayload((string) $company->getId()));
+        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $token, self::bidPayload((string) $company->getId(), self::firstLotId($tender)));
         self::assertResponseStatusCodeSame(403);
     }
 

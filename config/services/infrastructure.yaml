@@ -8,6 +8,13 @@ parameters:
     # (синтаксис env(default:...) требует ИМЯ параметра, не литерал).
     app_version_default: 'dev'
 
+    # Номер БД Redis. Dev/prod — 0; тестовое окружение переключается на 1
+    # (when@test ниже), иначе прогон тестов делит keyspace с поднятым
+    # dev-стеком: снапшот-джоб планировщика (analytics:counters:snapshot)
+    # сканирует ctr:* ВСЕХ тенантов и удаляет ключи после переноса в PG —
+    # счётчики теста исчезали между инкрементом и проверкой.
+    redis_db: 0
+
 services:
     _defaults:
         autowire: true
@@ -25,6 +32,7 @@ services:
         factory: ['App\Infrastructure\Redis\RedisFactory', 'create']
         arguments:
             - '%env(REDIS_URL)%'
+            - '%redis_db%'
         lazy: true
 
     # AMQP-соединение (RabbitMQ; messenger async-транспорт)
@@ -44,3 +52,11 @@ services:
     App\Infrastructure\Http\MetricsController:
         arguments:
             $version: '%env(default:app_version_default:APP_VERSION)%'
+
+when@test:
+    parameters:
+        # Отдельная БД Redis для тестов — тот же приём, что dbname_suffix
+        # `_test` у Doctrine (config/packages/doctrine.yaml). REDIS_URL задан
+        # переменной окружения контейнера, поэтому `.env.test` его не
+        # перекрывает — переключаем параметром.
+        redis_db: 1

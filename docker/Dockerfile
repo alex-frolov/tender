@@ -92,6 +92,10 @@ RUN set -eux; \
 # 6) Composer
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
+# 7) Лимиты загрузки файлов (см. комментарий в самом файле): дефолты PHP
+# обрезали документы раньше проверок приложения.
+COPY docker/php/uploads.ini /usr/local/etc/php/conf.d/zz-uploads.ini
+
 WORKDIR /var/www
 
 # Healthcheck'и задаются в compose-файлах на уровне сервиса (php-fpm не отвечает

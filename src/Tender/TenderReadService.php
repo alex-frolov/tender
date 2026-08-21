@@ -72,4 +72,14 @@ interface TenderReadService
      * сущность тендера при этом не возвращается (границы модулей, rule 6).
      */
     public function belongsToCompany(Uuid $tenderId, Uuid $companyId): bool;
+
+    /**
+     * Идентификаторы тендеров компании-заказчика.
+     *
+     * Для потребителей, которым нужен только охват «мои процедуры» (список
+     * жалоб): сами тендеры при этом не гидратируются.
+     *
+     * @return list<Uuid>
+     */
+    public function idsForCompany(Uuid $companyId): array;
 }

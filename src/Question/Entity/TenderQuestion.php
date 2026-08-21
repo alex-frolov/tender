@@ -50,6 +50,17 @@ class TenderQuestion
         $this->createdAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
     }
 
+    /**
+     * Публикация ответа заказчика (FR-1.2.9): ответ и момент публикации
+     * проставляются вместе — вопрос считается разъяснённым ровно тогда,
+     * когда ответ стал виден участникам.
+     */
+    public function publishAnswer(string $answer, \DateTimeImmutable $now): void
+    {
+        $this->answer = $answer;
+        $this->publishedAt = $now;
+    }
+
     public function getId(): Uuid
     {
         return $this->id;

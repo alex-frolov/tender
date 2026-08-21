@@ -16,6 +16,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
@@ -34,6 +35,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class BidOpeningFlowTest extends WebTestCase
 {
+    use TenderLotTrait;
+
     private static ?KernelBrowser $client = null;
 
     protected function tearDown(): void
@@ -145,10 +148,11 @@ final class BidOpeningFlowTest extends WebTestCase
     /**
      * @return array<string, mixed>
      */
-    private static function bidPayload(string $supplierId, string $marker, int $price): array
+    private static function bidPayload(string $supplierId, string $lotId, string $marker, int $price): array
     {
         return [
             'supplier_id' => $supplierId,
+            'lot_id' => $lotId,
             'part1' => ['consent' => true, 'characteristics' => ['marker' => $marker]],
             'part2_document_ids' => [],
             'price_minor' => $price,
@@ -168,9 +172,9 @@ final class BidOpeningFlowTest extends WebTestCase
         $s2 = self::supplier();
         $url = self::submitUrl((string) $tender->getId());
 
-        self::request('POST', $url, $s1['token'], self::bidPayload($s1['supplierId'], 'MARK-A', 900000));
+        self::request('POST', $url, $s1['token'], self::bidPayload($s1['supplierId'], self::firstLotId($tender), 'MARK-A', 900000));
         self::assertResponseStatusCodeSame(201);
-        self::request('POST', $url, $s2['token'], self::bidPayload($s2['supplierId'], 'MARK-B', 850000));
+        self::request('POST', $url, $s2['token'], self::bidPayload($s2['supplierId'], self::firstLotId($tender), 'MARK-B', 850000));
         self::assertResponseStatusCodeSame(201);
 
         // --- до вскрытия: только метаданные (FR-1.2.2) ---

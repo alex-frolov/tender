@@ -132,6 +132,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/users` | list users (admin) |
 | PATCH | `/users/{userId}` | update user (admin) |
 | DELETE | `/users/{userId}` | soft-delete user (admin) |
+| GET | `/companies/search` | find a counterparty by name or INN (approved companies only) |
 | POST | `/companies/{companyId}/verify` | approve/reject/suspend company (platform admin) |
 | GET | `/permissions` | permission catalog (platform admin) |
 | GET | `/role-permissions` | role permission matrix (platform admin) |
@@ -150,6 +151,11 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/tenders/{tenderId}/cancel` | cancel with reason |
 | GET | `/tenders/{tenderId}/access` | check participation access |
 | POST | `/tenders/{tenderId}/rating` | rate closed tender |
+| GET | `/tenders/{tenderId}/questions` | questions and answers |
+| POST | `/tenders/{tenderId}/questions` | ask a question |
+| POST | `/tenders/{tenderId}/questions/{questionId}/answer` | answer a question (customer) |
+| POST | `/tenders/{tenderId}/complaints` | file a complaint |
+| GET | `/complaints` | complaints filed by the company and against its tenders |
 
 ### Bids
 
@@ -159,6 +165,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/tenders/{tenderId}/bids` | list bids (visibility per opening) |
 | POST | `/bids/{bidId}/qualification` | admit / reject a bid |
 | POST | `/bids/{bidId}/withdraw` | withdraw a bid |
+| POST | `/bids/{bidId}/documents` | set the documents of bid part 2 |
 
 ### Auctions
 
@@ -191,8 +198,10 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/contracts/{contractId}/tenders` | bind a tender |
 | GET | `/contract-types` | list contract types |
 | POST | `/contract-types` | create contract type |
+| GET | `/claims` | list claims of the actor's company (both sides) |
 | POST | `/claims` | create a claim |
 | POST | `/claims/{claimId}/resolve` | resolve a claim |
+| GET | `/securities` | list security deposits of the actor's company |
 | POST | `/securities/{securityId}/forfeit` | forfeit security |
 | POST | `/securities/{securityId}/release` | release security |
 
@@ -200,6 +209,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/documents` | documents of one entity (entity_type + entity_id) |
 | POST | `/documents` | upload document (multipart) |
 | GET | `/documents/{documentId}` | get document metadata |
 | GET | `/documents/{documentId}/download` | download current version |

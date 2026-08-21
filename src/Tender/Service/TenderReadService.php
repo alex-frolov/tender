@@ -129,4 +129,9 @@ final readonly class TenderReadService implements TenderReadServiceContract
     {
         return $this->tenders->belongsToCompany($tenderId, $companyId);
     }
+
+    public function idsForCompany(Uuid $companyId): array
+    {
+        return $this->tenders->idsForTenant($companyId);
+    }
 }

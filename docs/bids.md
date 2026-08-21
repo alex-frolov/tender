@@ -33,7 +33,7 @@ plaintext payload ──json_encode──► json ──secretbox(nonce, key)─
 
 ## Bid entity & parts
 
-`Bid` columns: `tender_id`, `lot_id` (nullable for lot-less bids), `supplier_id`, `status`,
+`Bid` columns: `tender_id`, `lot_id` (null only for a tender without lots), `supplier_id`, `status`,
 `encrypted_payload`, `decrypted_payload` (nullable until opening), `submitted_at`, `evaluated_at`,
 `decision_reason`.
 
@@ -52,8 +52,9 @@ BidSubmitController (#[IsGranted(BidVoter::SUBMIT)])
 SubmitBidUseCase → BidService::submit()
    │  requireCompany · declared supplier must match actor company
    │  company must be active (CompanyAccessGuard)
-   │  contract_holders access: active framework contract required
+   │  contract_holders access: active framework contract required (409 access_denied)
    │  tender must be ACCEPTING_BIDS and bids_end not passed
+   │  lot_id required when the tender has lots (422)
    │  price ≥ 0 (minor units)
    │  duplicate check → if existing bid, replace instead
    ▼
@@ -64,6 +65,12 @@ BidTransaction::commitSubmitted   persist + flush + audit bid.submitted
 
 Re-submission before the deadline **replaces** the existing bid: content is
 re-encrypted and the status returns to `submitted`.
+
+A bid on a tender that has lots must name the lot. Admission to trading is looked
+up by the `(tender, lot, supplier)` triple (`BidRepository::isAdmitted`), so a
+lot-less bid on such a tender could be submitted and even admitted, yet its
+supplier would be turned away at the auction with «Only admitted participants».
+`BidService::submit()` rejects it up front instead (422).
 
 ## Withdrawal
 

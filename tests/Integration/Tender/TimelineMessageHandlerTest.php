@@ -17,6 +17,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Workflow\WorkflowInterface;
@@ -30,6 +31,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  */
 final class TimelineMessageHandlerTest extends KernelTestCase
 {
+    use TenderLotTrait;
+
     private EntityManagerInterface $em;
     private TimelineMessageHandler $handler;
     private WorkflowInterface $tenderWorkflow;
@@ -123,7 +126,7 @@ final class TimelineMessageHandlerTest extends KernelTestCase
         $bid = $bidService->submit(
             actor: $user,
             tender: $tender,
-            lotId: null,
+            lotId: self::firstLotId($tender),
             part1: ['consent' => true, 'characteristics' => ['marker' => 'AUTO-OPENED']],
             part2Ref: [],
             priceMinor: 900000,
@@ -166,7 +169,7 @@ final class TimelineMessageHandlerTest extends KernelTestCase
         $bidService->submit(
             actor: $user,
             tender: $tender,
-            lotId: null,
+            lotId: self::firstLotId($tender),
             part1: ['consent' => true],
             part2Ref: [],
             priceMinor: 900000,

@@ -555,6 +555,49 @@ paths:
                             schema: { $ref: '#/components/schemas/User' }
 
     # ================= COMPANIES =================
+    /companies/search:
+        get:
+            tags: [companies]
+            summary: Find a counterparty company by name or INN
+            description: |
+                Suggestions for choosing a counterparty where a foreign `company_id` has to
+                go into a request — creating a contract, binding a procedure. Without it the
+                identifier had to be learned outside the interface: the moderation registry
+                (GET /admin/companies) is superadmin-only.
+
+                Returns approved companies only, in a deliberately narrow shape (id, legal
+                name, INN, type): address, contacts, KPP and OGRN are company details and
+                are not needed to pick a counterparty. `q` is required and at least two
+                characters long — an empty query would be a registry listing, which this
+                endpoint is not.
+
+                Access: any employee of a company (agent is the minimum role).
+            operationId: searchCompanies
+            parameters:
+                - name: q
+                  in: query
+                  required: true
+                  schema: { type: string, minLength: 2, maxLength: 200 }
+                  description: Substring of the legal name or INN, case-insensitive
+                - name: limit
+                  in: query
+                  required: false
+                  schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+            responses:
+                '200':
+                    description: Matching companies
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/CompanyBrief' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /companies:
         get:
             tags: [companies]
@@ -689,7 +732,7 @@ paths:
                     public even for companies that were entitled to take part.
 
                 Visibility does not grant participation: submitting a bid to a closed tender
-                still requires the contract (409 contract_required) — see
+                still requires the contract (409 access_denied) — see
                 GET /tenders/{tenderId}/access.
                 Access: tenders.board.view (all company roles).
             parameters:
@@ -1058,6 +1101,21 @@ paths:
             tags: [bids]
             summary: Submit a bid; re-submitting for a lot before the deadline replaces it
             operationId: submitBid
+            description: |
+                Submitting for a lot again before the deadline replaces the previous bid
+                (FR-1.2.5); the content is encrypted until opening (FR-1.2.2).
+
+                A closed tender (access_type=contract_holders) additionally requires an
+                active multi_use contract with the customer (FR-1.5.14): without it the
+                answer is 409 {access_denied} and the detail names the reason
+                (contract_required | contract_expired | contract_terminated), the same
+                values as GET /tenders/{tenderId}/access.
+
+                lot_id is required whenever the tender has lots (422 validation_error
+                otherwise) and must be omitted when it has none: admission to trading is
+                matched by the (tender, lot) pair, so a lot-less bid would never admit its
+                supplier to a lot auction.
+                Access: the bids.submit permission.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
                 - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -1073,7 +1131,9 @@ paths:
                         application/json:
                             schema: { $ref: '#/components/schemas/Bid' }
                 '404': { $ref: '#/components/responses/NotFound' }
-                '409': { $ref: '#/components/responses/Conflict' }
+                '409':
+                    description: 'Not accepting bids, or a closed tender without a contract (code: state_transition_forbidden | access_denied)'
+                    $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
 
     /bids/{bidId}/withdraw:
@@ -1099,6 +1159,50 @@ paths:
                     content:
                         application/json:
                             schema: { $ref: '#/components/schemas/Bid' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /bids/{bidId}/documents:
+        post:
+            tags: [bids]
+            summary: Set the documents of bid part 2
+            description: |
+                Documents are attached to the `bid` entity, so they can only exist once the
+                bid has been submitted — there is nothing to attach them to beforehand. That
+                is why the composition of part 2 is set by its own call rather than at
+                submission: re-submitting replaces the payload as a whole (part 1, price),
+                and the author cannot read their own payload back before opening, since it is
+                encrypted (FR-1.2.2). Adding one file would mean re-entering everything.
+
+                The list replaces the previous one: part 2 is the set of attachments, not a
+                log of additions; an empty array clears it. Every document must belong to
+                this bid, otherwise the customer would not be able to open it after opening.
+
+                Access: the `bids.submit` permission — whoever submits the bid decides its
+                attachments. Only the bid's own supplier, and only while bids are being
+                accepted.
+            operationId: attachBidDocuments
+            parameters:
+                - { $ref: '#/components/parameters/BidId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                document_ids:
+                                    type: array
+                                    items: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Bid metadata (contents stay encrypted until opening)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Bid' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409': { $ref: '#/components/responses/Conflict' }
                 '422': { $ref: '#/components/responses/ValidationError' }
@@ -1321,6 +1425,9 @@ paths:
                 bid fixes start_price_minor (price discovery, is_first_price=true).
                 Admitted participants only and only in TRADE;
                 idempotency — the Idempotency-Key header.
+                For a closed tender (access_type=contract_holders) the contract is
+                re-checked here, not only at bid submission: it may have been terminated
+                or have expired after the admission — 409 {access_denied}.
                 Access: the auction.bid permission (admin/manager; agent — 403).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
@@ -1340,7 +1447,7 @@ paths:
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade)'
+                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed, access_denied)'
                     $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
                 '429': { $ref: '#/components/responses/RateLimited' }
@@ -1587,6 +1694,44 @@ paths:
                     $ref: '#/components/responses/Conflict'
 
     # ================= SECURITY DEPOSIT =================
+    /securities:
+        get:
+            tags: [contracts]
+            summary: Security deposits of the actor's company (own procedures and own deposits)
+            description: |
+                Returns deposits where the actor's company is the customer (deposits on its
+                procedures) or the performer (deposits it provided). Optional filters by kind
+                (bid/contract) and status. Access: any employee of the company (agent is the
+                minimum role) — releasing and forfeiting stay behind their own permissions.
+            operationId: listSecurities
+            parameters:
+                - name: kind
+                  in: query
+                  required: false
+                  schema: { type: string, enum: [bid, contract] }
+                - name: status
+                  in: query
+                  required: false
+                  schema: { $ref: '#/components/schemas/SecurityStatus' }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Security deposit list
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Security' }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /securities/{securityId}/release:
         post:
             tags: [contracts]
@@ -1675,6 +1820,86 @@ paths:
                         application/json:
                             schema: { $ref: '#/components/schemas/Question' }
 
+    /tenders/{tenderId}/questions/{questionId}/answer:
+        post:
+            tags: [tenders]
+            summary: Answer a tender question (customer)
+            description: |
+                Publishes the customer's clarification: the answer and its publication
+                time are set together, so a question counts as clarified exactly when
+                participants can see the answer. Answering again is allowed — a
+                clarification can be corrected, and `published_at` moves with it.
+
+                Access: the `tenders.qa` permission (participants ask with the same one),
+                plus the party check in the service — only the tender's customer may
+                answer. A tender of another company and a question from another tender
+                are indistinguishable to the caller: both answer 404.
+            operationId: answerQuestion
+            parameters:
+                - { $ref: '#/components/parameters/TenderId' }
+                - name: questionId
+                  in: path
+                  required: true
+                  schema: { type: string, format: uuid }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            required: [answer]
+                            properties:
+                                answer: { type: string, minLength: 1, maxLength: 4000 }
+            responses:
+                '200':
+                    description: Answer published
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Question' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
+    /complaints:
+        get:
+            tags: [tenders]
+            summary: Complaints visible to the actor's company
+            description: |
+                Both sides of a dispute see it: complaints filed by the company and
+                complaints filed against its own procedures. Optional filters by tender
+                and status. Access: the same `tenders.qa` permission that files a
+                complaint; the scope of "my procedures" is built from the company's own
+                tenders, never from a request parameter.
+            operationId: listComplaints
+            parameters:
+                - name: tender_id
+                  in: query
+                  required: false
+                  schema: { type: string, format: uuid }
+                - name: status
+                  in: query
+                  required: false
+                  schema: { type: string, enum: [draft, pending, resolved] }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Complaint list
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Complaint' }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /tenders/{tenderId}/complaints:
         post:
             tags: [tenders]
@@ -1703,6 +1928,43 @@ paths:
 
     # ================= DOCUMENTS =================
     /documents:
+        get:
+            tags: [documents]
+            summary: Documents attached to one entity
+            description: |
+                Documents of a tender, lot, bid, contract or claim, newest first. Both
+                parameters are required: documents exist only in the context of an entity,
+                and a platform-wide listing would be a hole in tenant isolation.
+
+                Visibility (FR-1.2.6) is applied in the query, not after it: the actor's own
+                company sees all of its documents, another company's are visible only when
+                public. Access: the `tenders.board.view` permission, same as reading a single
+                document.
+            operationId: listDocuments
+            parameters:
+                - name: entity_type
+                  in: query
+                  required: true
+                  schema: { type: string, enum: [tender, lot, bid, contract, claim] }
+                - name: entity_id
+                  in: query
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Documents of the entity
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Document' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
         post:
             tags: [documents]
             summary: Upload a document (multipart)
@@ -2014,7 +2276,7 @@ paths:
                     application/json:
                         schema:
                             type: object
-                            required: [tender_id, award_id, price_net_minor]
+                            required: [tender_id, price_net_minor]
                             properties:
                                 tender_id: { type: string, format: uuid }
                                 lot_id: { type: string, format: uuid, nullable: true }
@@ -2060,6 +2322,42 @@ paths:
 
     # ================= CLAIMS =================
     /claims:
+        get:
+            tags: [contracts]
+            summary: Claims of the actor's company (as customer and as performer)
+            description: |
+                Both sides of a dispute see it: the list returns claims where the actor's
+                company is the customer or the performer. Optional filters by contract and
+                status. Access: any employee of the company (agent is the minimum role) —
+                filing and resolving a claim stay with the customer (claims.manage).
+            operationId: listClaims
+            parameters:
+                - name: contract_id
+                  in: query
+                  required: false
+                  schema: { type: string, format: uuid }
+                - name: status
+                  in: query
+                  required: false
+                  schema: { type: string, enum: [draft, submitted, resolved_rejected, resolved_accepted, cancelled] }
+                - $ref: '#/components/parameters/Cursor'
+                - $ref: '#/components/parameters/Limit'
+            responses:
+                '200':
+                    description: Claim list
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Claim' }
+                                    next_cursor: { type: string, nullable: true }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
         post:
             tags: [contracts]
             summary: Create a claim (APPROVE/IN_WORK/DONE_BY_PERFORMER → CLAIM)
@@ -3173,13 +3471,26 @@ components:
             required: [supplier_id]
             properties:
                 supplier_id: { type: string, format: uuid }
-                lot_id: { type: string, format: uuid, nullable: true }
+                lot_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: |
+                        The lot the bid is for. Required when the tender has lots (422
+                        otherwise): admission to trading is matched by the (tender, lot)
+                        pair. Null only for a tender without lots (a single subject).
                 part1:
                     type: object
                     description: 'Consent, characteristics (confidential until opening)'
                     additionalProperties: true
                 part2_document_ids:
                     type: array
+                    description: |
+                        Part 2 (documents). Accepted as given: documents are attached to the `bid`
+                        entity and cannot exist before the bid does, so at submission there is
+                        nothing to validate the ids against. The verified path is
+                        POST /bids/{bidId}/documents, which checks that every document belongs to
+                        this bid — use it after uploading the files.
                     items: { type: string, format: uuid }
                 price_minor: { type: integer, minimum: 0, nullable: true, description: 'For competitive procedures' }
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }
@@ -3492,11 +3803,24 @@ components:
                 id: { type: string, format: uuid }
                 tender_id: { type: string, format: uuid }
                 company_id: { type: string, format: uuid, description: 'Company that filed the complaint' }
+                lot_id: { type: string, format: uuid, nullable: true }
                 status: { type: string, enum: [draft, pending, resolved] }
                 text: { type: string }
                 ground: { type: string }
                 document_ids: { type: array, items: { type: string, format: uuid } }
                 resolution: { type: string, nullable: true }
+                created_at: { type: string, format: date-time }
+
+        CompanyBrief:
+            type: object
+            description: |
+                Narrow company card for counterparty selection (GET /companies/search).
+                Deliberately smaller than Company: details are not needed to pick a side.
+            properties:
+                id: { type: string, format: uuid }
+                legal_name: { type: string }
+                inn: { type: string }
+                type: { type: string, enum: [customer, supplier, both] }
 
         # ---------- Documents ----------
         DocumentVisibility:
@@ -3560,7 +3884,7 @@ components:
         ContractType:
             type: object
             properties:
-                id: { type: string, format: uuid }
+                id: { type: string, description: 'Numeric identifier rendered as a string (contract types are a small platform-wide catalog, not per-tenant records)' }
                 code: { type: string }
                 name: { type: string }
                 is_single_use: { type: boolean }
@@ -3569,7 +3893,7 @@ components:
             type: object
             required: [contract_type_id, customer_id, supplier_id, scope]
             properties:
-                contract_type_id: { type: string, format: uuid }
+                contract_type_id: { type: string, description: 'ContractType.id' }
                 source: { $ref: '#/components/schemas/ContractSource' }
                 customer_id: { type: string, format: uuid }
                 supplier_id: { type: string, format: uuid }
@@ -3615,9 +3939,17 @@ components:
                 contract_id: { type: string, format: uuid }
                 tender_id: { type: string, format: uuid }
                 lot_id: { type: string, format: uuid, nullable: true }
-                award_id: { type: string, format: uuid }
+                award_id: { type: string, format: uuid, nullable: true }
                 price_net_minor: { type: integer }
                 status: { $ref: '#/components/schemas/ContractTenderStatus' }
+                stages:
+                    type: array
+                    description: |
+                        Execution stages of this binding, ordered by number. Present only in
+                        GET /contracts/{contractId}: the contract list does not show stages,
+                        and loading them per row would be an N+1. An absent key means "not
+                        requested", an empty array means "no stages".
+                    items: { $ref: '#/components/schemas/ContractStage' }
         ContractStage:
             type: object
             properties:
@@ -3636,12 +3968,40 @@ components:
             properties:
                 id: { type: string, format: uuid }
                 contract_id: { type: string, format: uuid }
+                auction_id: { type: string, format: uuid, nullable: true }
                 stage: { type: string, enum: [approve, in_work, done_by_performer] }
                 reason: { type: string }
-                amount_minor: { type: integer }
+                description: { type: string, nullable: true }
+                amount_minor: { type: integer, description: 'Claim amount, minor units' }
                 status: { type: string, enum: [draft, submitted, resolved_rejected, resolved_accepted, cancelled] }
                 resolution: { type: string, nullable: true }
                 resolved_at: { type: string, format: date-time, nullable: true }
+                document_ids:
+                    type: array
+                    nullable: true
+                    items: { type: string, format: uuid }
+                created_at: { type: string, format: date-time }
+
+        Security:
+            type: object
+            description: |
+                Security deposit for a bid or for contract performance (FR-1.4.1/1.4.2).
+                Money is in integer minor units.
+            properties:
+                id: { type: string, format: uuid }
+                kind: { type: string, enum: [bid, contract] }
+                entity_type: { type: string, description: 'What the deposit secures (bid / contract)' }
+                entity_id: { type: string, format: uuid }
+                supplier_id: { type: string, format: uuid }
+                type: { type: string, enum: [blocked_funds, guarantee] }
+                amount_minor: { type: integer }
+                calculation_basis: { type: string, enum: [nmck, first_bid] }
+                basis_amount_minor: { type: integer, nullable: true }
+                currency: { type: string, minLength: 3, maxLength: 3 }
+                status: { $ref: '#/components/schemas/SecurityStatus' }
+                valid_until: { type: string, format: date-time, nullable: true }
+                external_ref: { type: string, nullable: true }
+                created_at: { type: string, format: date-time }
 
         # ---------- Companies ----------
         PriceBasis:
@@ -3849,6 +4209,7 @@ components:
                 - bid_rejected (409) — the bid failed validation (price/step/limits)
                 - duplicate_bid (409) — duplicate bid (idempotency)
                 - auction_not_trade (409) — the auction is not in TRADE
+                - auction_window_closed (409) — the trading window is closed by time (planned_end_at has passed) while the auction is still in TRADE
                 - contract_required (409) — DONE without a valid contract (B2)
                 - access_denied (409) — closed tender without an active framework contract
                 - org_pending (403) — the company is not approved by the superadmin: the customer cannot create tenders, the performer cannot submit bids

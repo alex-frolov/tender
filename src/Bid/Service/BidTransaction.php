@@ -122,6 +122,33 @@ final readonly class BidTransaction
     }
 
     /**
+     * Привязка документов к части 2 (FR-1.2.1): flush + аудит
+     * bid.documents_attached. В аудит идут только идентификаторы: содержимое
+     * заявки зашифровано, и раскрывать его в журнале нельзя (FR-1.2.2).
+     *
+     * @param list<string> $documentIds
+     */
+    public function commitDocumentsAttached(
+        Bid $bid,
+        User $actor,
+        array $documentIds,
+        ?string $ip,
+    ): void {
+        $this->em->flush();
+
+        $this->audit->record(
+            action: 'bid.documents_attached',
+            entityType: 'bid',
+            entityId: (string) $bid->getId(),
+            tenantId: (string) $bid->getTenantId(),
+            actorType: 'user',
+            actorId: (string) $actor->getId(),
+            after: ['document_ids' => $documentIds],
+            ip: $ip,
+        );
+    }
+
+    /**
      * Допуск/отклонение заявки (FR-1.2.4, UC-05, AM-4): flush + аудит
      * bid.qualified + outbox bid.qualified (domain/events.md). Статус и причина
      * уже установлены сервисом; уведомление об отклонении — до вызова.

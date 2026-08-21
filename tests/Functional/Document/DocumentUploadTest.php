@@ -6,6 +6,7 @@ namespace App\Tests\Functional\Document;
 
 use App\Document\Controller\DocumentDownloadController;
 use App\Document\Controller\DocumentGetController;
+use App\Document\Controller\DocumentListController;
 use App\Document\Controller\DocumentUploadController;
 use App\Iam\Controller\Auth\TokenController;
 use App\Tests\Factory\UserFactory;
@@ -181,6 +182,94 @@ final class DocumentUploadTest extends WebTestCase
         self::assertResponseStatusCodeSame(200);
         self::assertSame('binary-content-123', $client->getResponse()->getContent());
         self::assertStringContainsString('doc.pdf', (string) $client->getResponse()->headers->get('Content-Disposition'));
+    }
+
+    /**
+     * Список документов сущности: до его появления загруженный документ можно
+     * было открыть только по прямому id, и карточка тендера не показывала
+     * приложенные файлы.
+     *
+     * Видимость та же, что у чтения одного документа: чужой приватный документ
+     * в выборку не попадает (не 403 на весь список, а просто отсутствует).
+     */
+    public function testListDocumentsOfEntityRespectsVisibility(): void
+    {
+        self::client();
+        $tenderId = (string) DocumentUploadStory::tender()->getId();
+        $token = self::login();
+
+        $publicFx = [
+            'document_type_id' => (string) DocumentUploadStory::publicType()->getId(),
+            'entity_type' => 'tender',
+            'entity_id' => $tenderId,
+        ];
+        $client = self::multipart(
+            DocumentUploadController::URL,
+            $token,
+            $publicFx,
+            ['file' => new UploadedFile($this->tempFile('public.pdf', 'public-content'), 'public.pdf', 'application/pdf')],
+        );
+        self::assertResponseStatusCodeSame(201);
+        $publicBody = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($publicBody);
+        $publicId = $publicBody['id'];
+        self::assertIsString($publicId);
+
+        $privateFx = [
+            'document_type_id' => (string) DocumentUploadStory::privateType()->getId(),
+            'entity_type' => 'tender',
+            'entity_id' => $tenderId,
+        ];
+        $client = self::multipart(
+            DocumentUploadController::URL,
+            $token,
+            $privateFx,
+            ['file' => new UploadedFile($this->tempFile('secret.pdf', 'secret-content'), 'secret.pdf', 'application/pdf')],
+        );
+        self::assertResponseStatusCodeSame(201);
+        $privateBody = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($privateBody);
+        $privateId = $privateBody['id'];
+        self::assertIsString($privateId);
+
+        $listUrl = DocumentListController::URL.'?entity_type=tender&entity_id='.$tenderId;
+
+        // Владелец видит оба документа.
+        $client = self::jsonGet($listUrl, $token);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsArray($body['items']);
+        /** @var list<string> $ids */
+        $ids = array_column($body['items'], 'id');
+        self::assertContains($publicId, $ids);
+        self::assertContains($privateId, $ids);
+
+        // Чужая компания — только публичный.
+        $otherToken = self::login((string) DocumentUploadStory::other()->getEmail());
+        $client = self::jsonGet($listUrl, $otherToken);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsArray($body['items']);
+        /** @var list<string> $otherIds */
+        $otherIds = array_column($body['items'], 'id');
+        self::assertContains($publicId, $otherIds);
+        self::assertNotContains($privateId, $otherIds);
+    }
+
+    public function testListDocumentsRequiresEntityParameters(): void
+    {
+        // Стори строится лениво — без обращения к ней пользователя ещё нет,
+        // и логин в этом тесте отвечал бы invalid_credentials.
+        self::fixture();
+        $token = self::login();
+
+        self::jsonGet(DocumentListController::URL, $token);
+        self::assertResponseStatusCodeSame(422);
+
+        self::jsonGet(DocumentListController::URL.'?entity_type=tender&entity_id=not-a-uuid', $token);
+        self::assertResponseStatusCodeSame(422);
     }
 
     public function testUploadRejectsUnsupportedMime(): void
