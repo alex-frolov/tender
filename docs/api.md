@@ -164,6 +164,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/tenders/{tenderId}/bids` | list bids (visibility per opening) |
 | POST | `/bids/{bidId}/qualification` | admit / reject a bid |
 | POST | `/bids/{bidId}/withdraw` | withdraw a bid |
+| POST | `/bids/{bidId}/documents` | set the documents of bid part 2 |
 
 ### Auctions
 

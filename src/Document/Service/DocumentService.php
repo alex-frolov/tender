@@ -233,6 +233,15 @@ final class DocumentService implements DocumentServiceContract
         );
     }
 
+    public function belongsToEntity(string $documentId, string $entityType, Uuid $entityId): bool
+    {
+        $document = $this->documents->findById($documentId);
+
+        return null !== $document
+            && $document->getEntityType()->value === $entityType
+            && $document->getEntityId()->equals($entityId);
+    }
+
     public function present(User $actor, string $documentId): array
     {
         $document = $this->get($actor, $documentId);

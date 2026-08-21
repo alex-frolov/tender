@@ -11,6 +11,7 @@ use App\Bid\Exception\BidNotFoundException;
 use App\Bid\Repository\BidRepository;
 use App\Bid\Service\BidTransaction;
 use App\Contract\ContractAccessChecker;
+use App\Document\DocumentService;
 use App\Iam\CompanyAccessGuard;
 use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\User;
@@ -62,6 +63,7 @@ final readonly class BidService
         private CompanyAccessGuard $companyGuard,
         private TenderReadService $tenders,
         private ContractAccessChecker $contractAccess,
+        private DocumentService $documents,
         private BidTransaction $transaction,
         private MailerInterface $mailer,
         private Environment $twig,
@@ -135,6 +137,59 @@ final readonly class BidService
         $bid->submit();
 
         $this->transaction->commitSubmitted($bid, $actor, $tender, $lot, $supplierId, $ip);
+
+        return $bid;
+    }
+
+    /**
+     * Привязка документов к части 2 заявки (FR-1.2.1/1.2.6,
+     * POST /bids/{bidId}/documents).
+     *
+     * Документы прикладываются к сущности `bid`, а значит существуют только
+     * после подачи заявки — заранее их приложить не к чему. Отдельный вызов
+     * нужен именно поэтому: повторная подача заявки заменяет содержимое
+     * целиком (part1, цена), а автор до вскрытия своё содержимое прочитать
+     * не может — оно зашифровано (FR-1.2.2). Пришлось бы заново вводить всё,
+     * чтобы добавить один файл.
+     *
+     * Список заменяет прежний целиком: часть 2 — это состав приложений, а не
+     * журнал добавлений. Заявку правит только её подавший и только пока идёт
+     * приём заявок.
+     *
+     * @param list<string> $documentIds id документов (сущность bid)
+     *
+     * @throws BidNotFoundException     если заявки нет или она чужая
+     * @throws StateTransitionException если заявка не в статусе submitted
+     * @throws ValidationException      если документ не принадлежит этой заявке
+     */
+    public function attachDocuments(User $actor, string $bidId, array $documentIds, ?string $ip = null): Bid
+    {
+        $companyId = $this->requireCompany($actor);
+        $bid = $this->bids->findById($bidId);
+        if (null === $bid || !$bid->getSupplierId()->equals($companyId)) {
+            throw new BidNotFoundException('Bid not found');
+        }
+
+        $tender = $this->tenders->resolveTender((string) $bid->getTenderId());
+        $this->assertAcceptingBids($tender);
+
+        if (BidStatusEnum::SUBMITTED !== $bid->getStatus()) {
+            throw new StateTransitionException('Only submitted bids can be updated');
+        }
+
+        // Документ обязан быть приложен к ЭТОЙ заявке: иначе часть 2 ссылалась бы
+        // на чужой файл, который заказчик после вскрытия открыть не сможет.
+        foreach ($documentIds as $documentId) {
+            if (!$this->documents->belongsToEntity($documentId, 'bid', $bid->getId())) {
+                throw new ValidationException(\sprintf('document %s does not belong to this bid', $documentId));
+            }
+        }
+
+        $payload = $this->cipher->decrypt($bid->getEncryptedPayload());
+        $payload['part2_ref'] = array_values($documentIds);
+        $bid->setEncryptedPayload($this->cipher->encrypt($payload));
+
+        $this->transaction->commitDocumentsAttached($bid, $actor, $documentIds, $ip);
 
         return $bid;
     }

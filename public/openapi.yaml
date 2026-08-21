@@ -1103,6 +1103,50 @@ paths:
                 '409': { $ref: '#/components/responses/Conflict' }
                 '422': { $ref: '#/components/responses/ValidationError' }
 
+    /bids/{bidId}/documents:
+        post:
+            tags: [bids]
+            summary: Set the documents of bid part 2
+            description: |
+                Documents are attached to the `bid` entity, so they can only exist once the
+                bid has been submitted — there is nothing to attach them to beforehand. That
+                is why the composition of part 2 is set by its own call rather than at
+                submission: re-submitting replaces the payload as a whole (part 1, price),
+                and the author cannot read their own payload back before opening, since it is
+                encrypted (FR-1.2.2). Adding one file would mean re-entering everything.
+
+                The list replaces the previous one: part 2 is the set of attachments, not a
+                log of additions; an empty array clears it. Every document must belong to
+                this bid, otherwise the customer would not be able to open it after opening.
+
+                Access: the `bids.submit` permission — whoever submits the bid decides its
+                attachments. Only the bid's own supplier, and only while bids are being
+                accepted.
+            operationId: attachBidDocuments
+            parameters:
+                - { $ref: '#/components/parameters/BidId' }
+            requestBody:
+                required: true
+                content:
+                    application/json:
+                        schema:
+                            type: object
+                            properties:
+                                document_ids:
+                                    type: array
+                                    items: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Bid metadata (contents stay encrypted until opening)
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Bid' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '404': { $ref: '#/components/responses/NotFound' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /bids/{bidId}/qualification:
         post:
             tags: [bids]
@@ -3371,6 +3415,12 @@ components:
                     additionalProperties: true
                 part2_document_ids:
                     type: array
+                    description: |
+                        Part 2 (documents). Accepted as given: documents are attached to the `bid`
+                        entity and cannot exist before the bid does, so at submission there is
+                        nothing to validate the ids against. The verified path is
+                        POST /bids/{bidId}/documents, which checks that every document belongs to
+                        this bid — use it after uploading the files.
                     items: { type: string, format: uuid }
                 price_minor: { type: integer, minimum: 0, nullable: true, description: 'For competitive procedures' }
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }

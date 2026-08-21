@@ -7,6 +7,7 @@ namespace App\Document;
 use App\Document\Entity\Document;
 use App\Iam\Entity\User;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Symfony\Component\Uid\Uuid;
 
 /**
  * Публичный контракт модуля Document: загрузка файла → документ с версиями,
@@ -42,6 +43,15 @@ interface DocumentService
      * @throws Exception\DocumentNotFoundException     если документ не найден (в т.ч. чужой tenant)
      * @throws Exception\DocumentAccessDeniedException если нет прав по видимости
      */
+    /**
+     * Принадлежит ли документ указанной сущности.
+     *
+     * Нужен потребителям, которые ссылаются на документы у себя (часть 2
+     * заявки): без проверки заявка могла бы сослаться на чужой файл, который
+     * заказчик после вскрытия всё равно не откроет.
+     */
+    public function belongsToEntity(string $documentId, string $entityType, Uuid $entityId): bool;
+
     public function get(User $actor, string $documentId): Document;
 
     /**
