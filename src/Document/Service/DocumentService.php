@@ -201,6 +201,38 @@ final class DocumentService implements DocumentServiceContract
         return $document;
     }
 
+    /**
+     * Документы сущности, видимые компании актора (GET /documents).
+     *
+     * Видимость (FR-1.2.6) применяется в запросе: свои документы — все,
+     * чужие — только публичные. Принадлежность самой сущности не проверяется
+     * отдельно: приватные документы чужого тендера в выборку не попадают,
+     * а публичные и так открыты допущенным участникам.
+     *
+     * @return list<array<string, mixed>> презентации документов (openapi Document)
+     *
+     * @throws ConflictException если актор без компании
+     */
+    public function listForEntity(User $actor, string $entityType, string $entityId): array
+    {
+        $companyId = $this->requireCompany($actor);
+        $type = DocumentEntityType::tryFrom($entityType)
+            ?? throw new ValidationException('invalid entity_type');
+        if (!Uuid::isValid($entityId)) {
+            throw new ValidationException('entity_id must be a valid uuid');
+        }
+
+        $documents = $this->documents->listForEntity($type->value, Uuid::fromString($entityId), $companyId);
+
+        return array_map(
+            fn (Document $document): array => $this->presenter->single(
+                $document,
+                str_replace('{documentId}', (string) $document->getId(), DocumentPresenter::DOWNLOAD_URL),
+            ),
+            $documents,
+        );
+    }
+
     public function present(User $actor, string $documentId): array
     {
         $document = $this->get($actor, $documentId);

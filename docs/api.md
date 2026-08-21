@@ -207,6 +207,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/documents` | documents of one entity (entity_type + entity_id) |
 | POST | `/documents` | upload document (multipart) |
 | GET | `/documents/{documentId}` | get document metadata |
 | GET | `/documents/{documentId}/download` | download current version |

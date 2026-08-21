@@ -57,6 +57,8 @@ webpack.config.js
 docker/*
 !docker/worker-entrypoint.sh
 !docker/scheduler-entrypoint.sh
+!docker/php/
+!docker/php/uploads.ini
 !docker/web.Dockerfile
 !docker/nginx/
 !docker/nginx/prod.conf

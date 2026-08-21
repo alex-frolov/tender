@@ -1821,6 +1821,43 @@ paths:
 
     # ================= DOCUMENTS =================
     /documents:
+        get:
+            tags: [documents]
+            summary: Documents attached to one entity
+            description: |
+                Documents of a tender, lot, bid, contract or claim, newest first. Both
+                parameters are required: documents exist only in the context of an entity,
+                and a platform-wide listing would be a hole in tenant isolation.
+
+                Visibility (FR-1.2.6) is applied in the query, not after it: the actor's own
+                company sees all of its documents, another company's are visible only when
+                public. Access: the `tenders.board.view` permission, same as reading a single
+                document.
+            operationId: listDocuments
+            parameters:
+                - name: entity_type
+                  in: query
+                  required: true
+                  schema: { type: string, enum: [tender, lot, bid, contract, claim] }
+                - name: entity_id
+                  in: query
+                  required: true
+                  schema: { type: string, format: uuid }
+            responses:
+                '200':
+                    description: Documents of the entity
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/Document' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '409': { $ref: '#/components/responses/Conflict' }
+                '422': { $ref: '#/components/responses/ValidationError' }
         post:
             tags: [documents]
             summary: Upload a document (multipart)
