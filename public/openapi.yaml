@@ -555,6 +555,49 @@ paths:
                             schema: { $ref: '#/components/schemas/User' }
 
     # ================= COMPANIES =================
+    /companies/search:
+        get:
+            tags: [companies]
+            summary: Find a counterparty company by name or INN
+            description: |
+                Suggestions for choosing a counterparty where a foreign `company_id` has to
+                go into a request — creating a contract, binding a procedure. Without it the
+                identifier had to be learned outside the interface: the moderation registry
+                (GET /admin/companies) is superadmin-only.
+
+                Returns approved companies only, in a deliberately narrow shape (id, legal
+                name, INN, type): address, contacts, KPP and OGRN are company details and
+                are not needed to pick a counterparty. `q` is required and at least two
+                characters long — an empty query would be a registry listing, which this
+                endpoint is not.
+
+                Access: any employee of a company (agent is the minimum role).
+            operationId: searchCompanies
+            parameters:
+                - name: q
+                  in: query
+                  required: true
+                  schema: { type: string, minLength: 2, maxLength: 200 }
+                  description: Substring of the legal name or INN, case-insensitive
+                - name: limit
+                  in: query
+                  required: false
+                  schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+            responses:
+                '200':
+                    description: Matching companies
+                    content:
+                        application/json:
+                            schema:
+                                type: object
+                                properties:
+                                    items:
+                                        type: array
+                                        items: { $ref: '#/components/schemas/CompanyBrief' }
+                '401': { $ref: '#/components/responses/Unauthorized' }
+                '403': { $ref: '#/components/responses/Forbidden' }
+                '422': { $ref: '#/components/responses/ValidationError' }
+
     /companies:
         get:
             tags: [companies]
@@ -3740,6 +3783,17 @@ components:
                 document_ids: { type: array, items: { type: string, format: uuid } }
                 resolution: { type: string, nullable: true }
                 created_at: { type: string, format: date-time }
+
+        CompanyBrief:
+            type: object
+            description: |
+                Narrow company card for counterparty selection (GET /companies/search).
+                Deliberately smaller than Company: details are not needed to pick a side.
+            properties:
+                id: { type: string, format: uuid }
+                legal_name: { type: string }
+                inn: { type: string }
+                type: { type: string, enum: [customer, supplier, both] }
 
         # ---------- Documents ----------
         DocumentVisibility:

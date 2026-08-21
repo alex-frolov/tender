@@ -15,6 +15,26 @@ use App\Iam\Entity\Company;
 final readonly class CompanyPresenter
 {
     /**
+     * Краткая карточка для поиска контрагента (GET /companies/search).
+     *
+     * Осознанно уже полной: адрес, контакты, КПП и ОГРН — реквизиты компании,
+     * и отдавать их каждому аутентифицированному пользователю только ради
+     * выбора стороны договора незачем. Здесь ровно то, по чему компанию
+     * узнают и выбирают.
+     *
+     * @return array<string, mixed>
+     */
+    public function brief(Company $company): array
+    {
+        return [
+            'id' => (string) $company->getId(),
+            'legal_name' => $company->getLegalName(),
+            'inn' => $company->getInn(),
+            'type' => $company->getType()->value,
+        ];
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function single(Company $company): array

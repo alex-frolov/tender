@@ -132,6 +132,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/users` | list users (admin) |
 | PATCH | `/users/{userId}` | update user (admin) |
 | DELETE | `/users/{userId}` | soft-delete user (admin) |
+| GET | `/companies/search` | find a counterparty by name or INN (approved companies only) |
 | POST | `/companies/{companyId}/verify` | approve/reject/suspend company (platform admin) |
 | GET | `/permissions` | permission catalog (platform admin) |
 | GET | `/role-permissions` | role permission matrix (platform admin) |

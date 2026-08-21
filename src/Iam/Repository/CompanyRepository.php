@@ -47,6 +47,41 @@ final class CompanyRepository extends ServiceEntityRepository
     }
 
     /**
+     * Поиск подтверждённых компаний по названию или ИНН (GET /companies/search).
+     *
+     * Только `active`: незавершённая и отклонённая модерация — внутреннее
+     * состояние площадки, показывать его всем участникам незачем, да и выбрать
+     * такую компанию стороной договора всё равно нельзя.
+     *
+     * Сортировка по названию: результат читает человек, выбирающий контрагента,
+     * а не постраничный обход — курсора здесь нет, есть жёсткий лимит.
+     *
+     * @return list<Company>
+     */
+    public function search(string $query, int $limit): array
+    {
+        $qb = $this->createQueryBuilder('c');
+
+        /** @var list<Company> $result */
+        $result = $qb
+            ->where('c.verificationStatus = :active')
+            ->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->like('LOWER(c.legalName)', ':q'),
+                    $qb->expr()->like('LOWER(c.inn)', ':q'),
+                ),
+            )
+            ->setParameter('active', CompanyStatusEnum::ACTIVE->value)
+            ->setParameter('q', '%'.mb_strtolower(trim($query)).'%')
+            ->orderBy('c.legalName', 'ASC')
+            ->setMaxResults(max(1, $limit))
+            ->getQuery()
+            ->getResult();
+
+        return $result;
+    }
+
+    /**
      * Страница реестра компаний (FR-1.5.7, GET /admin/companies): все компании
      * площадки, новые сверху, keyset-срез по (created_at, id) DESC (AR-6).
      * Tenant-изоляции здесь нет намеренно — это экран модерации platform_admin
