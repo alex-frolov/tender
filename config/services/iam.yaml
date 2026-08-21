@@ -13,8 +13,15 @@ services:
     # PermissionCheckerInterface, который алиасится на декоратор.
     App\Iam\Service\PermissionCheckService:
 
-    # Кэш наборов прав — публичный для очистки в тестах
+    # Кэш наборов прав — публичный для очистки в тестах.
+    # $keySuffix изолирует ключ Redis по воркеру ParaTest: базы разведены
+    # (doctrine dbname_suffix `_test%env(default::TEST_TOKEN)%`), а Redis
+    # один на все процессы — общий ключ делает кэш прав межпроцессной
+    # разделяемой памятью и роняет тесты гонкой. Вне тестов TEST_TOKEN
+    # не задан → суффикс пустой, ключ прежний.
     App\Iam\Service\RolePermissionCache:
+        arguments:
+            $keySuffix: '%env(string:default::TEST_TOKEN)%'
 
     # Password hasher (JWT-API; security-bundle авторизацию не настраивает через hashers):
     # UserPasswordHasherInterface → UserPasswordHasher (NativePasswordHasher)
