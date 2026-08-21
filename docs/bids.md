@@ -52,7 +52,7 @@ BidSubmitController (#[IsGranted(BidVoter::SUBMIT)])
 SubmitBidUseCase → BidService::submit()
    │  requireCompany · declared supplier must match actor company
    │  company must be active (CompanyAccessGuard)
-   │  contract_holders access: active framework contract required
+   │  contract_holders access: active framework contract required (409 access_denied)
    │  tender must be ACCEPTING_BIDS and bids_end not passed
    │  price ≥ 0 (minor units)
    │  duplicate check → if existing bid, replace instead

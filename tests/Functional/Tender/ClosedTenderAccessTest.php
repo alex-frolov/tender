@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional\Tender;
 
+use App\Auction\AuctionService;
+use App\Auction\Controller\AuctionBidController;
+use App\Auction\Entity\Auction;
+use App\Auction\Entity\Enum\AuctionStatusTransition;
+use App\Auction\Entity\Enum\AuctionStepModeEnum;
+use App\Auction\Entity\Enum\AuctionTypeEnum;
 use App\Bid\Controller\BidSubmitController;
 use App\Contract\Entity\Contract;
 use App\Contract\Entity\Enum\ContractScopeEnum;
@@ -14,6 +20,8 @@ use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderAccessController;
 use App\Tender\Entity\Enum\AccessTypeEnum;
 use App\Tender\Entity\Enum\TenderStatusTransition;
+use App\Tests\Factory\AuctionFactory;
+use App\Tests\Factory\BidFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\ContractFactory;
 use App\Tests\Factory\LotFactory;
@@ -29,10 +37,12 @@ use Symfony\Component\Workflow\WorkflowInterface;
  *
  * - contract_holders: участвовать может только исполнитель с действующим
  *   multi_use-договором (signed/registered) с заказчиком;
- * - без договора: подача заявки → 409 contract_required; GET /tenders/{id}/access
+ * - без договора: подача заявки → 409 access_denied; GET /tenders/{id}/access
  *   → {accessible:false, reason:contract_required};
  * - с подписанным рамочным договором: подача заявки → 201; access → ok;
- * - открытый тендер (open): access → ok для любого исполнителя.
+ * - открытый тендер (open): access → ok для любого исполнителя;
+ * - расторжение договора после допуска: ставка на аукционе → 409 access_denied
+ *   (доступ проверяется и на входе в торги, а не только при подаче заявки).
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
  */
@@ -148,12 +158,26 @@ final class ClosedTenderAccessTest extends WebTestCase
     }
 
     /**
+     * Единственный лот тендера: заявка подаётся на лот — у тендера с лотами
+     * заявка «на тендер целиком» не принимается (допуск к торгам сверяется
+     * парой тендер+лот).
+     */
+    private static function lotId(\App\Tender\Entity\Tender $tender): string
+    {
+        $lot = $tender->getLots()->first();
+        self::assertNotFalse($lot);
+
+        return (string) $lot->getId();
+    }
+
+    /**
      * @return array<string, mixed>
      */
-    private static function bidPayload(string $supplierId): array
+    private static function bidPayload(string $supplierId, string $lotId): array
     {
         return [
             'supplier_id' => $supplierId,
+            'lot_id' => $lotId,
             'part1' => ['consent' => true, 'characteristics' => ['marker' => 'CLOSED-'.random_int(1000, 999999)]],
             'part2_document_ids' => [],
             'price_minor' => 9000,
@@ -174,11 +198,14 @@ final class ClosedTenderAccessTest extends WebTestCase
             'POST',
             str_replace('{tenderId}', (string) $tender->getId(), BidSubmitController::URL),
             $ctx['supplierToken'],
-            self::bidPayload($supplierId),
+            self::bidPayload($supplierId, self::lotId($tender)),
         );
         self::assertResponseStatusCodeSame(409);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
+        // Код — access_denied (реестр ErrorCode: закрытый тендер без договора),
+        // а причина отказа теми же словами, что и у GET /tenders/{id}/access.
+        self::assertSame('access_denied', $body['code'] ?? null);
         $detail = $body['detail'] ?? '';
         self::assertIsString($detail);
         self::assertStringContainsString('contract_required', $detail);
@@ -197,12 +224,79 @@ final class ClosedTenderAccessTest extends WebTestCase
             'POST',
             str_replace('{tenderId}', (string) $tender->getId(), BidSubmitController::URL),
             $ctx['supplierToken'],
-            self::bidPayload($supplierId),
+            self::bidPayload($supplierId, self::lotId($tender)),
         );
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
         self::assertIsString($bid['id']);
+    }
+
+    /**
+     * Договор расторгнут уже после допуска заявки: участник остаётся допущенным
+     * (заявку никто не отзывал), но права участвовать в закрытой процедуре у
+     * него больше нет — ставку на аукционе не принимаем.
+     */
+    public function testAdmittedSupplierCannotBidAfterContractTerminated(): void
+    {
+        self::client();
+        $ctx = self::parties();
+        $customerId = (string) $ctx['customer']->getId();
+        $supplierId = (string) $ctx['supplier']->getId();
+        $contract = self::signedContract($customerId, $supplierId);
+        $tender = self::closedTender($customerId);
+        $auction = self::tradingAuction($tender, $ctx['supplier']->getId());
+
+        $container = static::getContainer();
+        $workflow = $container->get('state_machine.contract');
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $workflow->apply($contract, ContractStatusTransition::TERMINATE->value);
+        $container->get(EntityManagerInterface::class)->flush();
+
+        $client = self::request(
+            'POST',
+            str_replace('{auctionId}', (string) $auction->getId(), AuctionBidController::URL),
+            $ctx['supplierToken'],
+            ['price_minor' => 9000],
+        );
+        self::assertResponseStatusCodeSame(409);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('access_denied', $body['code'] ?? null);
+        $detail = $body['detail'] ?? '';
+        self::assertIsString($detail);
+        self::assertStringContainsString('contract_terminated', $detail);
+    }
+
+    /**
+     * Аукцион на лоте закрытого тендера в TRADE с допущенной заявкой участника.
+     */
+    private static function tradingAuction(\App\Tender\Entity\Tender $tender, \Symfony\Component\Uid\Uuid $supplierId): Auction
+    {
+        $lot = $tender->getLots()->first();
+        self::assertNotFalse($lot);
+
+        $auction = AuctionFactory::new()
+            ->forTender($tender, $lot)
+            ->with([
+                'type' => AuctionTypeEnum::REDUCTION,
+                'stepMode' => AuctionStepModeEnum::FIXED,
+                'bidStepMinor' => 500,
+                'stepDurationSec' => 600,
+            ])
+            ->create();
+
+        $container = static::getContainer();
+        $workflow = $container->get('state_machine.auction');
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $auctionService = $container->get(AuctionService::class);
+        self::assertInstanceOf(AuctionService::class, $auctionService);
+        $workflow->apply($auction, AuctionStatusTransition::SCHEDULE->value);
+        $auctionService->startTrading($auction);
+
+        BidFactory::new()->forAuction($auction, $supplierId)->admitted()->create();
+
+        return $auction;
     }
 
     public function testAccessEndpointContractRequiredWithoutContract(): void

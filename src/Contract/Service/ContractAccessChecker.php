@@ -6,8 +6,8 @@ namespace App\Contract\Service;
 
 use App\Contract\ContractAccessChecker as ContractAccessCheckerContract;
 use App\Contract\Entity\Enum\ContractStatusEnum;
+use App\Contract\Exception\ClosedTenderAccessException;
 use App\Contract\Repository\ContractRepository;
-use App\Shared\Exception\ConflictException;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -16,9 +16,11 @@ use Symfony\Component\Uid\Uuid;
  * совпадает с именем интерфейса (PHP запрещает объявление класса с именем,
  * занятым `use`).
  *
- * assertCanParticipate() — жёсткая проверка (409 contract_required) для подачи
- * заявки; checkReason() — мягкая для GET /tenders/{id}/access (openapi: reason
- * enum contract_required/contract_expired/contract_terminated/ok).
+ * assertCanParticipate() — жёсткая проверка (409 access_denied) для подачи
+ * заявки и входа в аукцион; checkReason() — мягкая для GET /tenders/{id}/access
+ * (openapi: reason enum contract_required/contract_expired/contract_terminated/ok).
+ * Причина у обеих одна и та же: жёсткая проверка кладёт её в detail, поэтому
+ * клиенту не нужен второй запрос, чтобы объяснить отказ пользователю.
  */
 final readonly class ContractAccessChecker implements ContractAccessCheckerContract
 {
@@ -29,7 +31,7 @@ final readonly class ContractAccessChecker implements ContractAccessCheckerContr
     public function assertCanParticipate(Uuid $customerId, Uuid $supplierId): void
     {
         if (null === $this->contracts->findActiveMultiUse($customerId, $supplierId)) {
-            throw new ConflictException('contract_required: supplier needs an active multi_use contract with the customer');
+            throw new ClosedTenderAccessException(\sprintf('Closed tender: an active multi_use contract with the customer is required (%s)', $this->checkReason($customerId, $supplierId)));
         }
     }
 

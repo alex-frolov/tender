@@ -16,7 +16,13 @@ POST /auctions/{id}/bids
 AuctionBidController  (#[IsGranted(AuctionVoter::BID)])
    │  validate form (price_minor) · Idempotency-Key
    ▼
-PlaceBidUseCase ──► AuctionBidService::placeBid()
+PlaceBidUseCase
+   │  actor company · price_minor present
+   │  closed tender (contract_holders): active framework contract
+   │      (ContractAccessChecker, 409 access_denied) — re-checked here because
+   │      the contract may have ended after the bid was admitted
+   ▼
+AuctionBidService::placeBid()
    │  dispatch by type/step-mode
    ▼
 transactionalBid():  BEGIN
