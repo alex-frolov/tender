@@ -17,7 +17,8 @@ use App\Shared\Repository\KeysetCursor;
  * Список договоров компании актора (AM-9 GET /contracts): как заказчика,
  * так и исполнителя.
  *
- * Query-use-case: опциональный фильтр ?contract_status=. Фильтры приходят
+ * Query-use-case: опциональные фильтры ?contract_status= и ?tender_id=.
+ * Фильтры приходят
  * валидированным DTO ContractListFiltersInput (форма ContractListFiltersType),
  * разбор DTO — здесь, а не в контроллере. party-фильтрация (договоры чужих
  * компаний не отдаются) — в ContractService::list; ответ — {items, next_cursor}.
@@ -41,7 +42,7 @@ final readonly class ListContractsUseCase implements ContractUseCase
     public function execute(User $user, ContractListFiltersInput $filter, Paginator $paginator): array
     {
         [$page, $nextCursor] = KeysetCursor::sliceAfter(
-            $this->contracts->list($user, $filter->contractStatus),
+            $this->contracts->list($user, $filter->contractStatus, $filter->tenderId),
             $paginator->cursor,
             $paginator->limitValue(),
             static fn (Contract $c): array => [$c->getCreatedAt(), (string) $c->getId()],

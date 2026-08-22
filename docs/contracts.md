@@ -82,6 +82,10 @@ Contract 1 ── N contract_tenders N ── 1 Tender / Lot
 Each link records the award, net/gross price, VAT and status (`ContractTenderStatusEnum`):
 `pending`, `in_work`, `done_by_performer`, `done`, `claim`, `done_by_claim`, `terminated`.
 
+`GET /contracts?tender_id={uuid}` returns only the contracts bound to that tender — the reverse
+lookup the auction page needs to answer "is there a contract for this procedure yet?" without
+paging through the whole company register. An invalid uuid is a 422, not a silently empty page.
+
 ## Execution stages
 
 `ContractStage` (`contract_stages`) are per-contract-tender execution milestones:

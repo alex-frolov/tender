@@ -225,6 +225,42 @@ final class ContractStageTest extends WebTestCase
         }
     }
 
+    /**
+     * Фильтр ?tender_id= в списке договоров: страница аукциона отвечает на
+     * вопрос «есть ли по этой процедуре договор» одним запросом. Без фильтра
+     * пришлось бы вычитывать весь список договоров компании постранично.
+     */
+    public function testContractListFilteredByBoundTender(): void
+    {
+        self::client();
+        $ctx = self::stageContext();
+        $contractId = (string) $ctx['contractTender']->getContract()->getId();
+        $tenderId = (string) $ctx['contractTender']->getTenderId();
+
+        $client = self::request('GET', ContractListController::URL.'?tender_id='.$tenderId, $ctx['supplierToken']);
+        self::assertResponseStatusCodeSame(200);
+        $list = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($list);
+        self::assertIsArray($list['items']);
+        self::assertSame([$contractId], array_column($list['items'], 'id'));
+
+        // Процедура без договора — пустой список, а не весь реестр компании.
+        $foreign = TenderFactory::createOne();
+        $client = self::request(
+            'GET',
+            ContractListController::URL.'?tender_id='.$foreign->getId(),
+            $ctx['customerToken'],
+        );
+        self::assertResponseStatusCodeSame(200);
+        $list = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($list);
+        self::assertSame([], $list['items']);
+
+        // Невалидный uuid — 422, а не молчаливый пустой ответ.
+        self::request('GET', ContractListController::URL.'?tender_id=not-a-uuid', $ctx['customerToken']);
+        self::assertResponseStatusCodeSame(422);
+    }
+
     public function testCreateStageWithExplicitNumber(): void
     {
         self::client();
