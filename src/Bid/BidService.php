@@ -402,10 +402,19 @@ final readonly class BidService
      * bids_end обрабатывается worker'ом с задержкой), подача после срока
      * отклоняется. Тендеры без таймлайна (тесты/черновики) лимита не имеют.
      *
+     * Тендер без заявок на участие (bids_required=false, FR-1.2.1) отклоняется
+     * отдельным сообщением: он никогда не бывает в accepting_bids (published →
+     * bidding напрямую), и общий текст «приём заявок закрыт» вводил бы
+     * в заблуждение — приёма заявок в такой процедуре нет вовсе.
+     *
      * @throws ConflictException если тендер не принимает заявки
      */
     private function assertAcceptingBids(Tender $tender): void
     {
+        if (!$tender->isBidsRequired()) {
+            throw new ConflictException('This tender does not require participation bids');
+        }
+
         if (TenderStatusEnum::ACCEPTING_BIDS !== $tender->getStatus()) {
             throw new ConflictException('Bids are accepted only while the tender is accepting bids');
         }

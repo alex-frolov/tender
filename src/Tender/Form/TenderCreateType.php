@@ -108,6 +108,16 @@ final class TenderCreateType extends AbstractType
                 'placeholder' => AccessTypeEnum::OPEN->value,
                 'choices' => AccessTypeEnum::getValues(),
             ])
+            // Заявка на участие требуется по умолчанию (значение true в DTO):
+            // отсутствующий в теле ключ не сабмитится (formInput с
+            // clearMissing: false) и дефолт сохраняется. false_values расширен
+            // — CheckboxType по умолчанию считает ложью только null, и
+            // присланный в JSON false прочитался бы как true.
+            ->add('bids_required', CheckboxType::class, [
+                'property_path' => 'bidsRequired',
+                'required' => false,
+                'false_values' => [null, false, 0, '0', 'false'],
+            ])
             ->add('required_contract_type_id', TextType::class, [
                 'property_path' => 'requiredContractTypeId',
                 'required' => false,

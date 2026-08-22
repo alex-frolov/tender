@@ -109,6 +109,7 @@ final class TenderService
             accessType: $input->accessType ? $this->accessType($input->accessType) : AccessTypeEnum::OPEN,
             requiredContractTypeId: $input->requiredContractTypeId ? InputValue::uuid($input->requiredContractTypeId, 'required_contract_type_id') : null,
             timeline: $input->timeline,
+            bidsRequired: $input->bidsRequired,
         );
 
         if ([] === $input->lots) {
@@ -244,6 +245,8 @@ final class TenderService
      * - Таймлайн (сроки) рассчитывается TimelineRules («сроки из плагина»);
      * - на момент bids_start планируется авто-переход published → accepting_bids
      *   через TimelineMessage (Redis-транспорт, DelayStamp) — FR-1.1.4;
+     *   у тендера без заявок на участие тот же момент открывает торги
+     *   (published → bidding), а авто-вскрытие на bids_end не планируется;
      * - публикация требует лотов и соблюдения инварианта суммы (FR-1.1.7);
      * - каждая мутация пишет append-only запись в аудит (FR-1.8).
      *
@@ -272,7 +275,12 @@ final class TenderService
         $this->tenderWorkflow->apply($tender, $transition);
 
         $this->scheduler->scheduleStartBidAcceptance($tender, $timeline);
-        $this->scheduler->scheduleBidOpening($tender, $timeline);
+        // Вскрывать нечего, если заявок на участие нет (FR-1.2.1): у такого
+        // тендера bids_end остаётся плановым сроком окончания процедуры,
+        // но авто-вскрытие на него не планируется.
+        if ($tender->isBidsRequired()) {
+            $this->scheduler->scheduleBidOpening($tender, $timeline);
+        }
 
         $this->transaction->commitPublished($tender, $before, $timeline, $actor, $companyId, $ip);
 

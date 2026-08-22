@@ -9,6 +9,10 @@ A tender is a container of lots. Buyers publish tenders with a timeline; bids ar
 `accepting_bids`; then the tender proceeds through evaluation, awarding and contract phases. The
 tender status is **aggregated** from its lots — the slowest lot determines the tender status.
 
+A tender may also run **without a participation bid** (`bids_required = false`): there is no bid
+phase at all, and it goes from `published` straight to `bidding`. See
+[Tenders without a participation bid](#tenders-without-a-participation-bid).
+
 ```
 Tender
 ┌──────────────────────────────────────────────┐
@@ -34,6 +38,7 @@ Tender
 | `noStartPrice` | prices defined by bids |
 | `currency`, `vatRateBps`, `priceBasis` | pricing model |
 | `accessType` | `open` or `contract_holders` (sealed to active framework contracts) |
+| `bidsRequired` | a participation bid is required (default `true`); `false` drops the bid phase |
 | `status` | workflow-managed |
 | `timeline` | JSON map of ISO-8601 key dates (`bids_start`, `bids_end`) |
 | `securityRequired`, `nationalRegime` | procurement options |
@@ -78,8 +83,10 @@ commit (audit + outbox tender.published)
 a `DelayStamp`:
 
 - `START_BID_ACCEPTANCE` at `bids_start` → workflow `start_bid_acceptance` (published →
-  accepting_bids).
+  accepting_bids); when `bids_required = false` the same message applies
+  `start_trade_without_bids` instead (published → bidding).
 - `OPEN_BIDS` at `bids_end` → `BidOpeningService::open()` (see [bids.md](bids.md#opening)).
+  Not scheduled when `bids_required = false` — there is nothing to open.
 
 ```
 publish ──► published ──[bids_start]──► accepting_bids ──[bids_end]──► bids opened
@@ -117,6 +124,30 @@ FORWARD:  accepting_bids → bidding → evaluation → awarding → contract �
 
 Transitions are applied only through the tender workflow; direct status assignment is forbidden.
 A tender cannot reach `closed` while any lot is still open.
+
+## Tenders without a participation bid
+
+`bids_required` (set at creation, immutable afterwards) answers a single question: must a supplier
+file a participation bid before it can trade?
+
+| | `bids_required = true` (default) | `bids_required = false` |
+|---|---|---|
+| Statuses | draft → published → **accepting_bids** → bidding → … | draft → published → bidding → … |
+| At `bids_start` | `start_bid_acceptance` | `start_trade_without_bids` |
+| At `bids_end` | bids opened (`BidOpeningService`) | nothing scheduled; the date stays as the procedure deadline |
+| `POST /tenders/{id}/bids` | accepted while `accepting_bids` | 409 `This tender does not require participation bids` |
+| Who may trade | companies with an `admitted` bid (`BidReadService::isAdmitted`) | anyone who can see the tender (`access_type`, framework contract) |
+| Aggregation chain | `start_bid_acceptance → start_trade → …` | `start_trade_without_bids → …` |
+
+The two branches are kept apart by workflow guards (`isBidsRequired()` and its negation), so a
+tender can never take both. Admission is asked through `BidReadService::isAdmittedToTrade()`, which
+returns `true` outright when the tender needs no bids; the strict `isAdmitted()` stays in place
+where the *fact of an admitted bid* is what matters — `AuctionStreamVoter` keeps a participant on
+the live stream of their own auction after their framework contract has expired, and a tender
+without bids leaves no such trace to keep.
+
+Access to a closed tender (`access_type = contract_holders`) is unaffected: `PlaceBidUseCase` still
+checks the framework contract before every auction bid.
 
 ## Catalog & dashboards
 

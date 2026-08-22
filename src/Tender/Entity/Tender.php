@@ -115,6 +115,17 @@ class Tender
     #[ORM\Column(type: 'boolean', options: ['default' => false])]
     private bool $securityRequired = false;
 
+    /**
+     * Требуется ли заявка на участие (FR-1.2.1, domain/tender-state-machine.md
+     * раздел 1c). true (по умолчанию) — классический порядок: приём заявок,
+     * вскрытие, допуск, и только допущенный участник торгуется. false —
+     * заявок нет вовсе: фаза accepting_bids для такого тендера не существует
+     * (published → bidding напрямую по таймлайну), торговаться может любой,
+     * кому тендер доступен (access_type/договор).
+     */
+    #[ORM\Column(type: 'boolean', options: ['default' => true])]
+    private bool $bidsRequired = true;
+
     /** @var array<string, mixed>|null */
     #[ORM\Column(type: 'json', nullable: true)]
     private ?array $nationalRegime = null;
@@ -167,6 +178,7 @@ class Tender
         ?string $okpd2 = null,
         bool $securityRequired = false,
         ?array $nationalRegime = null,
+        bool $bidsRequired = true,
     ) {
         $this->id = Uuid::v4();
         $this->tenantId = $customerId;
@@ -189,6 +201,7 @@ class Tender
         $this->okpd2 = $okpd2;
         $this->securityRequired = $securityRequired;
         $this->nationalRegime = $nationalRegime;
+        $this->bidsRequired = $bidsRequired;
         $this->createdAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $this->updatedAt = $this->createdAt;
         $this->lots = new ArrayCollection();
@@ -329,6 +342,15 @@ class Tender
     public function isSecurityRequired(): bool
     {
         return $this->securityRequired;
+    }
+
+    /**
+     * Требуется ли заявка на участие (FR-1.2.1). Читается guard'ами workflow
+     * (config/workflow/tender.yaml) — отсюда имя без префикса get.
+     */
+    public function isBidsRequired(): bool
+    {
+        return $this->bidsRequired;
     }
 
     /** @return array<string, mixed>|null */

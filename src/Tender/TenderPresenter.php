@@ -40,6 +40,7 @@ final readonly class TenderPresenter
             'price_basis' => $tender->getPriceBasis()->value,
             'status' => $tender->getStatus()->value,
             'access_type' => $tender->getAccessType()->value,
+            'bids_required' => $tender->isBidsRequired(),
             'execution_rating' => $tender->getExecutionRating(),
             'region' => $tender->getRegion(),
             'okpd2' => $tender->getOkpd2(),
