@@ -277,11 +277,14 @@ final readonly class ContractService
 
     /**
      * Список договоров компании актора (AM-9 GET /contracts): как заказчика,
-     * так и исполнителя. Необязательный фильтр по статусу.
+     * так и исполнителя. Необязательные фильтры — по статусу и по привязанной
+     * процедуре (contract_tenders.tender_id).
      *
      * @return list<Contract>
+     *
+     * @throws ValidationException если статус вне каталога или tender_id не uuid
      */
-    public function list(User $actor, ?string $status = null): array
+    public function list(User $actor, ?string $status = null, ?string $tenderId = null): array
     {
         $companyId = InputValue::companyId($actor);
 
@@ -293,7 +296,15 @@ final readonly class ContractService
             }
         }
 
-        return $this->contracts->listForParties($companyId, $companyId, $statusEnum);
+        $tender = null;
+        if (null !== $tenderId && '' !== $tenderId) {
+            if (!Uuid::isValid($tenderId)) {
+                throw new ValidationException('tender_id must be a valid UUID');
+            }
+            $tender = Uuid::fromString($tenderId);
+        }
+
+        return $this->contracts->listForParties($companyId, $companyId, $statusEnum, $tender);
     }
 
     /**

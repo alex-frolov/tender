@@ -47,11 +47,13 @@ final class ContractRepository extends ServiceEntityRepository
 
     /**
      * Договоры, где компания является заказчиком или исполнителем (FR-1.4.3,
-     * AM-9 GET /contracts). Необязательный фильтр по статусу.
+     * AM-9 GET /contracts). Необязательные фильтры: по статусу и по
+     * привязанной процедуре (JOIN contract_tenders) — последний отвечает на
+     * вопрос «есть ли договор по этому тендеру» одним запросом.
      *
      * @return list<Contract>
      */
-    public function listForParties(Uuid $customerId, Uuid $supplierId, ?ContractStatusEnum $status = null): array
+    public function listForParties(Uuid $customerId, Uuid $supplierId, ?ContractStatusEnum $status = null, ?Uuid $tenderId = null): array
     {
         $qb = $this->createQueryBuilder('c')
             ->where('c.customerId = :customer')
@@ -62,6 +64,12 @@ final class ContractRepository extends ServiceEntityRepository
 
         if (null !== $status) {
             $qb->andWhere('c.status = :status')->setParameter('status', $status->value);
+        }
+
+        if (null !== $tenderId) {
+            $qb->innerJoin('c.tenders', 'ct')
+                ->andWhere('ct.tenderId = :tenderId')
+                ->setParameter('tenderId', $tenderId);
         }
 
         /** @var list<Contract> $result */
