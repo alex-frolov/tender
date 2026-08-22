@@ -6,6 +6,7 @@ namespace App\Tender\UseCase;
 
 use App\Iam\Entity\User;
 use App\Tender\Input\WithdrawTenderInput;
+use App\Tender\TenderLotView;
 use App\Tender\TenderPresenter;
 use App\Tender\TenderService;
 
@@ -30,6 +31,6 @@ final class WithdrawTenderUseCase implements TenderUseCase
      */
     public function execute(User $user, string $tenderId, WithdrawTenderInput $input, ?string $ip = null): array
     {
-        return $this->presenter->single($this->tenders->withdraw($user, $tenderId, $input->reason, $ip));
+        return $this->presenter->single($this->tenders->withdraw($user, $tenderId, $input->reason, $ip), TenderLotView::owner());
     }
 }

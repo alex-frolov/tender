@@ -20,7 +20,7 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * FR-1.2.7, AM-8: справочник document_types, управляется суперадмином.
  * - list() — активные типы (справочник виден всем);
  * - create — суперадмин; 201; дубль code → 409;
- * - update — суперадмин; изменение полей;
+ * - update — суперадмин; изменение полей; отсутствующие в теле поля не меняются; неизвестный id → 404;
  * - deactivate — суперадмин; тип скрывается из активного списка;
  * - не-суперадмин → 403.
  */
@@ -183,6 +183,47 @@ final class DocumentTypeTest extends WebTestCase
         self::assertIsArray($body);
         self::assertSame('Новое имя', $body['name']);
         self::assertTrue($body['required']);
+    }
+
+    /**
+     * Entity-bound update form (AGENTS.md): в теле только name — остальные поля
+     * сущности сохраняют текущие значения (clearMissing: false), а не сбрасываются.
+     */
+    public function testUpdateKeepsFieldsMissingFromBody(): void
+    {
+        self::client();
+        self::platformAdmin();
+        $type = DocumentTypeFactory::createOne([
+            'code' => 'dt_partial',
+            'name' => 'Старое имя',
+            'ownerRole' => 'customer',
+            'visibility' => 'public',
+            'required' => true,
+        ]);
+        $token = self::login();
+
+        $url = str_replace('{documentTypeId}', (string) $type->getId(), DocumentTypeUpdateController::URL);
+        $client = self::request('PUT', $url, $token, ['name' => 'Новое имя']);
+        self::assertResponseStatusCodeSame(200);
+
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('Новое имя', $body['name']);
+        self::assertSame('customer', $body['owner_role']);
+        self::assertSame('public', $body['visibility']);
+        self::assertTrue($body['required']);
+        self::assertTrue($body['active']);
+    }
+
+    public function testUpdateUnknownDocumentTypeReturns404(): void
+    {
+        self::client();
+        self::platformAdmin();
+        $token = self::login();
+
+        $url = str_replace('{documentTypeId}', 'not-a-number', DocumentTypeUpdateController::URL);
+        self::request('PUT', $url, $token, ['name' => 'Новое имя']);
+        self::assertResponseStatusCodeSame(404);
     }
 
     public function testPlatformAdminDeactivatesDocumentType(): void

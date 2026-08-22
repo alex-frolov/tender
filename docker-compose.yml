@@ -57,6 +57,15 @@ services:
 
   db:
     image: postgres:17-alpine
+    # pg_stat_statements подгружается только при старте сервера, поэтому идёт
+    # в shared_preload_libraries. Без него CREATE EXTENSION падает,
+    #  а ранжировать запросы по факту нечем — любой аудит нагрузки
+    #  остаётся рассуждением, а не измерением.
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c pg_stat_statements.track=all
+      -c pg_stat_statements.max=5000
     environment:
       POSTGRES_USER: tender
       POSTGRES_PASSWORD: tender

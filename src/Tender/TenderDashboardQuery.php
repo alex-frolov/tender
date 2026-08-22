@@ -18,16 +18,24 @@ interface TenderDashboardQuery
      * Активные тендеры компании (AM-13, GET /dashboard): агрегированный статус
      * (FR-1.1.3, вариант C) в одной из фаз accept_bids..contract (не draft,
      * не терминальные closed/cancelled).
+     *
+     * $participatingTenderIds — процедуры, где компания участвует, но не
+     * является заказчиком. Без них у исполнителя счётчик всегда 0: своих
+     * тендеров у него нет по определению.
+     *
+     * @param list<Uuid> $participatingTenderIds
      */
-    public function countActive(Uuid $tenantId): int;
+    public function countActive(Uuid $tenantId, array $participatingTenderIds = []): int;
 
     /**
      * Тендеры компании по агрегированному статусу: карта статус → количество.
      * Для счётчиков дашборда и детализации «активные по фазам».
      *
+     * @param list<Uuid> $participatingTenderIds процедуры участия (не свои)
+     *
      * @return array<string, int> статус (value) → количество
      */
-    public function countByStatus(Uuid $tenantId): array;
+    public function countByStatus(Uuid $tenantId, array $participatingTenderIds = []): array;
 
     /**
      * Ближайшие дедлайны приёма заявок (bids_end из таймлайна, ещё не
@@ -36,16 +44,20 @@ interface TenderDashboardQuery
      * (period day/week/month): учитываются только дедлайны ≤ until;
      * null — без ограничения.
      *
+     * @param list<Uuid> $participatingTenderIds процедуры участия (не свои)
+     *
      * @return list<array{tender_id: string, deadline_at: string}>
      */
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array;
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null, array $participatingTenderIds = []): array;
 
     /**
      * Факты тендеров по срезу за период [from, to) (GET /stats/tenders):
      * один ряд на тендер — id, значение среза (region/customer/period),
      * НМЦК. Срез okpd2 не поддерживается (в модели отсутствует) — пустой список.
      *
+     * @param list<Uuid> $participatingTenderIds процедуры участия (не свои)
+     *
      * @return list<array{tender_id: string, dimension_value: string, nmck_minor: int|null}>
      */
-    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to): array;
+    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to, array $participatingTenderIds = []): array;
 }

@@ -28,10 +28,23 @@ framework:
                     to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
                 # Авто-переход по таймлайну: published → accepting_bids.
                 # Инициируется TimelineMessage (Redis-transport, DelayStamp).
+                # Guard: только для тендера с заявками на участие — без них
+                # фазы accepting_bids не существует (см. START_TRADE_WITHOUT_BIDS).
                 !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_BID_ACCEPTANCE->value:
                     from:
                         - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
                     to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::ACCEPTING_BIDS->value
+                    guard: "subject.isBidsRequired()"
+                # Тендер без заявок на участие (bids_required=false):
+                # published → bidding напрямую, минуя accepting_bids. Инициируется
+                # тем же TimelineMessage на bids_start: приёма заявок нет, в этот
+                # момент открываются торги. Guard'а по фазе лотов здесь нет —
+                # переход открывает торги, а не догоняет ушедшие вперёд лоты.
+                !php/enum App\Tender\Entity\Enum\TenderStatusTransition::START_TRADE_WITHOUT_BIDS->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\TenderStatusEnum::PUBLISHED->value
+                    to: !php/enum App\Tender\Entity\Enum\TenderStatusEnum::BIDDING->value
+                    guard: "not subject.isBidsRequired()"
                 # Отзыв публикации: published → withdrawn.
                 # ТОЛЬКО до старта приёма заявок (до accepting_bids); после — только cancel.
                 # Не терминальный: withdrawn → published (перепубликация)

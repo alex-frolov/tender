@@ -319,11 +319,18 @@ final class DocumentService implements DocumentServiceContract
      * - entity_type=tender: тендер в компании актора (заказчик) — через
      *   публичный read-контракт Tender-модуля (TenderReadService::belongsToCompany),
      *   а не напрямую через EM/чужой Repository (границы модулей, rule 6);
+     * - entity_type=lot: лот процедуры, ВИДИМОЙ компании актора (FR-1.5.14).
+     *   К лоту документы грузят обе стороны: заказчик — документацию закупки,
+     *   исполнитель — документы приёмки (акты, накладные) при отметке о
+     *   выполнении. Поэтому проверка не «мой тендер», а «вижу процедуру»:
+     *   иначе исполнитель не смог бы приложить акт к чужому по тенанту лоту;
      * - entity_type=contract: договор, где компания актора — заказчик или
      *   исполнитель (contract_documents, FR-1.4.7 — скан договора);
-     * - прочие типы (lot/bid/…) подключаются в соответствующих фазах.
+     * - прочие типы (bid/claim) не ограничиваются: заявка и претензия
+     *   существуют только у своей стороны, владение проверяет модуль-владелец.
      *
-     * @throws NotFoundException             если тендер не в компании актора
+     * @throws NotFoundException             если тендер/лот не в компании актора
+     *                                       или процедура невидима
      * @throws DocumentAccessDeniedException если договор не принадлежит компании
      */
     private function assertEntityBelongsToTenant(DocumentEntityType $entityType, Uuid $entityId, Uuid $companyId): void
@@ -332,6 +339,18 @@ final class DocumentService implements DocumentServiceContract
             if (!$this->tenders->belongsToCompany($entityId, $companyId)) {
                 throw new NotFoundException('Tender not found');
             }
+
+            return;
+        }
+
+        if (DocumentEntityType::LOT === $entityType) {
+            $tenderId = $this->tenders->findTenderIdByLot($entityId);
+            if (null === $tenderId) {
+                throw new NotFoundException('Lot not found');
+            }
+            // Видимость процедуры (а не принадлежность тенанту): к лоту
+            // прикладывает документы и исполнитель. Невидимая → 404.
+            $this->tenders->resolveVisibleTender((string) $tenderId, $companyId);
 
             return;
         }

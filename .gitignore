@@ -1,5 +1,6 @@
 /.idea
 .DS_Store
+/opencode.json
 
 # Секреты локального окружения: реальные значения не коммитим (NFR-11);
 # шаблон для локального .env — .env.dist (закоммичен), тестовые значения — .env.test.
@@ -66,3 +67,6 @@ yarn-error.log
 
 # local agent guidance, not part of the project source
 /CLAUDE.md
+
+# Протокол e2e-прогона (scripts/e2e-procedure-types.py) — артефакт запуска
+/e2e-result.json

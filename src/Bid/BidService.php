@@ -349,9 +349,16 @@ final readonly class BidService
     /**
      * Заявки тендера для компании актора (FR-1.2.2/1.2.3):
      * - заказчик (тенант тендера) видит все заявки по своему тендеру;
-     * - участник ДО вскрытия видит только свои заявки (метаданные, FR-1.2.2);
-     * - участник ПОСЛЕ вскрытия видит все поданные (submitted) заявки —
-     *   содержимое отдаётся «в части» (part1, FR-1.2.3); отозванные не видны.
+     * - участник ВСЕГДА видит свои заявки — в любом статусе: это его
+     *   собственная заявка, и её карточка (решение по допуску, приложенная
+     *   часть 2) нужна ему и после рассмотрения;
+     * - участник ПОСЛЕ вскрытия видит вдобавок чужие поданные (submitted)
+     *   заявки — содержимое отдаётся «в части» (part1, FR-1.2.3); чужие
+     *   отозванные и отклонённые не видны.
+     *
+     * Раньше после вскрытия выборка сводилась к submitted целиком, и своя
+     * заявка исчезала из списка сразу после допуска (admitted): участник
+     * терял и решение заказчика, и раздел документов части 2.
      *
      * @return list<Bid>
      */
@@ -365,17 +372,13 @@ final readonly class BidService
             return $all;
         }
 
-        // участник: после вскрытия — все поданные (часть 1); до — только свои
-        if (null !== $tender->getBidsOpenedAt()) {
-            return array_values(array_filter(
-                $all,
-                static fn (Bid $b): bool => BidStatusEnum::SUBMITTED === $b->getStatus(),
-            ));
-        }
+        // участник: свои заявки всегда, чужие поданные — только после вскрытия
+        $opened = null !== $tender->getBidsOpenedAt();
 
         return array_values(array_filter(
             $all,
-            static fn (Bid $b): bool => $b->getSupplierId()->equals($companyId),
+            static fn (Bid $b): bool => $b->getSupplierId()->equals($companyId)
+                || ($opened && BidStatusEnum::SUBMITTED === $b->getStatus()),
         ));
     }
 
@@ -402,10 +405,19 @@ final readonly class BidService
      * bids_end обрабатывается worker'ом с задержкой), подача после срока
      * отклоняется. Тендеры без таймлайна (тесты/черновики) лимита не имеют.
      *
+     * Тендер без заявок на участие (bids_required=false, FR-1.2.1) отклоняется
+     * отдельным сообщением: он никогда не бывает в accepting_bids (published →
+     * bidding напрямую), и общий текст «приём заявок закрыт» вводил бы
+     * в заблуждение — приёма заявок в такой процедуре нет вовсе.
+     *
      * @throws ConflictException если тендер не принимает заявки
      */
     private function assertAcceptingBids(Tender $tender): void
     {
+        if (!$tender->isBidsRequired()) {
+            throw new ConflictException('This tender does not require participation bids');
+        }
+
         if (TenderStatusEnum::ACCEPTING_BIDS !== $tender->getStatus()) {
             throw new ConflictException('Bids are accepted only while the tender is accepting bids');
         }

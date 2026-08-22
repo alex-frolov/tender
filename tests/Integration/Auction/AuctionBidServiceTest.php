@@ -236,6 +236,28 @@ final class AuctionBidServiceTest extends KernelTestCase
         $this->bidService->placeReductionFixedBid($auction, Uuid::v4(), self::START_MINOR - self::STEP_MINOR);
     }
 
+    /**
+     * Тендер без заявки на участие (FR-1.2.1): допускать некого — ставку
+     * принимает любой участник, доступ к закрытой закупке проверен раньше
+     * (PlaceBidUseCase).
+     */
+    public function testBidderWithoutBidIsAcceptedWhenTenderNeedsNoBids(): void
+    {
+        $start = self::at('2026-01-01T10:00:00Z');
+        $auction = $this->tradingAuction(startAt: $start, bidsRequired: false);
+
+        $price = self::START_MINOR - self::STEP_MINOR;
+        $bid = $this->bidService->placeReductionFixedBid(
+            $auction,
+            Uuid::v4(),
+            $price,
+            now: $start->modify('+1 minute'),
+        );
+
+        self::assertInstanceOf(AuctionBid::class, $bid);
+        self::assertSame($price, $auction->getCurrentPriceMinor());
+    }
+
     public function testTradeWithoutCapturedRulesIsRejected(): void
     {
         // TRADE без rules_snapshot (нарушение порядка старта) — ставка отклоняется.
@@ -469,9 +491,10 @@ final class AuctionBidServiceTest extends KernelTestCase
     private function tradingAuction(
         int $priceMinLimitMinor = 0,
         ?\DateTimeImmutable $startAt = null,
+        bool $bidsRequired = true,
     ): Auction {
         $startAt ??= new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $tender = TenderFactory::createOne(['nmckMinor' => self::START_MINOR]);
+        $tender = TenderFactory::createOne(['nmckMinor' => self::START_MINOR, 'bidsRequired' => $bidsRequired]);
         $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
         $auction = AuctionFactory::new()
             ->forTender($tender, $lot)

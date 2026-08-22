@@ -104,6 +104,10 @@ final class ContractTenderRepository extends ServiceEntityRepository
      * привязок contract_tenders по договорам компании, созданным в период.
      * Многоразовый договор (multi_use) распределяется по своим тендерам.
      *
+     * «Договоры компании» — как заказчика (тенант), так и исполнителя: раньше
+     * учитывался только тенант, и у исполнителя сумма всегда выходила нулевой,
+     * хотя договор с его участием существует (ср. countForCompany).
+     *
      * @return array<string, int> tender_id → сумма цен (minor units)
      */
     public function amountSumByTender(Uuid $tenantId, \DateTimeImmutable $from, \DateTimeImmutable $to): array
@@ -112,10 +116,10 @@ final class ContractTenderRepository extends ServiceEntityRepository
             ->select('ct.tenderId AS tender_id')
             ->addSelect('SUM(ct.priceNetMinor) AS amount')
             ->join('ct.contract', 'c')
-            ->where('c.tenantId = :tenant')
+            ->where('c.tenantId = :company OR c.supplierId = :company')
             ->andWhere('c.createdAt >= :from')
             ->andWhere('c.createdAt < :to')
-            ->setParameter('tenant', $tenantId)
+            ->setParameter('company', $tenantId)
             ->setParameter('from', $from)
             ->setParameter('to', $to)
             ->groupBy('ct.tenderId')

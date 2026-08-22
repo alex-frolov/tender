@@ -720,19 +720,22 @@ paths:
                 the procurement is open to the outside, and who exactly may see it depends on
                 the status:
 
-                  * `draft`, `withdrawn`, `evaluation` — the customer's staff only. These are
-                    the customer's internal stages; such tenders are never listed to anyone else.
-                  * `published`, `accepting_bids`, `bidding` — everyone if the tender is open
-                    (access_type=open); if it is closed (access_type=contract_holders), only the
-                    customer and companies that have an active multi_use (reusable) contract
-                    with that customer.
-                  * `awarding`, `contract`, `closed`, `cancelled` — the customer and the
-                    performer company only (the supplier whose bid won). A contract no longer
-                    grants access here: once the winner is picked the procurement stops being
-                    public even for companies that were entitled to take part.
+                  * `draft`, `withdrawn` — the customer's staff only. There is no announced
+                    procedure yet; such tenders are never listed to anyone else.
+                  * `published`, `accepting_bids`, `bidding`, `evaluation`, `awarding`,
+                    `contract` — everyone if the tender is open (access_type=open); if it is
+                    closed (access_type=contract_holders), only the customer and companies
+                    that have an active multi_use (reusable) contract with that customer.
+                    The whole active part of the procedure stays public: evaluation, the
+                    award and the work under the contract are the outcome of an announced
+                    procedure, not a private exchange between the parties.
+                  * `closed`, `cancelled` — the customer and the performer company only
+                    (the supplier whose bid won). A contract no longer grants access here:
+                    a finished procurement stops being public even for companies that were
+                    entitled to take part.
 
                 Visibility does not grant participation: submitting a bid to a closed tender
-                still requires the contract (409 access_denied) — see
+                still requires the contract (409 contract_required) — see
                 GET /tenders/{tenderId}/access.
                 Access: tenders.board.view (all company roles).
             parameters:
@@ -789,10 +792,22 @@ paths:
             description: |
                 Card of a tender visible to the actor's company — the per-status rule is the
                 same as for GET /tenders (own tender in any status; another company's tender
-                only in the trading statuses, subject to access_type, or after the award only
-                for the performer). A tender that is not visible is indistinguishable from a
-                missing one — 404, so that closed procurements of other companies are not
-                disclosed.
+                throughout the active procedure, subject to access_type, and after it is
+                finished only for the performer). A tender that is not visible is
+                indistinguishable from a missing one — 404, so that closed procurements of
+                other companies are not disclosed.
+
+                Seeing a tender is not the same as seeing everything inside it. For a viewer
+                who is neither the customer nor the performer of a lot:
+
+                  * lots in `closed`/`cancelled` are omitted from `lots` — a finished lot may
+                    sit inside a still-active tender (the tender status aggregates lots as a
+                    bottleneck), and it is no longer public;
+                  * `lots[].winner_bid_id` is `null` — the performer's identity is not
+                    disclosed (the bid id would resolve to a company through
+                    GET /tenders/{tenderId}/bids);
+                  * documents follow their own rule (only `visibility=public` of another
+                    company is readable).
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
             responses:
@@ -1101,21 +1116,6 @@ paths:
             tags: [bids]
             summary: Submit a bid; re-submitting for a lot before the deadline replaces it
             operationId: submitBid
-            description: |
-                Submitting for a lot again before the deadline replaces the previous bid
-                (FR-1.2.5); the content is encrypted until opening (FR-1.2.2).
-
-                A closed tender (access_type=contract_holders) additionally requires an
-                active multi_use contract with the customer (FR-1.5.14): without it the
-                answer is 409 {access_denied} and the detail names the reason
-                (contract_required | contract_expired | contract_terminated), the same
-                values as GET /tenders/{tenderId}/access.
-
-                lot_id is required whenever the tender has lots (422 validation_error
-                otherwise) and must be omitted when it has none: admission to trading is
-                matched by the (tender, lot) pair, so a lot-less bid would never admit its
-                supplier to a lot auction.
-                Access: the bids.submit permission.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
                 - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -1132,8 +1132,12 @@ paths:
                             schema: { $ref: '#/components/schemas/Bid' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Not accepting bids, or a closed tender without a contract (code: state_transition_forbidden | access_denied)'
-                    $ref: '#/components/responses/Conflict'
+                    description: >-
+                        The tender is not accepting bids, or it requires no participation bid at all
+                        (bids_required=false — there is nothing to submit).
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Error' }
                 '422': { $ref: '#/components/responses/ValidationError' }
 
     /bids/{bidId}/withdraw:
@@ -1244,14 +1248,15 @@ paths:
                 status must be open to the viewer. Own auctions are listed in any status; for
                 another company's auction the status decides:
 
-                  * `draft`, `agreement`, `new`, `scheduled`, `paused`, `choice`, `expired`,
-                    `deleted` — the customer's staff only (preparation, a pause, picking the
-                    winner and housekeeping states are the customer's own decisions);
+                  * `draft`, `agreement`, `new`, `scheduled` — the customer's staff only
+                    (preparing the trading session is the customer's own business);
                   * `trade` — everyone the tender is visible to: trading is public within the
                     procurement's audience;
-                  * `approve`, `in_work`, `done_by_performer`, `done`, `claim`,
-                    `done_by_claim`, `cancelled` — the customer and the performer company
-                    (the winner of the lot) only.
+                  * `paused`, `choice`, `approve`, `in_work`, `done_by_performer`, `done`,
+                    `claim`, `done_by_claim`, `cancelled`, `expired`, `deleted` — the customer
+                    and the performer company (the winner of the lot) only: once trading is
+                    over the auction carries the fate of one specific lot. While no winner is
+                    known this is effectively "the customer only".
 
                 Compact items: id, tender/lot, type, status, prices, timer. No pagination
                 (one auction per lot — the list size is bounded by the business flow).
@@ -1342,9 +1347,9 @@ paths:
                 customer (tender owner) and observers (platform_admin) always; while trading
                 (`trade`) — anyone the tender is visible to, plus admitted participants
                 (bids.status = admitted) even if the tender stopped being visible to them
-                mid-auction; from `approve` onwards — the performer company only; in the
-                preparation, `paused`, `choice` and housekeeping statuses — nobody but the
-                customer. Everyone else — 403.
+                mid-auction; after trading (`paused`, `choice`, `approve` and onwards,
+                including `expired`/`deleted`) — the performer company only; in the
+                preparation statuses — nobody but the customer. Everyone else — 403.
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
             responses:
@@ -1367,7 +1372,7 @@ paths:
                 (public hub URL + private topic `auction:{id}` + subscribe-JWT) and connects to the hub via EventSource.
                 Privacy: a subscription is issued to whoever may see the auction in its current status
                 (same matrix as GET /auctions — the customer and observers always, during `trade` also
-                everyone the tender is visible to plus admitted participants, from `approve` onwards only
+                everyone the tender is visible to plus admitted participants, after trading only
                 the performer company); Mercure JWT authorization, sub permission.
                 Publishing is done by the core with the publish JWT (REST /auctions/{id}/bids — bids).
                 The response includes the current snapshot (`state`) for immediate rendering; the hub sends live events after connecting:
@@ -1395,7 +1400,7 @@ paths:
                 (null); after trading ends, participant identities are revealed.
                 Access: whoever may see the auction in its current status (same matrix as
                 GET /auctions — the customer and observers always, during `trade` also everyone
-                the tender is visible to plus admitted participants, from `approve` onwards only
+                the tender is visible to plus admitted participants, after trading only
                 the performer company).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
@@ -1425,9 +1430,6 @@ paths:
                 bid fixes start_price_minor (price discovery, is_first_price=true).
                 Admitted participants only and only in TRADE;
                 idempotency — the Idempotency-Key header.
-                For a closed tender (access_type=contract_holders) the contract is
-                re-checked here, not only at bid submission: it may have been terminated
-                or have expired after the admission — 409 {access_denied}.
                 Access: the auction.bid permission (admin/manager; agent — 403).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
@@ -1447,7 +1449,7 @@ paths:
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed, access_denied)'
+                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed)'
                     $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
                 '429': { $ref: '#/components/responses/RateLimited' }
@@ -2051,7 +2053,8 @@ paths:
                 - name: documentTypeId
                   in: path
                   required: true
-                  schema: { type: string, format: uuid }
+                  description: 'Numeric identifier of the document type (bigint)'
+                  schema: { type: integer, format: int64, minimum: 1 }
             requestBody:
                 required: true
                 content:
@@ -2082,7 +2085,8 @@ paths:
                 - name: documentTypeId
                   in: path
                   required: true
-                  schema: { type: string, format: uuid }
+                  description: 'Numeric identifier of the document type (bigint)'
+                  schema: { type: integer, format: int64, minimum: 1 }
             responses:
                 '200':
                     description: Type deactivated
@@ -2181,6 +2185,10 @@ paths:
                 - name: contract_status
                   in: query
                   schema: { $ref: '#/components/schemas/ContractStatus' }
+                - name: tender_id
+                  in: query
+                  description: Only contracts bound to this tender (contract_tenders.tender_id)
+                  schema: { type: string, format: uuid }
             responses:
                 '200':
                     description: List of contracts
@@ -3287,6 +3295,9 @@ components:
         # ---------- Tender ----------
         TenderStatus:
             type: string
+            description: >-
+                Tender status. accepting_bids only occurs when bids_required=true; a tender that needs
+                no participation bid goes published → bidding directly at bids_start.
             enum: [draft, published, withdrawn, accepting_bids, bidding, evaluation, awarding, contract, closed, cancelled]
         TenderCreate:
             type: object
@@ -3305,6 +3316,15 @@ components:
                 region: { type: string, maxLength: 100 }
                 okpd2: { type: string, maxLength: 20, description: 'ОКПД2 код предмета закупки' }
                 access_type: { type: string, enum: [open, contract_holders], default: open }
+                bids_required:
+                    type: boolean
+                    default: true
+                    description: >-
+                        Whether a participation bid is required. true (default) — the classic flow:
+                        accepting_bids, opening at bids_end, qualification, and only admitted participants
+                        trade. false — no bids at all: the tender has no accepting_bids phase
+                        (published → bidding directly at bids_start) and anyone who can see the tender
+                        may trade, subject to access_type. Set at creation only.
                 required_contract_type_id: { type: string, format: uuid, nullable: true }
                 timeline:
                     type: object
@@ -3357,6 +3377,7 @@ components:
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }
                 status: { $ref: '#/components/schemas/TenderStatus' }
                 access_type: { type: string, enum: [open, contract_holders] }
+                bids_required: { type: boolean, description: 'A participation bid is required (false — no bids and no accepting_bids phase: published → bidding directly)' }
                 execution_rating: { type: integer, nullable: true }
                 region: { type: string, maxLength: 100, nullable: true }
                 okpd2: { type: string, maxLength: 20, nullable: true, description: 'ОКПД2 код предмета закупки' }
@@ -3435,7 +3456,7 @@ components:
                 execution_start_at: { type: string, format: date-time, nullable: true }
                 trade_end_lead_hours: { type: integer }
                 status: { type: string }
-                winner_bid_id: { type: string, format: uuid, nullable: true }
+                winner_bid_id: { type: string, format: uuid, nullable: true, description: 'ID of the winning bid (bids.id). Disclosed to the customer and to the performer of this lot only; null for any other viewer, so the performer''s identity is not revealed.' }
 
         # ---------- Procurement plan ----------
         ProcurementPlanCreate:
@@ -3471,14 +3492,7 @@ components:
             required: [supplier_id]
             properties:
                 supplier_id: { type: string, format: uuid }
-                lot_id:
-                    type: string
-                    format: uuid
-                    nullable: true
-                    description: |
-                        The lot the bid is for. Required when the tender has lots (422
-                        otherwise): admission to trading is matched by the (tender, lot)
-                        pair. Null only for a tender without lots (a single subject).
+                lot_id: { type: string, format: uuid, nullable: true }
                 part1:
                     type: object
                     description: 'Consent, characteristics (confidential until opening)'

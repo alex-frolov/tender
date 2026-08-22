@@ -160,14 +160,22 @@ final class AuctionRepository extends ServiceEntityRepository
      * $until — верхняя граница горизонта дедлайнов (period day/week/month
      * дашборда): null = без ограничения.
      *
+     * $participatingTenderIds — процедуры участия компании (чужие по тенанту):
+     * их торги тоже попадают в дедлайны, иначе у исполнителя, у которого своих
+     * аукционов нет, раздел всегда пуст.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return list<array{auction_id: string, tender_id: string, deadline_at: string}>
      */
-    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
+    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null, array $participatingTenderIds = []): array
     {
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $qb = $this->createQueryBuilder('a')
             ->select('a.id', 'a.tenderId', 'a.plannedEndAt')
-            ->where('a.tenantId = :tenantId')
+            ->where([] === $participatingTenderIds
+                ? 'a.tenantId = :tenantId'
+                : 'a.tenantId = :tenantId OR a.tenderId IN (:participating)')
             ->andWhere('a.status = :trade')
             ->andWhere('a.plannedEndAt IS NOT NULL')
             ->andWhere('a.plannedEndAt > :now')
@@ -176,6 +184,9 @@ final class AuctionRepository extends ServiceEntityRepository
             ->setParameter('now', $now)
             ->orderBy('a.plannedEndAt', 'ASC')
             ->setMaxResults($limit);
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
         if (null !== $until) {
             $qb->andWhere('a.plannedEndAt <= :until')->setParameter('until', $until);
         }
@@ -205,9 +216,14 @@ final class AuctionRepository extends ServiceEntityRepository
      * базе (PR-6). Нативным SQL: winner_bid_id — скалярный FK на auction_bids.id,
      * в ORM-модели отношения нет (одна сводная выборка, без N+1).
      *
+     * $participatingTenderIds расширяет выборку процедурами участия компании
+     * (чужими по тенанту): снижение на них — такой же факт её статистики.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return list<array{tender_id: string, start_price_minor: int, final_price_minor: int}>
      */
-    public function reductionRows(Uuid $tenantId, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    public function reductionRows(Uuid $tenantId, \DateTimeImmutable $from, \DateTimeImmutable $to, array $participatingTenderIds = []): array
     {
         $sql = <<<'SQL'
 SELECT a.tender_id::text AS tender_id,
@@ -215,7 +231,7 @@ SELECT a.tender_id::text AS tender_id,
        COALESCE(wb.price_minor, a.current_price_minor) AS final_price_minor
 FROM auctions a
 LEFT JOIN auction_bids wb ON wb.id = a.winner_bid_id
-WHERE a.tenant_id = :tenant
+WHERE (a.tenant_id = :tenant OR a.tender_id = ANY(CAST(:participating AS uuid[])))
   AND a.created_at >= :from
   AND a.created_at < :to
   AND a.start_price_minor IS NOT NULL
@@ -223,6 +239,12 @@ WHERE a.tenant_id = :tenant
 SQL;
         $rows = $this->getEntityManager()->getConnection()->executeQuery($sql, [
             'tenant' => (string) $tenantId,
+            // ANY(uuid[]) вместо IN (...): пустой список остаётся валидным
+            // выражением, а параметр — скалярным (без раскрытия массива).
+            'participating' => '{'.implode(',', array_map(
+                static fn (Uuid $id): string => (string) $id,
+                $participatingTenderIds,
+            )).'}',
             'from' => $from->format('Y-m-d H:i:s'),
             'to' => $to->format('Y-m-d H:i:s'),
         ])->fetchAllAssociative();
@@ -238,6 +260,28 @@ SQL;
         }
 
         return $items;
+    }
+
+    /**
+     * Тендеры, в аукционах которых компания делала ставки (AM-13). Участие
+     * в торгах возможно и без заявки (тендер с bids_required=false), поэтому
+     * «мои процедуры» исполнителя не сводятся к его заявкам.
+     *
+     * @return list<Uuid>
+     */
+    public function tenderIdsForBidder(Uuid $companyId): array
+    {
+        /** @var list<array{tender_id: Uuid}> $rows */
+        $rows = $this->getEntityManager()->createQueryBuilder()
+            ->select('DISTINCT a.tenderId AS tender_id')
+            ->from(AuctionBid::class, 'b')
+            ->join('b.auction', 'a')
+            ->where('b.bidderId = :companyId')
+            ->setParameter('companyId', $companyId)
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_map(static fn (array $row): Uuid => $row['tender_id'], $rows);
     }
 
     /**
@@ -473,24 +517,55 @@ SQL;
     }
 
     /**
-     * История ставок аукциона (GET /auctions/{id}/bids, AM-5): принятые и
-     * отклонённые ставки (append-only, PR-9) в порядке раундов — хронология
-     * торгов. Анонимность bidder_id (до конца торгов) — на уровне представления.
+     * Страница истории ставок аукциона (GET /auctions/{id}/bids, AM-5, AR-6/NFR-22):
+     * принятые и отклонённые ставки (append-only, PR-9) в хронологии торгов.
+     * Анонимность bidder_id (до конца торгов) — на уровне представления.
+     *
+     * Keyset в SQL: раньше репозиторий отдавал
+     * ВСЕ ставки аукциона, а страницу вырезал курсор в PHP — на оживлённых
+     * торгах это тысячи гидратированных сущностей на каждый запрос страницы.
+     * Теперь условие «после курсора» — (placed_at, id) строго больше позиции
+     * курсора при ORDER BY placed_at ASC, id ASC, и из БД приходит ровно
+     * $limit строк. Вызывающий запрашивает limit+1, чтобы узнать, есть ли
+     * следующая страница (KeysetCursor::pageOf).
+     *
+     * Порядок — (placed_at, id), а не (round, placed_at) как раньше: он обязан
+     * совпадать с ключом курсора, иначе страницы разъезжаются. Хронология от
+     * этого не меняется — ставка получает round по ходу торгов, и время не
+     * идёт вспять; при равном placed_at порядок доопределяет id.
+     *
+     * @param \DateTimeImmutable|null $cursorPlacedAt позиция курсора (null — первая страница)
+     * @param Uuid|null               $cursorId       tiebreaker позиции курсора
      *
      * @return list<AuctionBid>
      */
-    public function listBids(Auction $auction): array
+    public function listBidsPage(Auction $auction, ?\DateTimeImmutable $cursorPlacedAt, ?Uuid $cursorId, int $limit): array
     {
-        /** @var list<AuctionBid> $result */
-        $result = $this->getEntityManager()->createQueryBuilder()
+        $qb = $this->getEntityManager()->createQueryBuilder()
             ->select('b')
             ->from(AuctionBid::class, 'b')
             ->where('b.auction = :auction')
             ->setParameter('auction', $auction)
-            ->orderBy('b.round', 'ASC')
-            ->addOrderBy('b.placedAt', 'ASC')
-            ->getQuery()
-            ->getResult();
+            ->orderBy('b.placedAt', 'ASC')
+            ->addOrderBy('b.id', 'ASC')
+            ->setMaxResults(max(1, $limit));
+
+        if (null !== $cursorPlacedAt && null !== $cursorId) {
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->gt('b.placedAt', ':cursorPlacedAt'),
+                    $qb->expr()->andX(
+                        $qb->expr()->eq('b.placedAt', ':cursorPlacedAt'),
+                        $qb->expr()->gt('b.id', ':cursorId'),
+                    ),
+                ),
+            )
+                ->setParameter('cursorPlacedAt', $cursorPlacedAt)
+                ->setParameter('cursorId', $cursorId);
+        }
+
+        /** @var list<AuctionBid> $result */
+        $result = $qb->getQuery()->getResult();
 
         return $result;
     }

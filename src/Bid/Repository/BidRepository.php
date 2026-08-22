@@ -230,6 +230,34 @@ final class BidRepository extends ServiceEntityRepository
     }
 
     /**
+     * Тендеры, где компания участвует как поставщик (AM-13): один ряд на
+     * тендер, статусы — те же, что и в countForSupplier (заявка в процессе).
+     * Черновики и отозванные участием не считаются.
+     *
+     * @return list<Uuid>
+     */
+    public function tenderIdsForSupplier(Uuid $companyId): array
+    {
+        /** @var list<array{tender_id: Uuid}> $rows */
+        $rows = $this->createQueryBuilder('b')
+            ->select('DISTINCT b.tenderId AS tender_id')
+            ->where('b.supplierId = :companyId')
+            ->andWhere('b.status IN (:statuses)')
+            ->setParameter('companyId', $companyId)
+            ->setParameter('statuses', [
+                BidStatusEnum::SUBMITTED->value,
+                BidStatusEnum::ADMITTED->value,
+                BidStatusEnum::REJECTED->value,
+                BidStatusEnum::WINNING->value,
+                BidStatusEnum::LOST->value,
+            ])
+            ->getQuery()
+            ->getArrayResult();
+
+        return array_map(static fn (array $row): Uuid => $row['tender_id'], $rows);
+    }
+
+    /**
      * Допущенные заявки на лот (FR-1.3.5): admitted-заявки
      * участников торга. Используются при фиксации победителя — победителю
      * ставится статус winning, остальным участникам — lost (data-model.md,

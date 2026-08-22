@@ -23,6 +23,18 @@ interface BidReadService
     public function isAdmitted(Uuid $tenderId, ?Uuid $lotId, Uuid $supplierId): bool;
 
     /**
+     * Право компании торговаться в аукционе лота (FR-1.3.2). Отличается от
+     * isAdmitted() тем, что учитывает саму необходимость заявки: у тендера
+     * с bids_required=false заявок и допуска нет, и торговаться может любой,
+     * кому тендер доступен — доступ к закрытому тендеру (contract_holders)
+     * проверяется отдельно, ContractAccessChecker на входе в аукцион.
+     *
+     * Строгий isAdmitted() остаётся для случаев, где нужен именно факт
+     * допущенной заявки (видимость live-торгов при истёкшем договоре).
+     */
+    public function isAdmittedToTrade(Uuid $tenderId, ?Uuid $lotId, Uuid $supplierId): bool;
+
+    /**
      * Допущенные заявки на лот (FR-1.3.5).
      *
      * @return list<Bid>

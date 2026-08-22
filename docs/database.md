@@ -1,5 +1,7 @@
 # Database
 
+> Query performance: index coverage, growth behaviour and optimisation proposals
+
 This document describes the data model: entities, relationships, enums and the table layout.
 
 ## Conventions
@@ -52,7 +54,7 @@ contracts N──1 contract_types
 
 | Table | Entity | Notes |
 |---|---|---|
-| `tenders` | `App\Tender\Entity\Tender` | tenant_id, number, title, procedure_type, law_type, nmck_minor, no_start_price, currency, vat_rate_bps, price_basis, customer_id, region, access_type, required_contract_type_id, status, execution_rating, cancellation_*, bids_opened_at, timeline (json), security_required, national_regime (json), created_by, version |
+| `tenders` | `App\Tender\Entity\Tender` | tenant_id, number, title, procedure_type, law_type, nmck_minor, no_start_price, currency, vat_rate_bps, price_basis, customer_id, region, access_type, required_contract_type_id, status, execution_rating, cancellation_*, bids_opened_at, timeline (json), security_required, bids_required, national_regime (json), created_by, version |
 | `lots` | `Lot` | tender_id (FK), number, title, price_net_minor, price_gross_minor, vat_rate_bps, price_basis, currency, quantity, unit, delivery_terms (json), execution_start_at, trade_end_lead_hours, security_percent, status, winner_bid_id |
 
 Indexes: `tenders (tenant,status)`, `tenders (tenant,customer)`, catalog keyset on
