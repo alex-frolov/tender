@@ -6,6 +6,7 @@ namespace App\Tender\UseCase;
 
 use App\Iam\Entity\User;
 use App\Tender\Input\CreateTenderInput;
+use App\Tender\TenderLotView;
 use App\Tender\TenderPresenter;
 use App\Tender\TenderService;
 
@@ -30,6 +31,6 @@ final readonly class CreateTenderUseCase implements TenderUseCase
      */
     public function execute(User $user, CreateTenderInput $input, ?string $ip = null): array
     {
-        return $this->presenter->single($this->tenders->create($user, $input, $ip));
+        return $this->presenter->single($this->tenders->create($user, $input, $ip), TenderLotView::owner());
     }
 }

@@ -720,16 +720,19 @@ paths:
                 the procurement is open to the outside, and who exactly may see it depends on
                 the status:
 
-                  * `draft`, `withdrawn`, `evaluation` — the customer's staff only. These are
-                    the customer's internal stages; such tenders are never listed to anyone else.
-                  * `published`, `accepting_bids`, `bidding` — everyone if the tender is open
-                    (access_type=open); if it is closed (access_type=contract_holders), only the
-                    customer and companies that have an active multi_use (reusable) contract
-                    with that customer.
-                  * `awarding`, `contract`, `closed`, `cancelled` — the customer and the
-                    performer company only (the supplier whose bid won). A contract no longer
-                    grants access here: once the winner is picked the procurement stops being
-                    public even for companies that were entitled to take part.
+                  * `draft`, `withdrawn` — the customer's staff only. There is no announced
+                    procedure yet; such tenders are never listed to anyone else.
+                  * `published`, `accepting_bids`, `bidding`, `evaluation`, `awarding`,
+                    `contract` — everyone if the tender is open (access_type=open); if it is
+                    closed (access_type=contract_holders), only the customer and companies
+                    that have an active multi_use (reusable) contract with that customer.
+                    The whole active part of the procedure stays public: evaluation, the
+                    award and the work under the contract are the outcome of an announced
+                    procedure, not a private exchange between the parties.
+                  * `closed`, `cancelled` — the customer and the performer company only
+                    (the supplier whose bid won). A contract no longer grants access here:
+                    a finished procurement stops being public even for companies that were
+                    entitled to take part.
 
                 Visibility does not grant participation: submitting a bid to a closed tender
                 still requires the contract (409 access_denied) — see
@@ -789,10 +792,22 @@ paths:
             description: |
                 Card of a tender visible to the actor's company — the per-status rule is the
                 same as for GET /tenders (own tender in any status; another company's tender
-                only in the trading statuses, subject to access_type, or after the award only
-                for the performer). A tender that is not visible is indistinguishable from a
-                missing one — 404, so that closed procurements of other companies are not
-                disclosed.
+                throughout the active procedure, subject to access_type, and after it is
+                finished only for the performer). A tender that is not visible is
+                indistinguishable from a missing one — 404, so that closed procurements of
+                other companies are not disclosed.
+
+                Seeing a tender is not the same as seeing everything inside it. For a viewer
+                who is neither the customer nor the performer of a lot:
+
+                  * lots in `closed`/`cancelled` are omitted from `lots` — a finished lot may
+                    sit inside a still-active tender (the tender status aggregates lots as a
+                    bottleneck), and it is no longer public;
+                  * `lots[].winner_bid_id` is `null` — the performer's identity is not
+                    disclosed (the bid id would resolve to a company through
+                    GET /tenders/{tenderId}/bids);
+                  * documents follow their own rule (only `visibility=public` of another
+                    company is readable).
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
             responses:
@@ -1247,14 +1262,15 @@ paths:
                 status must be open to the viewer. Own auctions are listed in any status; for
                 another company's auction the status decides:
 
-                  * `draft`, `agreement`, `new`, `scheduled`, `paused`, `choice`, `expired`,
-                    `deleted` — the customer's staff only (preparation, a pause, picking the
-                    winner and housekeeping states are the customer's own decisions);
+                  * `draft`, `agreement`, `new`, `scheduled` — the customer's staff only
+                    (preparing the trading session is the customer's own business);
                   * `trade` — everyone the tender is visible to: trading is public within the
                     procurement's audience;
-                  * `approve`, `in_work`, `done_by_performer`, `done`, `claim`,
-                    `done_by_claim`, `cancelled` — the customer and the performer company
-                    (the winner of the lot) only.
+                  * `paused`, `choice`, `approve`, `in_work`, `done_by_performer`, `done`,
+                    `claim`, `done_by_claim`, `cancelled`, `expired`, `deleted` — the customer
+                    and the performer company (the winner of the lot) only: once trading is
+                    over the auction carries the fate of one specific lot. While no winner is
+                    known this is effectively "the customer only".
 
                 Compact items: id, tender/lot, type, status, prices, timer. No pagination
                 (one auction per lot — the list size is bounded by the business flow).
@@ -1345,9 +1361,9 @@ paths:
                 customer (tender owner) and observers (platform_admin) always; while trading
                 (`trade`) — anyone the tender is visible to, plus admitted participants
                 (bids.status = admitted) even if the tender stopped being visible to them
-                mid-auction; from `approve` onwards — the performer company only; in the
-                preparation, `paused`, `choice` and housekeeping statuses — nobody but the
-                customer. Everyone else — 403.
+                mid-auction; after trading (`paused`, `choice`, `approve` and onwards,
+                including `expired`/`deleted`) — the performer company only; in the
+                preparation statuses — nobody but the customer. Everyone else — 403.
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
             responses:
@@ -1370,7 +1386,7 @@ paths:
                 (public hub URL + private topic `auction:{id}` + subscribe-JWT) and connects to the hub via EventSource.
                 Privacy: a subscription is issued to whoever may see the auction in its current status
                 (same matrix as GET /auctions — the customer and observers always, during `trade` also
-                everyone the tender is visible to plus admitted participants, from `approve` onwards only
+                everyone the tender is visible to plus admitted participants, after trading only
                 the performer company); Mercure JWT authorization, sub permission.
                 Publishing is done by the core with the publish JWT (REST /auctions/{id}/bids — bids).
                 The response includes the current snapshot (`state`) for immediate rendering; the hub sends live events after connecting:
@@ -1398,7 +1414,7 @@ paths:
                 (null); after trading ends, participant identities are revealed.
                 Access: whoever may see the auction in its current status (same matrix as
                 GET /auctions — the customer and observers always, during `trade` also everyone
-                the tender is visible to plus admitted participants, from `approve` onwards only
+                the tender is visible to plus admitted participants, after trading only
                 the performer company).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
@@ -3455,7 +3471,7 @@ components:
                 execution_start_at: { type: string, format: date-time, nullable: true }
                 trade_end_lead_hours: { type: integer }
                 status: { type: string }
-                winner_bid_id: { type: string, format: uuid, nullable: true }
+                winner_bid_id: { type: string, format: uuid, nullable: true, description: 'ID of the winning bid (bids.id). Disclosed to the customer and to the performer of this lot only; null for any other viewer, so the performer''s identity is not revealed.' }
 
         # ---------- Procurement plan ----------
         ProcurementPlanCreate:

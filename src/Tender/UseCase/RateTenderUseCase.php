@@ -7,6 +7,7 @@ namespace App\Tender\UseCase;
 use App\Iam\Entity\User;
 use App\Tender\Entity\Tender;
 use App\Tender\Input\RateTenderInput;
+use App\Tender\TenderLotView;
 use App\Tender\TenderPresenter;
 use App\Tender\TenderService;
 
@@ -31,11 +32,14 @@ final readonly class RateTenderUseCase implements TenderUseCase
      */
     public function execute(Tender $tender, User $user, RateTenderInput $input, ?string $ip = null): array
     {
-        return $this->presenter->single($this->tenders->rate(
-            $user,
-            (string) $tender->getId(),
-            $input->executionRating,
-            $ip,
-        ));
+        return $this->presenter->single(
+            $this->tenders->rate(
+                $user,
+                (string) $tender->getId(),
+                $input->executionRating,
+                $ip,
+            ),
+            TenderLotView::owner(),
+        );
     }
 }
