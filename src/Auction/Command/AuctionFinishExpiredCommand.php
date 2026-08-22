@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Auction\Command;
 
 use App\Auction\AuctionWinnerService;
+use App\Auction\Entity\Auction;
 use App\Auction\Repository\AuctionRepository;
 use App\Shared\Exception\StateTransitionException;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -63,18 +64,38 @@ final class AuctionFinishExpiredCommand extends Command
         }
 
         if (true === $input->getOption('dry-run')) {
-            foreach ($expired as $auction) {
-                $io->writeln(\sprintf(
-                    'expired: %s (planned end %s)',
-                    (string) $auction->getId(),
-                    $auction->getPlannedEndAt()?->format(\DATE_ATOM) ?? '—',
-                ));
-            }
-            $io->success(\sprintf('%d auction(s) with a closed window', \count($expired)));
+            $this->report($io, $expired);
 
             return Command::SUCCESS;
         }
 
+        return $this->finish($io, $expired, $now);
+    }
+
+    /**
+     * Режим --dry-run: только перечислить аукционы, ничего не меняя.
+     *
+     * @param list<Auction> $expired
+     */
+    private function report(SymfonyStyle $io, array $expired): void
+    {
+        foreach ($expired as $auction) {
+            $io->writeln(\sprintf(
+                'expired: %s (planned end %s)',
+                (string) $auction->getId(),
+                $auction->getPlannedEndAt()?->format(\DATE_ATOM) ?? '—',
+            ));
+        }
+        $io->success(\sprintf('%d auction(s) with a closed window', \count($expired)));
+    }
+
+    /**
+     * Завершает торги по каждому аукциону и возвращает код выхода команды.
+     *
+     * @param list<Auction> $expired
+     */
+    private function finish(SymfonyStyle $io, array $expired, \DateTimeImmutable $now): int
+    {
         $finished = 0;
         $failed = 0;
         foreach ($expired as $auction) {
