@@ -70,7 +70,10 @@ final class PartitionEnsureCommand extends Command
     {
         $io = new SymfonyStyle($input, $output);
 
-        $months = (int) $input->getOption('months');
+        // Не-число осознанно превращается в 0 — отсекается проверкой ниже
+        // как явная ошибка ввода, а не молчаливый откат к дефолту.
+        $monthsOption = $input->getOption('months');
+        $months = is_numeric($monthsOption) ? (int) $monthsOption : 0;
         if ($months < 1) {
             $io->error('Months ahead must be at least 1');
 

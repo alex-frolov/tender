@@ -46,16 +46,20 @@ docker compose exec -T app composer lint       # php -l src tests
 docker compose exec -T app composer cs-fixer:check  # PHP CS Fixer (dry-run)
 docker compose exec -T app composer phpstan    # PHPStan level max (src + tests)
 docker compose exec -T app composer arkitect   # PHPArkitect: слои + границы модулей
-docker compose exec -T app composer test       # PHPUnit (весь набор, последовательно)
 docker compose exec -T app composer test:parallel  # PHPUnit через ParaTest (параллельно, быстрее; smoke/load исключены)
 docker compose exec -T app composer test:smoke  # smoke/load тесты, последовательно, один за другим (после test:parallel)
 docker compose exec -T app composer test:coverage  # PHPUnit + покрытие (pcov) + порог ≥80%
 docker compose exec -T app composer quality    # всё сразу
 ```
 
+- Последовательно все тесты не запускаем, команда только для исключительных случаев, когда паралельные не проходят:
+```bash
+docker compose exec -T app composer test       # PHPUnit (весь набор, последовательно) 
+```
+  
 - **PHP CS Fixer** (`friendsofphp/php-cs-fixer`, `composer cs-fixer` — применить правки, `composer cs-fixer:check` — dry-run без изменений). Конфиг `.php-cs-fixer.dist.php`: `@Symfony` + `@Symfony:risky` + `declare_strict_types` enforce (strict_types обязателен) + PHPUnit-ассерты через `self::`.
 
-- 🧠 **memory_limit — `PHP_MEMORY_LIMIT` (по умолчанию 1G)**: дефолт контейнера — 128M, его не хватает ни PHPUnit/ParaTest (smoke/load падают с `Allowed memory size exhausted`), ни PHPStan level max. Поэтому все скрипты `composer test*` и `composer phpstan` запускают PHP как `php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/…`, а цели Makefile (`test`, `test-unit`, `test-parallel`, `test-smoke`, `test-coverage`, `phpstan`, `quality`) пробрасывают переменную в контейнер через `docker compose exec -e`. **Руками `--memory-limit`/`-d memory_limit` не дописывать** — если 1G мало, поднимать потолок: `make test PHP_MEMORY_LIMIT=2G` или `docker compose exec -T -e PHP_MEMORY_LIMIT=2G app composer test`. Прямой вызов `php bin/phpunit tests/...` идёт мимо composer-скрипта и остаётся на 128M — это нормально для одного файла, но не для всего набора и не для smoke-группы.
+- 🧠 **memory_limit — `PHP_MEMORY_LIMIT` (по умолчанию 2G)**: дефолт контейнера — 128M, его не хватает ни PHPUnit/ParaTest (smoke/load падают с `Allowed memory size exhausted`), ни PHPStan level max. Поэтому все скрипты `composer test*` и `composer phpstan` запускают PHP как `php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/…`, а цели Makefile (`test`, `test-unit`, `test-parallel`, `test-smoke`, `test-coverage`, `phpstan`, `quality`) пробрасывают переменную в контейнер через `docker compose exec -e`. **Руками `--memory-limit`/`-d memory_limit` не дописывать** — если 1G мало, поднимать потолок: `make test PHP_MEMORY_LIMIT=2G` или `docker compose exec -T -e PHP_MEMORY_LIMIT=2G app composer test`. Прямой вызов `php bin/phpunit tests/...` идёт мимо composer-скрипта и остаётся на 128M — это нормально для одного файла, но не для всего набора и не для smoke-группы.
 - PHPStan **max** (phpstan.neon.dist, phpstan-symfony); `treatPhpDocTypesAsCertain: false`.
   ⚠️ При «залипшем» кэше анализатора: `docker compose exec -T app bash -c 'rm -rf var/cache/phpstan && mkdir -p var/cache/phpstan && chmod 777 var/cache/phpstan'`, затем обычный `composer phpstan`.
 - PHPArkitect (phparkitect.php, 6 правил): контроллеры не зависят от Infrastructure; Entity изолированы; Money чистый; Infrastructure не зависит от Controller; Message изолирован; границы модулей (модуль не заглядывает во внутренности других модулей: Controller/Command/Entity/Repository/Form/Input/Presenter/Exception/Storage/Rules/State/Stream/Timer/Step/Timeline/Service; доступ к ним — только через явный whitelist `$publicContractExcludes`).

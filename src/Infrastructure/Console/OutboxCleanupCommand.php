@@ -58,8 +58,15 @@ final class OutboxCleanupCommand extends Command
     {
         $io = new SymfonyStyle($input, $output);
 
+        // getOption() отдаёт mixed: опция задана строкой из argv либо отсутствует.
+        // Не-число осознанно превращается в 0 — отсекается проверкой ниже как
+        // явная ошибка ввода, а не молчаливый откат к дефолту.
         $daysOption = $input->getOption('days');
-        $days = null === $daysOption ? $this->retentionDays : (int) $daysOption;
+        $days = match (true) {
+            null === $daysOption => $this->retentionDays,
+            is_numeric($daysOption) => (int) $daysOption,
+            default => 0,
+        };
         if ($days < 1) {
             $io->error('Retention window must be at least 1 day');
 
