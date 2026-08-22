@@ -7,7 +7,6 @@ namespace App\Document\Service;
 use App\Document\DocumentTypeService as DocumentTypeServiceContract;
 use App\Document\Entity\DocumentType;
 use App\Document\Input\CreateDocumentTypeInput;
-use App\Document\Input\UpdateDocumentTypeInput;
 use App\Iam\Entity\User;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\ConflictException;
@@ -85,43 +84,6 @@ final class DocumentTypeService implements DocumentTypeServiceContract
             actorType: 'user',
             actorId: (string) $actor->getId(),
             after: ['code' => $type->getCode(), 'name' => $type->getName(), 'required' => $type->isRequired()],
-            ip: $ip,
-        );
-
-        return $type;
-    }
-
-    public function update(User $actor, string $documentTypeId, UpdateDocumentTypeInput $input, ?string $ip = null): DocumentType
-    {
-        $type = $this->resolve($documentTypeId);
-        $before = ['name' => $type->getName(), 'required' => $type->isRequired(), 'active' => $type->isActive()];
-
-        if (null !== $input->name) {
-            $type->setName($input->name);
-        }
-        if (null !== $input->ownerRole) {
-            $type->setOwnerRole($input->ownerRole);
-        }
-        if (null !== $input->visibility) {
-            $type->setVisibility($input->visibility);
-        }
-        if (null !== $input->required) {
-            $type->setRequired($input->required);
-        }
-        if (null !== $input->active) {
-            $type->setActive($input->active);
-        }
-
-        $this->em->flush();
-
-        $this->audit->record(
-            action: 'document_type.updated',
-            entityType: 'document_type',
-            entityId: (string) $type->getId(),
-            actorType: 'user',
-            actorId: (string) $actor->getId(),
-            before: $before,
-            after: ['name' => $type->getName(), 'required' => $type->isRequired(), 'active' => $type->isActive()],
             ip: $ip,
         );
 

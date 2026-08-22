@@ -10,7 +10,6 @@ use App\Platform\Entity\Webhook;
 use App\Platform\Entity\WebhookDelivery;
 use App\Platform\Exception\WebhookNotFoundException;
 use App\Platform\Input\CreateWebhookInput;
-use App\Platform\Input\UpdateWebhookInput;
 use App\Platform\Repository\WebhookDeliveryRepository;
 use App\Platform\Repository\WebhookRepository;
 use App\Shared\Audit\AuditService;
@@ -109,58 +108,6 @@ final readonly class WebhookService
         return $this->resolveOwned($actor, $webhookId);
     }
 
-    /**
-     * Изменение подписки (WH-7, PATCH /webhooks/{id}): обновляются только
-     * переданные поля (url/events/status). Секрет не меняется.
-     *
-     * @throws WebhookNotFoundException
-     * @throws ValidationException      если события пусты или статус невалиден
-     */
-    public function update(User $actor, string $webhookId, UpdateWebhookInput $input): Webhook
-    {
-        $webhook = $this->resolveOwned($actor, $webhookId);
-
-        $before = [
-            'url' => $webhook->getUrl(),
-            'events' => $webhook->getEvents(),
-            'status' => $webhook->getStatus()->value,
-        ];
-
-        if (null !== $input->url && '' !== $input->url) {
-            $webhook->setUrl($this->url($input->url));
-        }
-        if (null !== $input->events) {
-            $webhook->setEvents($this->events($input->events));
-        }
-        if (null !== $input->status) {
-            $webhook->setStatus($this->status($input->status));
-        }
-
-        $this->em->flush();
-
-        $this->audit->record(
-            action: 'webhook.updated',
-            entityType: 'webhook',
-            entityId: (string) $webhook->getId(),
-            tenantId: (string) $webhook->getTenantId(),
-            actorType: 'user',
-            actorId: (string) $actor->getId(),
-            before: $before,
-            after: [
-                'url' => $webhook->getUrl(),
-                'events' => $webhook->getEvents(),
-                'status' => $webhook->getStatus()->value,
-            ],
-        );
-        $this->em->flush();
-
-        return $webhook;
-    }
-
-    /**
-     * Удаление подписки (WH-7, DELETE /webhooks/{id}). Доставки каскадно
-     * удаляются (FK ON DELETE CASCADE). Возвращает id удалённой подписки.
-     */
     public function delete(User $actor, string $webhookId): string
     {
         $webhook = $this->resolveOwned($actor, $webhookId);
