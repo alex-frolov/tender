@@ -24,7 +24,8 @@ interface ContractDashboardQuery
     /**
      * Сумма цен договоров по тендеру за период [from, to) (GET /stats/tenders
      * contracts_amount_sum_minor): сумма price_net_minor привязок
-     * contract_tenders по договорам компании, созданным в период.
+     * contract_tenders по договорам компании — как заказчика, так и
+     * исполнителя (та же сторона, что и в countForCompany), созданным в период.
      *
      * @return array<string, int> tender_id → сумма цен (minor units)
      */
