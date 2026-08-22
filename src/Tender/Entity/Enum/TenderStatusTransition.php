@@ -12,6 +12,9 @@ namespace App\Tender\Entity\Enum;
  * переходы агрегации при мультилоте: при изменении статусов
  * лотов тендер переводится на соответствующую фазу через TenderStatusAggregator.
  * Перепубликация withdrawn → published (B3) — тоже здесь.
+ *
+ * START_TRADE_WITHOUT_BIDS — ветка тендера без заявок на участие
+ * (bids_required=false): published → bidding напрямую, минуя accepting_bids.
  */
 enum TenderStatusTransition: string
 {
@@ -20,6 +23,7 @@ enum TenderStatusTransition: string
     case WITHDRAW = 'withdraw';
     case CANCEL = 'cancel';
     case REPUBLISH = 'republish';
+    case START_TRADE_WITHOUT_BIDS = 'start_trade_without_bids';
     case START_TRADE = 'start_trade';
     case START_EVALUATION = 'start_evaluation';
     case START_AWARDING = 'start_awarding';

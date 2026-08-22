@@ -21,6 +21,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * TimelineMessage доставляется через Redis-транспорт с DelayStamp на момент
  * срабатывания:
  * - tender.start_bid_acceptance (bids_start) — published → accepting_bids;
+ *   у тендера без заявок на участие (bids_required=false) фазы accepting_bids
+ *   нет, и та же задача открывает торги: published → bidding;
  * - tender.open_bids (bids_end) — авто-вскрытие заявок (BidOpeningService).
  * Переходы выполняются только если workflow/статус их допускает
  * (идемпотентность: повторная доставка не дублирует обработку).
@@ -55,7 +57,7 @@ final readonly class TimelineMessageHandler
         }
 
         if (TenderTimelineAction::START_BID_ACCEPTANCE->value === $message->action) {
-            $this->startBidAcceptance($tender);
+            $this->startProcedure($tender);
 
             return;
         }
@@ -69,12 +71,23 @@ final readonly class TimelineMessageHandler
         $this->logger->warning('Timeline: unknown action', ['action' => $message->action]);
     }
 
-    private function startBidAcceptance(Tender $tender): void
+    /**
+     * Момент bids_start: тендер выходит из ожидания старта. С заявками на
+     * участие — в приём заявок (accepting_bids), без них — сразу в торги
+     * (bidding): подавать и допускать нечего, участвовать может любой, кому
+     * тендер доступен (access_type/договор).
+     */
+    private function startProcedure(Tender $tender): void
     {
-        $transition = TenderStatusTransition::START_BID_ACCEPTANCE->value;
+        $bidsRequired = $tender->isBidsRequired();
+        $transition = $bidsRequired
+            ? TenderStatusTransition::START_BID_ACCEPTANCE->value
+            : TenderStatusTransition::START_TRADE_WITHOUT_BIDS->value;
+
         if (!$this->tenderWorkflow->can($tender, $transition)) {
-            $this->logger->warning('Timeline: bid acceptance transition not allowed', [
+            $this->logger->warning('Timeline: procedure start transition not allowed', [
                 'tender_id' => (string) $tender->getId(),
+                'transition' => $transition,
                 'status' => $tender->getStatus()->value,
             ]);
 
@@ -85,11 +98,14 @@ final readonly class TimelineMessageHandler
         $this->em->flush();
 
         $this->audit->record(
-            action: 'tender.bids_opened',
+            action: $bidsRequired ? 'tender.bids_opened' : 'tender.trade_opened',
             entityType: 'tender',
             entityId: (string) $tender->getId(),
             tenantId: (string) $tender->getTenantId(),
-            after: ['status' => TenderStatusEnum::ACCEPTING_BIDS->value, 'timeline' => $tender->getTimeline()],
+            after: [
+                'status' => ($bidsRequired ? TenderStatusEnum::ACCEPTING_BIDS : TenderStatusEnum::BIDDING)->value,
+                'timeline' => $tender->getTimeline(),
+            ],
         );
     }
 

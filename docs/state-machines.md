@@ -51,7 +51,8 @@ Transitions (from `TenderStatusTransition`):
 | Transition | from → to | Guard / notes |
 |---|---|---|
 | `publish` | draft → published | timeline calculated by `TimelineRules`; schedules delayed messages |
-| `start_bid_acceptance` | published → accepting_bids | auto via `TimelineMessage` (Redis, DelayStamp) |
+| `start_bid_acceptance` | published → accepting_bids | auto via `TimelineMessage` (Redis, DelayStamp); guard `isBidsRequired()` |
+| `start_trade_without_bids` | published → bidding | same `TimelineMessage`; guard `not isBidsRequired()` |
 | `withdraw` | published → withdrawn | before accepting_bids |
 | `republish` | withdrawn → published | guard `lotCount() > 0` |
 | `cancel` | many → cancelled | terminal; reason required |
@@ -63,6 +64,23 @@ Transitions (from `TenderStatusTransition`):
 
 The aggregation transitions are driven by `TenderStatusAggregator` when lot statuses change. See
 [tenders.md](tenders.md).
+
+### Tenders without a participation bid
+
+`tenders.bids_required = false` removes the bid phase from the machine entirely: such a tender has
+**no** `accepting_bids` status. The same `bids_start` timeline message that would open bid
+acceptance opens trading instead (`start_trade_without_bids`, published → bidding), no bid opening
+is scheduled for `bids_end`, and `TenderStatusAggregator` runs a chain in which the
+`accepting_bids` phase (and the `start_trade` transition into `bidding` that follows it) is
+replaced by `start_trade_without_bids`.
+
+```
+bids_required = true    draft ─► published ─► accepting_bids ─► bidding ─► …
+bids_required = false   draft ─► published ─────────────────► bidding ─► …
+```
+
+Two guards keep the branches apart, so a tender can never take both: `start_bid_acceptance`
+requires `isBidsRequired()`, `start_trade_without_bids` requires its negation.
 
 ## Auction workflow
 

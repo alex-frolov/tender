@@ -44,6 +44,13 @@ final class CreateTenderInput
 
     public ?string $accessType = null;
 
+    /**
+     * Нужна ли заявка на участие (FR-1.2.1). По умолчанию true — классический
+     * порядок с приёмом заявок и допуском; false — участвовать может любой,
+     * кому тендер доступен.
+     */
+    public bool $bidsRequired = true;
+
     public ?string $requiredContractTypeId = null;
 
     /** @var array<string, string>|null ключевые даты таймлайна */

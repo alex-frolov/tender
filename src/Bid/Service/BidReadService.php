@@ -7,6 +7,7 @@ namespace App\Bid\Service;
 use App\Bid\BidReadService as BidReadServiceContract;
 use App\Bid\Entity\Bid;
 use App\Bid\Repository\BidRepository;
+use App\Tender\TenderReadService;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -19,12 +20,26 @@ use Symfony\Component\Uid\Uuid;
  */
 final readonly class BidReadService implements BidReadServiceContract
 {
-    public function __construct(private BidRepository $bids)
-    {
+    public function __construct(
+        private BidRepository $bids,
+        private TenderReadService $tenders,
+    ) {
     }
 
     public function isAdmitted(Uuid $tenderId, ?Uuid $lotId, Uuid $supplierId): bool
     {
+        return $this->bids->isAdmitted($tenderId, $lotId, $supplierId);
+    }
+
+    public function isAdmittedToTrade(Uuid $tenderId, ?Uuid $lotId, Uuid $supplierId): bool
+    {
+        // Тендер уже загружен вызывающим HTTP-сценарием (PlaceBidUseCase
+        // проверяет по нему доступ к закрытой закупке), поэтому лишнего
+        // запроса в горячем пути ставки здесь нет — сработает identity map.
+        if (!$this->tenders->resolveTender((string) $tenderId)->isBidsRequired()) {
+            return true;
+        }
+
         return $this->bids->isAdmitted($tenderId, $lotId, $supplierId);
     }
 

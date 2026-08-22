@@ -33,7 +33,9 @@ use Symfony\Component\Uid\Uuid;
  *
  * Последовательность (общая для всех типов):
  * - только в TRADE (FR-1.3.2; иначе 409 auction_not_trade);
- * - только допущенные участники (bids.status = admitted, FR-1.2.4);
+ * - только допущенные участники (bids.status = admitted, FR-1.2.4); у тендера
+ *   без заявок на участие (bids_required=false) допуска нет — торговаться
+ *   может любой, кому тендер доступен;
  * - правила «заморожены» при старте (rules_snapshot, PR-9) — обязательны;
  * - валидация цены в канонической базе (PR-5/PR-6):
  *   fixed — price ≤ current − step (BidStepCalculator); free — строго ниже
@@ -505,8 +507,10 @@ final readonly class AuctionBidService
                 }
                 $snapshot = RulesSnapshot::fromArray($rules);
 
-                // FR-1.3.2: ставки только от допущенных участников.
-                if (!$this->bids->isAdmitted($locked->getTenderId(), $locked->getLotId(), $bidderId)) {
+                // FR-1.3.2: ставки только от допущенных участников. У тендера
+                // без заявок на участие допуска нет — торгуется любой, кому
+                // тендер доступен (проверено в PlaceBidUseCase).
+                if (!$this->bids->isAdmittedToTrade($locked->getTenderId(), $locked->getLotId(), $bidderId)) {
                     throw new BidRejectedException('Only admitted participants can place bids');
                 }
 

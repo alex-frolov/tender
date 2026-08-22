@@ -53,6 +53,7 @@ SubmitBidUseCase → BidService::submit()
    │  requireCompany · declared supplier must match actor company
    │  company must be active (CompanyAccessGuard)
    │  contract_holders access: active framework contract required (409 access_denied)
+   │  tender must require a participation bid at all (bids_required, 409)
    │  tender must be ACCEPTING_BIDS and bids_end not passed
    │  lot_id required when the tender has lots (422)
    │  price ≥ 0 (minor units)
@@ -71,6 +72,13 @@ up by the `(tender, lot, supplier)` triple (`BidRepository::isAdmitted`), so a
 lot-less bid on such a tender could be submitted and even admitted, yet its
 supplier would be turned away at the auction with «Only admitted participants».
 `BidService::submit()` rejects it up front instead (422).
+
+A tender created with `bids_required = false` takes no bids at all: it never enters
+`accepting_bids` (it goes `published → bidding` directly), and submission, replacement
+and withdrawal answer 409 `This tender does not require participation bids` — a distinct
+message from «bid acceptance is closed», because in such a procedure the bid phase does
+not exist rather than having ended. Trading is then open to anyone who can see the
+tender; see [tenders.md](tenders.md#tenders-without-a-participation-bid).
 
 ## Withdrawal
 

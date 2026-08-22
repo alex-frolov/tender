@@ -1115,6 +1115,9 @@ paths:
                 otherwise) and must be omitted when it has none: admission to trading is
                 matched by the (tender, lot) pair, so a lot-less bid would never admit its
                 supplier to a lot auction.
+
+                A tender created with bids_required=false takes no bids at all — it never
+                enters accepting_bids — and answers 409 for every submission.
                 Access: the bids.submit permission.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
@@ -1132,7 +1135,7 @@ paths:
                             schema: { $ref: '#/components/schemas/Bid' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Not accepting bids, or a closed tender without a contract (code: state_transition_forbidden | access_denied)'
+                    description: 'Not accepting bids, a tender that requires no participation bid at all (bids_required=false), or a closed tender without a contract (code: state_transition_forbidden | access_denied)'
                     $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
 
@@ -3287,6 +3290,9 @@ components:
         # ---------- Tender ----------
         TenderStatus:
             type: string
+            description: >-
+                Tender status. accepting_bids only occurs when bids_required=true; a tender that needs
+                no participation bid goes published → bidding directly at bids_start.
             enum: [draft, published, withdrawn, accepting_bids, bidding, evaluation, awarding, contract, closed, cancelled]
         TenderCreate:
             type: object
@@ -3305,6 +3311,15 @@ components:
                 region: { type: string, maxLength: 100 }
                 okpd2: { type: string, maxLength: 20, description: 'ОКПД2 код предмета закупки' }
                 access_type: { type: string, enum: [open, contract_holders], default: open }
+                bids_required:
+                    type: boolean
+                    default: true
+                    description: >-
+                        Whether a participation bid is required. true (default) — the classic flow:
+                        accepting_bids, opening at bids_end, qualification, and only admitted participants
+                        trade. false — no bids at all: the tender has no accepting_bids phase
+                        (published → bidding directly at bids_start) and anyone who can see the tender
+                        may trade, subject to access_type. Set at creation only.
                 required_contract_type_id: { type: string, format: uuid, nullable: true }
                 timeline:
                     type: object
@@ -3357,6 +3372,7 @@ components:
                 price_basis: { $ref: '#/components/schemas/PriceBasis' }
                 status: { $ref: '#/components/schemas/TenderStatus' }
                 access_type: { type: string, enum: [open, contract_holders] }
+                bids_required: { type: boolean, description: 'A participation bid is required (false — no bids and no accepting_bids phase: published → bidding directly)' }
                 execution_rating: { type: integer, nullable: true }
                 region: { type: string, maxLength: 100, nullable: true }
                 okpd2: { type: string, maxLength: 20, nullable: true, description: 'ОКПД2 код предмета закупки' }
