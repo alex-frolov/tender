@@ -24,7 +24,6 @@ use App\Shared\Entity\OutboxEvent;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\StateTransitionException;
 use App\Shared\Exception\ValidationException;
-use App\Tender\LotWriteService;
 use App\Tender\TenderStatusAggregator;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
@@ -58,7 +57,6 @@ final readonly class ClaimService
         private ContractTenderRepository $contractTenders,
         private AuctionLifecycleService $auctionLifecycle,
         private TenderStatusAggregator $tenderAggregator,
-        private LotWriteService $lots,
     ) {
     }
 
@@ -291,7 +289,8 @@ final readonly class ClaimService
         foreach ($this->contractTenders->findByTender($applied->tenderId) as $ct) {
             $ct->setStatus(ContractTenderStatusEnum::DONE_BY_CLAIM);
         }
-        $this->lots->close($applied->lotId);
+        // Лот закрывается вслед за переходом аукциона в DONE_BY_CLAIM
+        // (AuctionLotPhaseListener) — отдельный вызов здесь не нужен.
         $this->em->flush();
 
         $this->audit->record(

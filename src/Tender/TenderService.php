@@ -14,6 +14,7 @@ use App\Shared\Input\InputValue;
 use App\Tender\Entity\Enum\AccessTypeEnum;
 use App\Tender\Entity\Enum\CancellationReasonEnum;
 use App\Tender\Entity\Enum\LawTypeEnum;
+use App\Tender\Entity\Enum\LotStatusTransition;
 use App\Tender\Entity\Enum\PriceBasisEnum;
 use App\Tender\Entity\Enum\ProcedureTypeEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
@@ -28,6 +29,7 @@ use App\Tender\Input\LotInput;
 use App\Tender\Input\LotUpdateInput;
 use App\Tender\Input\UpdateTenderInput;
 use App\Tender\Repository\TenderRepository;
+use App\Tender\Service\LotPhaseService;
 use App\Tender\Service\TenderTimelineScheduler;
 use App\Tender\Service\TenderTransaction;
 use App\Tender\Service\TenderVisibilityService;
@@ -66,6 +68,7 @@ final class TenderService
         private readonly TenderRepository $tenders,
         private readonly TenderTransaction $transaction,
         private readonly TenderTimelineScheduler $scheduler,
+        private readonly LotPhaseService $lotPhases,
         private readonly TenderVisibilityService $visibility,
         private readonly CompanyAccessGuard $companyGuard,
         #[Autowire(service: 'state_machine.tender')]
@@ -273,6 +276,9 @@ final class TenderService
 
         $before = $tender->getStatus();
         $this->tenderWorkflow->apply($tender, $transition);
+        // Лоты выходят из черновика вместе с тендером: дальше их фазы ведёт
+        // таймлайн и аукцион, а по ним агрегируется статус тендера (FR-1.1.3).
+        $this->lotPhases->applyToTender($tender, LotStatusTransition::PUBLISH);
 
         $this->scheduler->scheduleStartBidAcceptance($tender, $timeline);
         // Вскрывать нечего, если заявок на участие нет (FR-1.2.1): у такого
@@ -348,6 +354,9 @@ final class TenderService
         $before = $tender->getStatus();
         $tender->cancel($code, $reasonText);
         $this->tenderWorkflow->apply($tender, $transition);
+        // Каскад отмены на лоты (инвариант 2, domain/tender-state-machine.md):
+        // уже закрытые лоты пропускаются — исполненное не отменяется.
+        $this->lotPhases->applyToTender($tender, LotStatusTransition::CANCEL);
 
         $this->transaction->commitCancelled($tender, $before, $code, $actor, $companyId, $ip);
 
@@ -419,6 +428,9 @@ final class TenderService
         $this->assertEditable($tender);
 
         $lot = $this->buildLot($tender, $input, $this->nextLotNumber($tender));
+        // Лот, добавленный в уже опубликованный тендер, догоняет его фазу —
+        // иначе черновой лот тянул бы агрегацию назад (вариант C, FR-1.1.3).
+        $this->lotPhases->catchUpWith($lot, $tender);
         $tender->addLot($lot);
         $this->syncNmckWithLots($tender);
         $tender->assertLotsSumInvariant();

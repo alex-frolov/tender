@@ -1,7 +1,7 @@
 # State Machines
 
-The application uses `symfony/workflow` to model the lifecycle of tenders, auctions, contracts and
-company verification. Each workflow is declared in its own file under `config/workflow/`, loaded via
+The application uses `symfony/workflow` to model the lifecycle of tenders, lots, auctions, contracts
+and company verification. Each workflow is declared in its own file under `config/workflow/`, loaded via
 `config/packages/workflow.yaml` (imports `../workflow/*.yaml`).
 
 Conventions:
@@ -81,6 +81,52 @@ bids_required = false   draft ─► published ───────────
 
 Two guards keep the branches apart, so a tender can never take both: `start_bid_acceptance`
 requires `isBidsRequired()`, `start_trade_without_bids` requires its negation.
+
+## Lot workflow
+
+A lot is the unit of the real procurement process: bids are submitted per lot, a lot is traded, a
+lot is executed. Lot phases mirror the tender's, and the tender status is aggregated back from them
+(slowest lot wins). Nine places: `draft`, `published`, `accepting_bids`, `bidding`, `evaluation`,
+`awarding`, `contract`, `closed`, `cancelled`.
+
+Two parties move a lot, and only through `state_machine.lot`:
+
+| Event | Lot transition | Applied by |
+|---|---|---|
+| tender published | `draft → published` | `TenderService::publish` |
+| `bids_start`, tender with participation bids | `→ accepting_bids` | `TimelineMessageHandler` |
+| `bids_start`, tender without them | `→ bidding` | `TimelineMessageHandler` |
+| auction enters `trade` / `paused` | `→ bidding` | `AuctionLotPhaseListener` |
+| auction enters `choice` | `→ evaluation` | `AuctionLotPhaseListener` |
+| auction enters `approve` | `→ awarding` | `AuctionLotPhaseListener` |
+| auction enters `in_work` / `done_by_performer` / `claim` | `→ contract` | `AuctionLotPhaseListener` |
+| auction enters `done` / `done_by_claim` | `→ closed` | `AuctionLotPhaseListener` |
+| auction enters `cancelled` / `expired` | `→ cancelled` | `AuctionLotPhaseListener` |
+| tender cancelled | `→ cancelled` (cascade) | `TenderService::cancel` |
+
+Three properties worth knowing:
+
+1. **Monotone advance, not a strict chain.** Every transition is allowed from *any* earlier phase,
+   but never backwards and never out of a terminal one. An auction can be created without checking
+   the tender status (`AuctionWriteService::create`), so trading may well run on a lot that was
+   never taken through publication; refusing the transition would store a status contradicting
+   what is actually happening.
+2. **Calls are idempotent.** The advancing side asks `can()` and silently skips a transition that
+   is not allowed — `resume` (paused → trade) asks for `→ bidding` again while the lot is already
+   there; cancelling a tender asks `→ cancelled` of every lot, closed ones included.
+3. **New lots catch up.** A lot may be added to an already published tender (until bid acceptance
+   closes). It is created in `draft` and immediately advanced to the tender's phase
+   (`LotPhaseService::catchUpWith`), otherwise it would drag the aggregation backwards.
+
+The auction → lot map lives in one place: `AuctionStatusEnum::lotTransition()`. The listener
+subscribes to `workflow.auction.entered` rather than being scattered across call sites — auction
+transitions are applied from eight places in the module, some under a pessimistic lock, and the
+subscription guarantees no transition (existing or future) forgets the lot. It passes
+`flush: false` to both the lot write and the tender aggregation, so changes are persisted by the
+caller's transaction instead of a separate commit in the middle of one.
+
+Direction of the coupling is one-way and cycle-free: **tender → lots** administratively,
+**auction → lot** during the procedure, and only **lots → tender** through aggregation.
 
 ## Auction workflow
 
