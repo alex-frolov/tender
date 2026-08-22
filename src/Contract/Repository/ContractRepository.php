@@ -14,7 +14,8 @@ use Symfony\Component\Uid\Uuid;
 /**
  * Read-оптимизированные запросы к договорам (FR-1.4.3, FR-1.5.14).
  *
- * - listForParties(): договоры, где компания актора — заказчик ИЛИ исполнитель;
+ * - listPageForParties(): страница договоров, где компания актора — заказчик
+ *   ИЛИ исполнитель (keyset в SQL, AR-6);
  * - findActiveMultiUse(): действующий multi_use-договор между заказчиком и
  *   исполнителем для закрытых тендеров (contract_holders, FR-1.5.14);
  * - findById(): публичный lookup для действий по id (party-проверка в сервисе).
@@ -46,21 +47,40 @@ final class ContractRepository extends ServiceEntityRepository
     }
 
     /**
-     * Договоры, где компания является заказчиком или исполнителем (FR-1.4.3,
-     * AM-9 GET /contracts). Необязательные фильтры: по статусу и по
-     * привязанной процедуре (JOIN contract_tenders) — последний отвечает на
-     * вопрос «есть ли договор по этому тендеру» одним запросом.
+     * Страница договоров компании (AM-9 GET /contracts, AR-6/NFR-22): те же
+     * стороны, что и в остальных party-запросах, плюс необязательные фильтры по
+     * статусу и по привязанной процедуре (JOIN contract_tenders).
+     *
+     * Раньше список отдавался целиком, а страницу вырезал курсор в PHP
+     * (KeysetCursor::sliceAfter). Число договоров компании ничем не ограничено
+     * и растёт линейно с историей закупок — вместе с ним росла цена КАЖДОГО
+     * GET /contracts (../docs/db-query-audit.md, п. 6). Условие «следующая
+     * страница» — (created_at, id) строго МЕНЬШЕ позиции курсора при
+     * ORDER BY created_at DESC, id DESC (новые сверху). Вызывающий запрашивает
+     * limit+1, чтобы узнать о наличии следующей страницы (KeysetCursor::pageOf).
+     *
+     * @param \DateTimeImmutable|null $cursorCreatedAt позиция курсора (null — первая страница)
+     * @param Uuid|null               $cursorId        tiebreaker позиции курсора
      *
      * @return list<Contract>
      */
-    public function listForParties(Uuid $customerId, Uuid $supplierId, ?ContractStatusEnum $status = null, ?Uuid $tenderId = null): array
-    {
+    public function listPageForParties(
+        Uuid $customerId,
+        Uuid $supplierId,
+        ?ContractStatusEnum $status,
+        ?Uuid $tenderId,
+        ?\DateTimeImmutable $cursorCreatedAt,
+        ?Uuid $cursorId,
+        int $limit,
+    ): array {
         $qb = $this->createQueryBuilder('c')
             ->where('c.customerId = :customer')
             ->orWhere('c.supplierId = :supplier')
             ->setParameter('customer', $customerId)
             ->setParameter('supplier', $supplierId)
-            ->orderBy('c.createdAt', 'DESC');
+            ->orderBy('c.createdAt', 'DESC')
+            ->addOrderBy('c.id', 'DESC')
+            ->setMaxResults(max(1, $limit));
 
         if (null !== $status) {
             $qb->andWhere('c.status = :status')->setParameter('status', $status->value);
@@ -70,6 +90,20 @@ final class ContractRepository extends ServiceEntityRepository
             $qb->innerJoin('c.tenders', 'ct')
                 ->andWhere('ct.tenderId = :tenderId')
                 ->setParameter('tenderId', $tenderId);
+        }
+
+        if (null !== $cursorCreatedAt && null !== $cursorId) {
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->lt('c.createdAt', ':cursorCreatedAt'),
+                    $qb->expr()->andX(
+                        $qb->expr()->eq('c.createdAt', ':cursorCreatedAt'),
+                        $qb->expr()->lt('c.id', ':cursorId'),
+                    ),
+                ),
+            )
+                ->setParameter('cursorCreatedAt', $cursorCreatedAt)
+                ->setParameter('cursorId', $cursorId);
         }
 
         /** @var list<Contract> $result */

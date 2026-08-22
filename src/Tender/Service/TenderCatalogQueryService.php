@@ -40,22 +40,13 @@ final readonly class TenderCatalogQueryService implements TenderCatalogQuery
         $cursorId = $cursorPos?->id;
 
         $scope = $this->visibility->scopeFor($viewerCompanyId);
-        $rows = $this->tenders->listCatalogPage($scope, $filters, $cursorCreatedAt, $cursorId, $limit + 1);
+        [$rows, $nextCursor] = KeysetCursor::pageOf(
+            $this->tenders->listCatalogPage($scope, $filters, $cursorCreatedAt, $cursorId, $limit + 1),
+            $limit,
+            static fn (array $row): array => [$row['created_at'], (string) $row['id']],
+        );
 
-        $hasMore = \count($rows) > $limit;
-        if ($hasMore) {
-            $rows = \array_slice($rows, 0, $limit);
-        }
-
-        $items = $this->buildItems($rows);
-
-        $nextCursor = null;
-        if ($hasMore && [] !== $rows) {
-            $last = $rows[\count($rows) - 1];
-            $nextCursor = KeysetCursor::encode($last['created_at'], (string) $last['id']);
-        }
-
-        return new TenderCatalogPage($items, $nextCursor);
+        return new TenderCatalogPage($this->buildItems($rows), $nextCursor);
     }
 
     /**

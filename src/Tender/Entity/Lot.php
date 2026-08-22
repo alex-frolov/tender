@@ -228,11 +228,19 @@ class Lot
     /**
      * Только для workflow (marking_store property: status).
      * Напрямую статус не менять — переходы через symfony/workflow (AGENTS.md).
+     *
+     * Здесь же пересчитывается материализованный агрегат тендера
+     * (Tender::refreshAggregatedStatus): статус лота — единственный
+     * вход агрегации, который меняется извне тендера, и
+     * сеттер маркинга — единственная точка, через которую этот вход проходит,
+     * какой бы переход его ни двигал. Пересчёт стоит одну выборку лотов на
+     * переход и снимает JOIN+GROUP BY с каждого чтения дашборда.
      */
     public function setStatus(LotStatusEnum $status): void
     {
         $this->status = $status;
         $this->touch();
+        $this->tender->refreshAggregatedStatus();
     }
 
     public function setWinnerBid(?Uuid $winnerBidId): void

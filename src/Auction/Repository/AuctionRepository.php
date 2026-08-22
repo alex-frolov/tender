@@ -517,24 +517,55 @@ SQL;
     }
 
     /**
-     * История ставок аукциона (GET /auctions/{id}/bids, AM-5): принятые и
-     * отклонённые ставки (append-only, PR-9) в порядке раундов — хронология
-     * торгов. Анонимность bidder_id (до конца торгов) — на уровне представления.
+     * Страница истории ставок аукциона (GET /auctions/{id}/bids, AM-5, AR-6/NFR-22):
+     * принятые и отклонённые ставки (append-only, PR-9) в хронологии торгов.
+     * Анонимность bidder_id (до конца торгов) — на уровне представления.
+     *
+     * Keyset в SQL: раньше репозиторий отдавал
+     * ВСЕ ставки аукциона, а страницу вырезал курсор в PHP — на оживлённых
+     * торгах это тысячи гидратированных сущностей на каждый запрос страницы.
+     * Теперь условие «после курсора» — (placed_at, id) строго больше позиции
+     * курсора при ORDER BY placed_at ASC, id ASC, и из БД приходит ровно
+     * $limit строк. Вызывающий запрашивает limit+1, чтобы узнать, есть ли
+     * следующая страница (KeysetCursor::pageOf).
+     *
+     * Порядок — (placed_at, id), а не (round, placed_at) как раньше: он обязан
+     * совпадать с ключом курсора, иначе страницы разъезжаются. Хронология от
+     * этого не меняется — ставка получает round по ходу торгов, и время не
+     * идёт вспять; при равном placed_at порядок доопределяет id.
+     *
+     * @param \DateTimeImmutable|null $cursorPlacedAt позиция курсора (null — первая страница)
+     * @param Uuid|null               $cursorId       tiebreaker позиции курсора
      *
      * @return list<AuctionBid>
      */
-    public function listBids(Auction $auction): array
+    public function listBidsPage(Auction $auction, ?\DateTimeImmutable $cursorPlacedAt, ?Uuid $cursorId, int $limit): array
     {
-        /** @var list<AuctionBid> $result */
-        $result = $this->getEntityManager()->createQueryBuilder()
+        $qb = $this->getEntityManager()->createQueryBuilder()
             ->select('b')
             ->from(AuctionBid::class, 'b')
             ->where('b.auction = :auction')
             ->setParameter('auction', $auction)
-            ->orderBy('b.round', 'ASC')
-            ->addOrderBy('b.placedAt', 'ASC')
-            ->getQuery()
-            ->getResult();
+            ->orderBy('b.placedAt', 'ASC')
+            ->addOrderBy('b.id', 'ASC')
+            ->setMaxResults(max(1, $limit));
+
+        if (null !== $cursorPlacedAt && null !== $cursorId) {
+            $qb->andWhere(
+                $qb->expr()->orX(
+                    $qb->expr()->gt('b.placedAt', ':cursorPlacedAt'),
+                    $qb->expr()->andX(
+                        $qb->expr()->eq('b.placedAt', ':cursorPlacedAt'),
+                        $qb->expr()->gt('b.id', ':cursorId'),
+                    ),
+                ),
+            )
+                ->setParameter('cursorPlacedAt', $cursorPlacedAt)
+                ->setParameter('cursorId', $cursorId);
+        }
+
+        /** @var list<AuctionBid> $result */
+        $result = $qb->getQuery()->getResult();
 
         return $result;
     }

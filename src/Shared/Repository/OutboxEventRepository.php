@@ -43,6 +43,38 @@ final class OutboxEventRepository extends ServiceEntityRepository
         return $result;
     }
 
+    /**
+     * Retention outbox: удаляет
+     * ОПУБЛИКОВАННЫЕ события старше границы.
+     *
+     * Пока команды очистки не было, таблица росла бесконечно: после доставки
+     * в RabbitMQ событие не читается больше никем (релизер выбирает только
+     * pending), но остаётся навсегда. При целевом объёме — миллионы строк в
+     * месяц: раздувается и таблица, и индекс (status, created_at), дорожают
+     * VACUUM и бэкапы.
+     *
+     * Удаляются ТОЛЬКО published: pending — недоставленное, его нельзя терять
+     * ни по какому сроку (гарантия доставки at-least-once, ARCH-3/NFR-5).
+     *
+     * @param \DateTimeImmutable $before граница retention: создано раньше — удаляется
+     *
+     * @return int число удалённых строк
+     */
+    public function deletePublishedOlderThan(\DateTimeImmutable $before): int
+    {
+        /** @var int $deleted */
+        $deleted = $this->createQueryBuilder('o')
+            ->delete()
+            ->where('o.status = :published')
+            ->andWhere('o.createdAt < :before')
+            ->setParameter('published', OutboxEventStatusEnum::PUBLISHED->value)
+            ->setParameter('before', $before)
+            ->getQuery()
+            ->execute();
+
+        return $deleted;
+    }
+
     public function countPending(): int
     {
         $count = $this->createQueryBuilder('o')

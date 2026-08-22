@@ -35,7 +35,6 @@ work, and what the API looks like.
 | [api.md](api.md) | REST API reference: endpoints, conventions, errors |
 | [use-case-route-map.md](use-case-route-map.md) | user case ↔ route map (all 121 endpoints), documentation coverage audit |
 | [database.md](database.md) | entities, relationships, enums, table overview |
-| [db-query-audit.md](db-query-audit.md) | heaviest queries: index coverage, growth behaviour, optimisation proposals |
 | [integrations.md](integrations.md) | webhooks, notifications, analytics counters, exports |
 | [../operations/deployment.md](../operations/deployment.md) | prod profile, migrations, healthchecks, deploy smoke, rollback |
 

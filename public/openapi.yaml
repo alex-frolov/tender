@@ -735,7 +735,7 @@ paths:
                     entitled to take part.
 
                 Visibility does not grant participation: submitting a bid to a closed tender
-                still requires the contract (409 access_denied) — see
+                still requires the contract (409 contract_required) — see
                 GET /tenders/{tenderId}/access.
                 Access: tenders.board.view (all company roles).
             parameters:
@@ -1116,24 +1116,6 @@ paths:
             tags: [bids]
             summary: Submit a bid; re-submitting for a lot before the deadline replaces it
             operationId: submitBid
-            description: |
-                Submitting for a lot again before the deadline replaces the previous bid
-                (FR-1.2.5); the content is encrypted until opening (FR-1.2.2).
-
-                A closed tender (access_type=contract_holders) additionally requires an
-                active multi_use contract with the customer (FR-1.5.14): without it the
-                answer is 409 {access_denied} and the detail names the reason
-                (contract_required | contract_expired | contract_terminated), the same
-                values as GET /tenders/{tenderId}/access.
-
-                lot_id is required whenever the tender has lots (422 validation_error
-                otherwise) and must be omitted when it has none: admission to trading is
-                matched by the (tender, lot) pair, so a lot-less bid would never admit its
-                supplier to a lot auction.
-
-                A tender created with bids_required=false takes no bids at all — it never
-                enters accepting_bids — and answers 409 for every submission.
-                Access: the bids.submit permission.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
                 - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -1150,8 +1132,12 @@ paths:
                             schema: { $ref: '#/components/schemas/Bid' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Not accepting bids, a tender that requires no participation bid at all (bids_required=false), or a closed tender without a contract (code: state_transition_forbidden | access_denied)'
-                    $ref: '#/components/responses/Conflict'
+                    description: >-
+                        The tender is not accepting bids, or it requires no participation bid at all
+                        (bids_required=false — there is nothing to submit).
+                    content:
+                        application/json:
+                            schema: { $ref: '#/components/schemas/Error' }
                 '422': { $ref: '#/components/responses/ValidationError' }
 
     /bids/{bidId}/withdraw:
@@ -1444,9 +1430,6 @@ paths:
                 bid fixes start_price_minor (price discovery, is_first_price=true).
                 Admitted participants only and only in TRADE;
                 idempotency — the Idempotency-Key header.
-                For a closed tender (access_type=contract_holders) the contract is
-                re-checked here, not only at bid submission: it may have been terminated
-                or have expired after the admission — 409 {access_denied}.
                 Access: the auction.bid permission (admin/manager; agent — 403).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
@@ -1466,7 +1449,7 @@ paths:
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed, access_denied)'
+                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed)'
                     $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
                 '429': { $ref: '#/components/responses/RateLimited' }
@@ -3509,14 +3492,7 @@ components:
             required: [supplier_id]
             properties:
                 supplier_id: { type: string, format: uuid }
-                lot_id:
-                    type: string
-                    format: uuid
-                    nullable: true
-                    description: |
-                        The lot the bid is for. Required when the tender has lots (422
-                        otherwise): admission to trading is matched by the (tender, lot)
-                        pair. Null only for a tender without lots (a single subject).
+                lot_id: { type: string, format: uuid, nullable: true }
                 part1:
                     type: object
                     description: 'Consent, characteristics (confidential until opening)'
