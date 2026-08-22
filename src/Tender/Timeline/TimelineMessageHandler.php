@@ -6,9 +6,11 @@ namespace App\Tender\Timeline;
 
 use App\Bid\BidOpeningService;
 use App\Shared\Audit\AuditService;
+use App\Tender\Entity\Enum\LotStatusTransition;
 use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tender\Entity\Enum\TenderStatusTransition;
 use App\Tender\Entity\Tender;
+use App\Tender\Service\LotPhaseService;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -38,6 +40,7 @@ final readonly class TimelineMessageHandler
         private AuditService $audit,
         private LoggerInterface $logger,
         private BidOpeningService $bidOpening,
+        private LotPhaseService $lotPhases,
         #[Autowire(service: 'state_machine.tender')]
         private WorkflowInterface $tenderWorkflow,
     ) {
@@ -95,6 +98,12 @@ final readonly class TimelineMessageHandler
         }
 
         $this->tenderWorkflow->apply($tender, $transition);
+        // Лоты идут за тендером: с заявками на участие — в приём заявок,
+        // без них — сразу в торги (фазы accepting_bids у таких лотов нет).
+        $this->lotPhases->applyToTender(
+            $tender,
+            $bidsRequired ? LotStatusTransition::START_BID_ACCEPTANCE : LotStatusTransition::START_TRADE,
+        );
         $this->em->flush();
 
         $this->audit->record(

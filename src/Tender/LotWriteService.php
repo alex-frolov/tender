@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Tender;
 
+use App\Tender\Entity\Enum\LotStatusTransition;
 use Symfony\Component\Uid\Uuid;
 
 /**
@@ -15,13 +16,19 @@ use Symfony\Component\Uid\Uuid;
 interface LotWriteService
 {
     /**
-     * Закрытие лота (LotStatusEnum::CLOSED). Вызывается модулями-потребителями
-     * (Contract) при завершении исполнения (DONE / DONE_BY_CLAIM), чтобы не
-     * мутировать лот напрямую.
+     * Применить переход фазы лота (config/workflow/lot.yaml). Вызывается
+     * модулем Auction: реальный процесс идёт на уровне лота, и его фаза
+     * следует за статусом аукциона (AuctionStatusEnum::lotTransition()).
+     *
+     * **Идемпотентен:** недопустимый из текущего статуса переход молча
+     * пропускается — вызывающий не обязан знать, где лот сейчас.
+     *
+     * @param bool $flush сохранить изменение сразу; false — вызывающий
+     *                    сохранит его вместе со своей транзакцией
      *
      * @throws \App\Shared\Exception\NotFoundException если лот не найден
      */
-    public function close(Uuid $lotId): void;
+    public function applyTransition(Uuid $lotId, LotStatusTransition $transition, bool $flush = true): void;
 
     /**
      * Фиксация заявки-победителя лота (lots.winner_bid_id = bids.id,

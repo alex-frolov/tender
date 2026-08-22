@@ -100,7 +100,7 @@ publish ──► published ──[bids_start]──► accepting_bids ──[bi
 - `withdraw` (published → withdrawn): only before `accepting_bids`; reason as free text.
 - `republish` (withdrawn → published): guard `lotCount() > 0`; timeline recalculated.
 - `cancel`: from any active or withdrawn status, terminal, requires a reason code
-  (`CancellationReasonEnum`); cascades lots/auctions to `cancelled`.
+  (`CancellationReasonEnum`); cascades lots to `cancelled` (auctions are **not** cascaded — cancel them separately).
 
 ## Multi-lot aggregation
 
@@ -113,6 +113,10 @@ Lot A: accepting_bids ──► bidding ──► evaluation ──► ...
 Lot B: bidding ─────────► evaluation ──► ...
 Tender status = min(lot phases)  → follows the slowest lot (B here)
 ```
+
+Lot phases are not decorative: they are written by the tender (publish, bid-acceptance start,
+cancel) and by the lot's auction (trading and execution) through `state_machine.lot` — see
+[state-machines.md](state-machines.md#lot-workflow). Aggregation reads exactly those statuses.
 
 When lot statuses change, `TenderStatusAggregator::recalculate()` walks the FORWARD chain and
 applies each allowed workflow transition:

@@ -19,7 +19,6 @@ use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\NotFoundException;
 use App\Shared\Exception\StateTransitionException;
 use App\Tender\Entity\Enum\LotStatusEnum;
-use App\Tender\LotWriteService;
 use App\Tender\TenderStatusAggregator;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Uid\Uuid;
@@ -46,7 +45,6 @@ final readonly class ContractExecutionService implements ContractExecutionServic
         private AuditService $audit,
         private ContractTenderRepository $contractTenders,
         private TenderStatusAggregator $tenderAggregator,
-        private LotWriteService $lots,
         private AuctionLifecycleService $auctionLifecycle,
     ) {
     }
@@ -144,7 +142,8 @@ final readonly class ContractExecutionService implements ContractExecutionServic
         foreach ($this->contractTenders->findByTender($ctx->tenderId) as $ct) {
             $ct->setStatus(ContractTenderStatusEnum::DONE);
         }
-        $this->lots->close($ctx->lotId);
+        // Лот закрывать здесь не нужно: фаза лота (и вслед за ней статус
+        // тендера) следует за переходом аукциона — AuctionLotPhaseListener.
         $this->em->flush();
 
         $this->audit->record(
