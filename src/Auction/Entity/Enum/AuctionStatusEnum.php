@@ -62,24 +62,29 @@ enum AuctionStatusEnum: string
      * Круг видимости аукциона в этом статусе (FR-1.5.14).
      *
      * Матрица:
-     *   created, draft, agreement, new, scheduled,
-     *   paused, choice, expired, deleted            — только заказчик;
+     *   created, draft, agreement, new, scheduled   — только заказчик;
      *   trade                                       — все, кому виден тендер;
-     *   approve, in_work, done_by_performer, done,
-     *   claim, done_by_claim, cancelled             — заказчик и исполнитель.
+     *   paused, choice, approve, in_work,
+     *   done_by_performer, done, claim,
+     *   done_by_claim, cancelled, expired, deleted  — заказчик и исполнитель.
      *
-     * Публична ровно фаза торгов: до неё идёт подготовка заказчика, после
-     * APPROVE — исполнение по конкретному победителю. PAUSED и CHOICE наружу
-     * закрыты намеренно: пауза и выбор победителя — решения заказчика.
+     * Публична ровно фаза торгов: до неё идёт подготовка заказчика, после —
+     * судьба конкретного лота. Наружу за пределами TRADE аукцион не выходит,
+     * но исполнителю лота он остаётся виден на всём пути после торгов, включая
+     * паузу, выбор победителя и служебные исходы (expired/deleted): его работа
+     * по лоту продолжается и после того, как торги закрылись для рынка.
+     * Пока победитель лота не определён, OWNER_AND_WINNER равносилен
+     * «только заказчику» — исполнителя ещё нет.
      */
     public function visibilityLevel(): AuctionVisibilityLevelEnum
     {
         return match ($this) {
-            self::CREATED, self::DRAFT, self::AGREEMENT, self::NEW, self::SCHEDULED,
-            self::PAUSED, self::CHOICE, self::EXPIRED, self::DELETED => AuctionVisibilityLevelEnum::OWNER_ONLY,
+            self::CREATED, self::DRAFT, self::AGREEMENT,
+            self::NEW, self::SCHEDULED => AuctionVisibilityLevelEnum::OWNER_ONLY,
             self::TRADE => AuctionVisibilityLevelEnum::TENDER_VIEWERS,
-            self::APPROVE, self::IN_WORK, self::DONE_BY_PERFORMER, self::DONE,
-            self::CLAIM, self::DONE_BY_CLAIM, self::CANCELLED => AuctionVisibilityLevelEnum::OWNER_AND_WINNER,
+            self::PAUSED, self::CHOICE, self::APPROVE, self::IN_WORK, self::DONE_BY_PERFORMER,
+            self::DONE, self::CLAIM, self::DONE_BY_CLAIM, self::CANCELLED,
+            self::EXPIRED, self::DELETED => AuctionVisibilityLevelEnum::OWNER_AND_WINNER,
         };
     }
 

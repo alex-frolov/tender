@@ -6,6 +6,7 @@ namespace App\Tender\UseCase;
 
 use App\Iam\Entity\User;
 use App\Tender\Input\UpdateTenderInput;
+use App\Tender\TenderLotView;
 use App\Tender\TenderPresenter;
 use App\Tender\TenderService;
 
@@ -29,6 +30,6 @@ final readonly class UpdateTenderUseCase implements TenderUseCase
      */
     public function execute(User $user, string $tenderId, UpdateTenderInput $input, ?string $ip = null): array
     {
-        return $this->presenter->single($this->tenders->update($user, $tenderId, $input, $ip));
+        return $this->presenter->single($this->tenders->update($user, $tenderId, $input, $ip), TenderLotView::owner());
     }
 }
