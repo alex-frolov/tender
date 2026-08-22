@@ -147,8 +147,11 @@ BidTransaction::commitQualified   audit + outbox bid.qualified
 - Before opening: metadata only, `payload_encrypted: true`.
 - After opening: customer sees full bid (`part1`, `part2_ref`, `price_minor`, `price_basis`,
   `vat_rate`); a participant sees only `part1`.
-- `BidService::listForCompany`: the customer sees all; a participant sees own bids before opening
-  and only submitted bids after opening.
+- `BidService::listForCompany`: the customer sees all; a participant always sees **own** bids
+  (in any status) and, after opening, other suppliers' `submitted` bids on top. The "own bids
+  always" part matters in practice: qualification moves a bid to `admitted`/`rejected`, and while
+  the filter was `submitted`-only after opening, the author's own bid vanished from their own list
+  together with the decision reason and the part-2 documents section.
 
 ## Related documents
 
