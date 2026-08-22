@@ -2070,7 +2070,8 @@ paths:
                 - name: documentTypeId
                   in: path
                   required: true
-                  schema: { type: string, format: uuid }
+                  description: 'Numeric identifier of the document type (bigint)'
+                  schema: { type: integer, format: int64, minimum: 1 }
             requestBody:
                 required: true
                 content:
@@ -2101,7 +2102,8 @@ paths:
                 - name: documentTypeId
                   in: path
                   required: true
-                  schema: { type: string, format: uuid }
+                  description: 'Numeric identifier of the document type (bigint)'
+                  schema: { type: integer, format: int64, minimum: 1 }
             responses:
                 '200':
                     description: Type deactivated
