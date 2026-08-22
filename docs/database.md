@@ -1,7 +1,6 @@
 # Database
 
-> Query performance: index coverage, growth behaviour and optimisation proposals are
-> collected in [db-query-audit.md](db-query-audit.md).
+> Query performance: index coverage, growth behaviour and optimisation proposals
 
 This document describes the data model: entities, relationships, enums and the table layout.
 

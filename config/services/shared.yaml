@@ -16,6 +16,13 @@ services:
         arguments:
             $ttlSeconds: '%env(int:IDEMPOTENCY_TTL)%'
 
+    # Retention outbox_events: окно хранения ОПУБЛИКОВАННЫХ событий (дни).
+    # Без очистки таблица растёт бесконечно — доставленное событие не читается
+    # больше никем, но остаётся навсегда.
+    App\Infrastructure\Console\OutboxCleanupCommand:
+        arguments:
+            $retentionDays: '%env(int:OUTBOX_RETENTION_DAYS)%'
+
     # Реестр JSON Schema событий (schema registry, testing-strategy.md §5).
     # Схемы — config/schemas/events/{event_type}.json (конверт + payload).
     # Потребляется OutboxEventSchemaListener (prePersist) и тестами.
