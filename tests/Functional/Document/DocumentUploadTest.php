@@ -9,11 +9,18 @@ use App\Document\Controller\DocumentGetController;
 use App\Document\Controller\DocumentListController;
 use App\Document\Controller\DocumentUploadController;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Enum\CompanyTypeEnum;
+use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Tender\Entity\Enum\TenderStatusTransition;
+use App\Tests\Factory\CompanyFactory;
+use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Story\DocumentUploadStory;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
+use Symfony\Component\Workflow\WorkflowInterface;
 
 /**
  * AM-8, FR-1.1.5, FR-1.2.6: загрузка документов тендера, версионирование,
@@ -22,7 +29,9 @@ use Symfony\Component\HttpFoundation\File\UploadedFile;
  * - добавление версии → версии растут, текущая версия соответствует;
  * - скачивание возвращает бинарное содержимое;
  * - приватный документ невидим чужому tenant (403), публичный — виден;
- * - лимиты: неверный mime (422), слишком большой файл.
+ * - лимиты: неверный mime (422), слишком большой файл;
+ * - документы лота (entity_type=lot, документы приёмки при отметке
+ *   о выполнении): грузит любая сторона, которой видна процедура.
  */
 final class DocumentUploadTest extends WebTestCase
 {
@@ -315,6 +324,91 @@ final class DocumentUploadTest extends WebTestCase
         $getUrl = str_replace('{documentId}', $documentId, DocumentGetController::URL);
         $client = self::jsonGet($getUrl, $otherToken);
         self::assertResponseStatusCodeSame(403);
+    }
+
+    /**
+     * Документы лота: к лоту прикладывают обе стороны — заказчик документацию
+     * закупки, исполнитель акты приёмки. Поэтому проверка не «мой тендер»,
+     * а «вижу процедуру»: чужой опубликованный лот открыт, чужой черновик —
+     * нет (404, как и сам тендер).
+     */
+    public function testUploadToLotOfOwnTenderIsAllowed(): void
+    {
+        $fx = self::fixture();
+        $token = self::login();
+        $lot = LotFactory::createOne(['tender' => DocumentUploadStory::tender(), 'priceNetMinor' => 10000]);
+
+        $file = new UploadedFile($this->tempFile('akt.pdf', 'lot-document'), 'akt.pdf', 'application/pdf');
+        $client = self::multipart(DocumentUploadController::URL, $token, [
+            'document_type_id' => $fx['document_type_id'],
+            'entity_type' => 'lot',
+            'entity_id' => (string) $lot->getId(),
+        ], ['file' => $file]);
+
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame('lot', $body['entity_type']);
+        self::assertSame((string) $lot->getId(), $body['entity_id']);
+    }
+
+    public function testUploadToLotOfInvisibleTenderIs404(): void
+    {
+        $fx = self::fixture();
+        // Тендер стори — черновик: чужой компании он не виден вовсе.
+        $lot = LotFactory::createOne(['tender' => DocumentUploadStory::tender(), 'priceNetMinor' => 10000]);
+        $token = self::login(self::approvedSupplierEmail());
+
+        $file = new UploadedFile($this->tempFile('akt.pdf', 'lot-document'), 'akt.pdf', 'application/pdf');
+        self::multipart(DocumentUploadController::URL, $token, [
+            'document_type_id' => $fx['document_type_id'],
+            'entity_type' => 'lot',
+            'entity_id' => (string) $lot->getId(),
+        ], ['file' => $file]);
+
+        self::assertResponseStatusCodeSame(404);
+    }
+
+    public function testUploadToLotOfPublishedTenderIsAllowedForParticipant(): void
+    {
+        $fx = self::fixture();
+        $tender = DocumentUploadStory::tender();
+        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
+
+        $container = static::getContainer();
+        $workflow = $container->get('state_machine.tender');
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $workflow->apply($tender, TenderStatusTransition::PUBLISH->value);
+        $container->get(EntityManagerInterface::class)->flush();
+
+        $token = self::login(self::approvedSupplierEmail());
+        $file = new UploadedFile($this->tempFile('akt.pdf', 'lot-document'), 'akt.pdf', 'application/pdf');
+        self::multipart(DocumentUploadController::URL, $token, [
+            'document_type_id' => $fx['document_type_id'],
+            'entity_type' => 'lot',
+            'entity_id' => (string) $lot->getId(),
+        ], ['file' => $file]);
+
+        self::assertResponseStatusCodeSame(201);
+    }
+
+    /**
+     * Подтверждённый поставщик со своей компанией: `other` из стори не
+     * подтверждён, и загрузка от него отбивается 403 org_pending раньше
+     * любой проверки сущности.
+     */
+    private static function approvedSupplierEmail(): string
+    {
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $email = 'lot-supplier-'.random_int(1000, 999999).'@test.ru';
+        UserFactory::createOne([
+            'email' => $email,
+            'name' => 'Поставщик Лота',
+            'role' => UserRoleEnum::ADMIN,
+            'companyId' => $company->getId(),
+        ]);
+
+        return $email;
     }
 
     private function tempFile(string $name, string $content): string

@@ -87,6 +87,14 @@ final readonly class TenderReadService implements TenderReadServiceContract
         return $lot;
     }
 
+    public function findTenderIdByLot(Uuid $lotId): ?Uuid
+    {
+        /** @var Lot|null $lot */
+        $lot = $this->em->getRepository(Lot::class)->find($lotId);
+
+        return $lot?->getTender()->getId();
+    }
+
     public function lotLabels(array $lotIds): array
     {
         $uuids = [];
