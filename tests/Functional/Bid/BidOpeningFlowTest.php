@@ -6,6 +6,7 @@ namespace App\Tests\Functional\Bid;
 
 use App\Bid\BidOpeningService;
 use App\Bid\Controller\BidListController;
+use App\Bid\Controller\BidQualifyController;
 use App\Bid\Controller\BidSubmitController;
 use App\Iam\Controller\Auth\TokenController;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
@@ -29,6 +30,8 @@ use Symfony\Component\Workflow\WorkflowInterface;
  *   содержимого (part1/price) нет ни у заказчика, ни у участника;
  * - после вскрытия заказчик видит полный состав (part1, part2_ref, price),
  *   участник — (в части) только part1 всех поданных заявок;
+ * - своя заявка остаётся видна автору после рассмотрения (admitted/rejected),
+ *   хотя чужие в этих статусах из выдачи участника уходят;
  * - событие tender.opened уходит в outbox.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
@@ -246,5 +249,46 @@ final class BidOpeningFlowTest extends WebTestCase
             self::assertArrayNotHasKey('price_minor', $item, 'price hidden from participants');
             self::assertArrayNotHasKey('part2_ref', $item, 'part2 hidden from participants');
         }
+
+        // --- после рассмотрения своя заявка остаётся у автора ---
+        // Раньше выдача участника сводилась к submitted целиком, и допущенная
+        // заявка исчезала из своего же списка: автор терял и решение
+        // заказчика, и раздел документов части 2.
+        $ownBefore = self::firstOwnBid($supplierItems, $s1['supplierId']);
+        self::request(
+            'POST',
+            str_replace('{bidId}', $ownBefore, BidQualifyController::URL),
+            $customerToken,
+            ['decision' => 'admit', 'reason' => 'Соответствует требованиям'],
+        );
+        self::assertResponseStatusCodeSame(200);
+
+        $client = self::request('GET', $listUrl, $s1['token']);
+        self::assertResponseStatusCodeSame(200);
+        $afterQualify = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($afterQualify);
+        $afterItems = $afterQualify['items'];
+        self::assertIsArray($afterItems);
+        self::assertSame($ownBefore, self::firstOwnBid($afterItems, $s1['supplierId']));
+        self::assertCount(2, $afterItems, 'own admitted bid + foreign submitted one');
+    }
+
+    /**
+     * Идентификатор своей заявки в выдаче списка.
+     *
+     * @param array<mixed> $items
+     */
+    private static function firstOwnBid(array $items, string $supplierId): string
+    {
+        foreach ($items as $item) {
+            self::assertIsArray($item);
+            if ($item['supplier_id'] === $supplierId) {
+                self::assertIsString($item['id']);
+
+                return $item['id'];
+            }
+        }
+
+        self::fail('own bid is missing from the list');
     }
 }
