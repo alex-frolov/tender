@@ -33,7 +33,9 @@ work, and what the API looks like.
 | [auctions.md](auctions.md) | live trading, Redis state, SSE streaming, timer, heartbeat/recovery |
 | [contracts.md](contracts.md) | contract lifecycle, signing, execution, claims, security |
 | [api.md](api.md) | REST API reference: endpoints, conventions, errors |
+| [use-case-route-map.md](use-case-route-map.md) | user case ↔ route map (all 121 endpoints), documentation coverage audit |
 | [database.md](database.md) | entities, relationships, enums, table overview |
+| [db-query-audit.md](db-query-audit.md) | heaviest queries: index coverage, growth behaviour, optimisation proposals |
 | [integrations.md](integrations.md) | webhooks, notifications, analytics counters, exports |
 | [../operations/deployment.md](../operations/deployment.md) | prod profile, migrations, healthchecks, deploy smoke, rollback |
 
@@ -46,3 +48,5 @@ work, and what the API looks like.
 4. Then dive into the subsystem you are working on: [tenders.md](tenders.md),
    [bids.md](bids.md), [auctions.md](auctions.md) or [contracts.md](contracts.md).
 5. Use [api.md](api.md) and [database.md](database.md) as reference material.
+6. To find out which user case an endpoint serves (or which endpoints a case uses), see
+   [use-case-route-map.md](use-case-route-map.md).
