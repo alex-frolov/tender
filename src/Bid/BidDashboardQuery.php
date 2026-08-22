@@ -20,4 +20,14 @@ interface BidDashboardQuery
      * черновиков и отозванных.
      */
     public function countForSupplier(Uuid $companyId): int;
+
+    /**
+     * Тендеры, в которых компания участвует как поставщик: есть заявка
+     * в процессе (submitted/admitted/rejected/winning/lost). Нужен дашборду
+     * и статистике, чтобы у исполнителя считались процедуры его участия,
+     * а не только собственные (у исполнителя своих тендеров нет вовсе).
+     *
+     * @return list<Uuid>
+     */
+    public function tenderIdsForSupplier(Uuid $companyId): array;
 }

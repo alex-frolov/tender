@@ -386,12 +386,17 @@ final class TenderRepository extends ServiceEntityRepository
      * карта статус → число тендеров. Та же DB-агрегация, что и aggregatedStatuses,
      * но результат группируется по статусу — для дашборда (active_tenders и др.).
      *
+     * $participatingTenderIds добавляет процедуры участия компании (чужие по
+     * тенанту): у исполнителя своих тендеров нет, и без них счётчик всегда 0.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return array<string, int> агрегированный статус (value) → количество
      */
-    public function countByAggregatedStatus(Uuid $tenantId): array
+    public function countByAggregatedStatus(Uuid $tenantId, array $participatingTenderIds = []): array
     {
         $counts = [];
-        foreach ($this->aggregatedStatusRows($tenantId) as $row) {
+        foreach ($this->aggregatedStatusRows($tenantId, $participatingTenderIds) as $row) {
             $status = self::aggregateRow($row);
             $counts[$status->value] = ($counts[$status->value] ?? 0) + 1;
         }
@@ -406,20 +411,30 @@ final class TenderRepository extends ServiceEntityRepository
      * (period day/week/month дашборда): null = без ограничения.
      * Результат для GET /dashboard upcoming_deadlines.
      *
+     * $participatingTenderIds — процедуры участия компании (чужие по тенанту):
+     * срок подачи заявки по чужой процедуре и есть дедлайн исполнителя.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return list<array{tender_id: string, deadline_at: string}> до $limit записей
      */
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null, array $participatingTenderIds = []): array
     {
-        /** @var list<array{id: string, status: string, timeline: array<string, string>|null}> $rows */
-        $rows = $this->createQueryBuilder('t')
+        $qb = $this->createQueryBuilder('t')
             ->select('t.id', 't.status', 't.timeline')
-            ->where('t.tenantId = :tenantId')
+            ->where([] === $participatingTenderIds
+                ? 't.tenantId = :tenantId'
+                : 't.tenantId = :tenantId OR t.id IN (:participating)')
             ->andWhere('t.timeline IS NOT NULL')
             ->andWhere('t.status IN (:statuses)')
             ->setParameter('tenantId', $tenantId)
-            ->setParameter('statuses', [TenderStatusEnum::PUBLISHED->value, TenderStatusEnum::ACCEPTING_BIDS->value])
-            ->getQuery()
-            ->getArrayResult();
+            ->setParameter('statuses', [TenderStatusEnum::PUBLISHED->value, TenderStatusEnum::ACCEPTING_BIDS->value]);
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
+
+        /** @var list<array{id: string, status: string, timeline: array<string, string>|null}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $items = [];
@@ -457,19 +472,29 @@ final class TenderRepository extends ServiceEntityRepository
      * пустой результат. Значение среза — на стороне БД: TO_CHAR для даты,
      * TO_TEXT (CAST AS text) для uuid-заказчика.
      *
+     * $participatingTenderIds добавляет процедуры участия компании (чужие по
+     * тенанту) — иначе у исполнителя статистика пуста при любых торгах.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return list<array{tender_id: string, dimension_value: string, nmck_minor: int|null}>
      */
-    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to, array $participatingTenderIds = []): array
     {
         $qb = $this->createQueryBuilder('t')
             ->select('t.id AS tender_id')
             ->addSelect('t.nmckMinor AS nmck_minor')
-            ->where('t.tenantId = :tenantId')
+            ->where([] === $participatingTenderIds
+                ? 't.tenantId = :tenantId'
+                : 't.tenantId = :tenantId OR t.id IN (:participating)')
             ->andWhere('t.createdAt >= :from')
             ->andWhere('t.createdAt < :to')
             ->setParameter('tenantId', $tenantId)
             ->setParameter('from', $from)
             ->setParameter('to', $to);
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
 
         switch ($dimension) {
             case 'region':
@@ -506,21 +531,28 @@ final class TenderRepository extends ServiceEntityRepository
      * тендеру + админ-статус. Единый источник для aggregatedStatuses() и
      * countByAggregatedStatus() — DB-агрегация без гидратации лотов.
      *
+     * @param list<Uuid> $participatingTenderIds процедуры участия (чужие по тенанту)
+     *
      * @return list<array{tender_id: string, admin_status: TenderStatusEnum|string, statuses: string|null}>
      */
-    private function aggregatedStatusRows(Uuid $tenantId): array
+    private function aggregatedStatusRows(Uuid $tenantId, array $participatingTenderIds = []): array
     {
-        /** @var list<array{tender_id: string, admin_status: TenderStatusEnum|string, statuses: string|null}> $rows */
-        $rows = $this->createQueryBuilder('t')
+        $qb = $this->createQueryBuilder('t')
             ->select('t.id AS tender_id')
             ->addSelect('t.status AS admin_status')
             ->addSelect("STRING_AGG(l.status, ',') AS statuses")
             ->leftJoin('t.lots', 'l')
-            ->where('t.tenantId = :tenantId')
+            ->where([] === $participatingTenderIds
+                ? 't.tenantId = :tenantId'
+                : 't.tenantId = :tenantId OR t.id IN (:participating)')
             ->setParameter('tenantId', $tenantId)
-            ->groupBy('t.id', 't.status')
-            ->getQuery()
-            ->getArrayResult();
+            ->groupBy('t.id', 't.status');
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
+
+        /** @var list<array{tender_id: string, admin_status: TenderStatusEnum|string, statuses: string|null}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
 
         return $rows;
     }

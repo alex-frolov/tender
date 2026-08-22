@@ -155,7 +155,13 @@ checks the framework contract before every auction bid.
   base64url cursor; each page aggregates lot statuses via `STRING_AGG` and includes `bids_end`
   deadline and lot count.
 - `TenderDashboardQueryService` — counts of active tenders, status distribution, upcoming bid
-  deadlines, and facts by dimension (region / customer / period).
+  deadlines, and facts by dimension (region / customer / period). Every one of those takes an
+  optional list of *participating* tender ids on top of the tenant filter: `GET /dashboard` and
+  `GET /stats/tenders` cover procedures the company is involved in **either way** — its own
+  (customer) plus those where it has a bid (`BidDashboardQuery::tenderIdsForSupplier`) or an
+  auction bid (`AuctionDashboardQuery::tenderIdsForBidder`; a tender with `bids_required: false`
+  has no bid to find). Tenant-only was the previous behaviour and left a supplier with an empty
+  dashboard — no active tenders and no deadlines however much it traded.
 - `TenderExportSource` — streaming row source for the export module.
 
 ## Access & rating

@@ -20,8 +20,14 @@ use Symfony\Component\Uid\Uuid;
  * агрегированному статусу FR-1.1.3), мои заявки (как поставщик), мои
  * договоры (как сторона), ближайшие дедлайны приёма заявок и окончания торгов.
  *
- * Срез данных — компания актора (tenant-изоляция на уровне запросов модулей);
- * актор без компании (platform_admin) не имеет дашборда компании → 409.
+ * Срез данных — «процедуры компании» в обе стороны: свои (компания —
+ * заказчик, tenant-изоляция на уровне запросов модулей) И те, где компания
+ * участвует — есть заявка (BidDashboardQuery) или ставка на аукционе
+ * (AuctionDashboardQuery; в тендере с bids_required=false заявки нет вовсе).
+ * Раньше учитывался только тенант, и у исполнителя дашборд был пуст:
+ * «активные тендеры» 0 и ни одного ближайшего срока, сколько бы он ни торговался.
+ *
+ * Актор без компании (platform_admin) не имеет дашборда компании → 409.
  *
  * period (day/week/month) ограничивает горизонт upcoming_deadlines
  * (ближайшие 1 день / 7 дней / 30 дней); счётчики — снапшот-мгновенные.
@@ -58,16 +64,17 @@ final readonly class DashboardService
     {
         $companyId = $this->requireCompany($actor);
         $until = $this->horizon($period);
+        $participating = $this->participatingTenderIds($companyId);
 
         $deadlines = [];
-        foreach ($this->tenders->upcomingBidDeadlines($companyId, self::DEADLINE_LIMIT, $until) as $row) {
+        foreach ($this->tenders->upcomingBidDeadlines($companyId, self::DEADLINE_LIMIT, $until, $participating) as $row) {
             $deadlines[] = [
                 'entity_type' => 'tender',
                 'entity_id' => $row['tender_id'],
                 'deadline_at' => $row['deadline_at'],
             ];
         }
-        foreach ($this->auctions->upcomingTradeEnds($companyId, self::DEADLINE_LIMIT, $until) as $row) {
+        foreach ($this->auctions->upcomingTradeEnds($companyId, self::DEADLINE_LIMIT, $until, $participating) as $row) {
             $deadlines[] = [
                 'entity_type' => 'auction',
                 'entity_id' => $row['auction_id'],
@@ -81,11 +88,29 @@ final readonly class DashboardService
         );
 
         return [
-            'active_tenders' => $this->tenders->countActive($companyId),
+            'active_tenders' => $this->tenders->countActive($companyId, $participating),
             'my_bids' => $this->bids->countForSupplier($companyId),
             'my_contracts' => $this->contracts->countForCompany($companyId),
             'upcoming_deadlines' => \array_slice($deadlines, 0, self::DEADLINE_LIMIT),
         ];
+    }
+
+    /**
+     * Процедуры, где компания участвует, но не является заказчиком: тендеры
+     * её заявок плюс тендеры аукционов, где она ставила ставки (в тендере без
+     * заявки на участие первый источник пуст). Дубликаты убираются —
+     * дальше список уходит в `IN (...)`.
+     *
+     * @return list<Uuid>
+     */
+    private function participatingTenderIds(Uuid $companyId): array
+    {
+        $ids = [];
+        foreach ([...$this->bids->tenderIdsForSupplier($companyId), ...$this->auctions->tenderIdsForBidder($companyId)] as $id) {
+            $ids[(string) $id] = $id;
+        }
+
+        return array_values($ids);
     }
 
     /**

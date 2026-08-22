@@ -21,4 +21,9 @@ final readonly class BidDashboardQueryService implements BidDashboardQuery
     {
         return $this->bids->countForSupplier($companyId);
     }
+
+    public function tenderIdsForSupplier(Uuid $companyId): array
+    {
+        return $this->bids->tenderIdsForSupplier($companyId);
+    }
 }
