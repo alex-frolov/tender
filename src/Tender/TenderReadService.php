@@ -55,6 +55,14 @@ interface TenderReadService
     public function resolveLotById(string $lotId): Lot;
 
     /**
+     * Тендер лота (или null, если лота нет). Публичный lookup для модулей,
+     * которым лот приходит «голым» id из запроса: документы приёмки
+     * (Document, entity_type=lot) грузятся к лоту, а проверять видимость
+     * процедуры нужно по тендеру.
+     */
+    public function findTenderIdByLot(Uuid $lotId): ?Uuid;
+
+    /**
      * Подписи тендера и лота по списку id лотов — для списков других модулей
      * (Auction: GET /auctions показывает номер/название тендера и лота вместо
      * UUID). Одним запросом на весь список: N+1 при рендере списка недопустим.

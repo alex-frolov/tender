@@ -218,6 +218,15 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | PUT | `/document-types/{documentTypeId}` | update document type |
 | DELETE | `/document-types/{documentTypeId}` | deactivate document type |
 
+Upload is scoped per `entity_type`: `tender` requires the tender to belong to the actor's company,
+`contract` requires the company to be a party, and `lot` requires only that the **procedure is
+visible** to the company (FR-1.5.14). The looser rule on lots is deliberate — acceptance documents
+(acts, waybills) at the execution stage are uploaded by the performer, whose company is not the
+tender's tenant. A lot of an invisible procedure answers 404, same as the tender itself.
+
+Visibility of an uploaded acceptance document must be `public`: `listForEntity` returns own
+documents plus public ones, so a `private` act stays invisible to the counterparty.
+
 ### Platform: api keys, webhooks, exports, notifications, favorites, saved searches, analytics
 
 | Method | Path | Description |
