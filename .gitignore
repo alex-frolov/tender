@@ -66,3 +66,6 @@ yarn-error.log
 
 # local agent guidance, not part of the project source
 /CLAUDE.md
+
+# Протокол e2e-прогона (scripts/e2e-procedure-types.py) — артефакт запуска
+/e2e-result.json
