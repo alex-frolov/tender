@@ -6,6 +6,7 @@ namespace App\Tender\Timeline;
 
 use App\Tender\Entity\Enum\ProcedureTypeEnum;
 use App\Tender\Entity\Tender;
+use Symfony\Component\Clock\ClockInterface;
 
 /**
  * Базовая реализация TimelineRules (ядро, коммерческие правила по умолчанию).
@@ -20,12 +21,19 @@ use App\Tender\Entity\Tender;
  *   bids_end   = now + D    — где D по типу процедуры.
  *
  * Дата публикации — момент публикации, поэтому расчёт опирается на now (UTC).
+ * «Сейчас» берётся из ClockInterface: результат можно зафиксировать в тестах,
+ * а не зависеть от момента прогона (как и в RuTimelineRules плагина).
  */
-final class DefaultTimelineRules implements TimelineRules
+final readonly class DefaultTimelineRules implements TimelineRules
 {
+    public function __construct(
+        private ClockInterface $clock,
+    ) {
+    }
+
     public function calculate(Tender $tender): array
     {
-        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'));
         $bidsEnd = $now->add($this->durationFor($tender->getProcedureType()));
 
         return [
