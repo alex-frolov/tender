@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Notification;
 
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\EmailMetricsCollector;
 use App\Notification\Repository\NotificationSubscriptionRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
@@ -73,6 +74,9 @@ final readonly class NotificationEmailMessageHandler
                 'payload' => $message->payload,
                 'locale' => $locale,
             ]));
+
+        // Лейбл template для email_send_total (наблюдение SMTP на консьюмере).
+        $email->getHeaders()->addTextHeader(EmailMetricsCollector::TEMPLATE_HEADER, 'notification');
 
         $this->mailer->send($email);
 

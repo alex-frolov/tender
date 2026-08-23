@@ -7,6 +7,7 @@ namespace App\Iam\Service;
 use App\Iam\Entity\EmailVerificationToken;
 use App\Iam\Entity\Enum\UserStatusTransition;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\EmailMetricsCollector;
 use App\Infrastructure\Metrics\RateLimitMetricsCollector;
 use App\Shared\Audit\AuditService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -204,6 +205,9 @@ final readonly class EmailVerificationService
                 'minutes' => intdiv($this->tokenTtl, 60),
                 'locale' => $locale,
             ]));
+
+        // Лейбл template для email_send_total (наблюдение SMTP на консьюмере).
+        $email->getHeaders()->addTextHeader(EmailMetricsCollector::TEMPLATE_HEADER, 'verification');
 
         $this->mailer->send($email);
     }

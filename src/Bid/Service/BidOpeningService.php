@@ -8,6 +8,7 @@ use App\Bid\BidOpeningService as BidOpeningServiceContract;
 use App\Bid\BidPayloadCipher;
 use App\Bid\Entity\Bid;
 use App\Bid\Repository\BidRepository;
+use App\Infrastructure\Metrics\BidMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use App\Tender\Entity\Enum\TenderStatusEnum;
@@ -31,25 +32,39 @@ final readonly class BidOpeningService implements BidOpeningServiceContract
         private AuditService $audit,
         private BidRepository $bids,
         private BidPayloadCipher $cipher,
+        private BidMetricsCollector $metrics,
     ) {
     }
 
+    /**
+     * Исход пишется в bid_opening_total{outcome} (opened | skipped | failed):
+     * просрочка вскрытия в бизнес-терминах ловит и мёртвую очередь, и
+     * потерянное сообщение, и ошибку самого вскрытия.
+     */
     public function open(string $tenderId, ?string $ip = null): void
     {
-        /** @var Tender|null $tender */
-        $tender = $this->em->getRepository(Tender::class)->find($tenderId);
-        if (null === $tender) {
-            return;
-        }
+        try {
+            /** @var Tender|null $tender */
+            $tender = $this->em->getRepository(Tender::class)->find($tenderId);
+            if (null === $tender || null !== $tender->getBidsOpenedAt()
+                || TenderStatusEnum::ACCEPTING_BIDS !== $tender->getStatus()) {
+                $this->metrics->openingFinished(BidMetricsCollector::OPENING_SKIPPED);
 
-        if (null !== $tender->getBidsOpenedAt()) {
-            return;
-        }
+                return;
+            }
 
-        if (TenderStatusEnum::ACCEPTING_BIDS !== $tender->getStatus()) {
-            return;
-        }
+            $this->doOpen($tender, $ip);
+            $this->metrics->openingFinished(BidMetricsCollector::OPENING_OPENED);
+        } catch (\Throwable $e) {
+            // До ретрая messenger'ом; повторная доставка инкрементит failed ещё раз.
+            $this->metrics->openingFinished(BidMetricsCollector::OPENING_FAILED);
 
+            throw $e;
+        }
+    }
+
+    private function doOpen(Tender $tender, ?string $ip): void
+    {
         $submitted = $this->bids->listSubmittedForTender($tender->getId());
         $openedAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Iam\Service;
 
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\AuthMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\ValidationException;
@@ -17,6 +18,8 @@ use Doctrine\ORM\EntityManagerInterface;
  * - setup: генерирует секрет (base32), возвращает otpauth-URI для QR;
  * - confirm: проверяет код и активирует 2FA;
  * - disable: требует код (подтверждение владения) и отключает.
+ *
+ * Исходы операций пишутся в auth_2fa_total{outcome}.
  */
 final readonly class TwoFactorService
 {
@@ -24,6 +27,7 @@ final readonly class TwoFactorService
         private EntityManagerInterface $em,
         private TotpService $totp,
         private AuditService $audit,
+        private AuthMetricsCollector $authMetrics,
     ) {
     }
 
@@ -39,6 +43,7 @@ final readonly class TwoFactorService
         }
 
         $secret = $this->generateSecret();
+        $this->authMetrics->twoFactorEvent(AuthMetricsCollector::TFA_SETUP);
 
         return [
             'secret' => $secret,
@@ -54,6 +59,8 @@ final readonly class TwoFactorService
     public function confirm(User $user, string $secret, string $code): void
     {
         if (!$this->totp->verify($secret, $code)) {
+            $this->authMetrics->twoFactorEvent(AuthMetricsCollector::TFA_CONFIRM_FAILED);
+
             throw new ValidationException('Invalid TOTP code');
         }
 
@@ -68,6 +75,7 @@ final readonly class TwoFactorService
             actorType: 'user',
             actorId: (string) $user->getId(),
         );
+        $this->authMetrics->twoFactorEvent(AuthMetricsCollector::TFA_ENABLED);
     }
 
     /**
@@ -79,6 +87,8 @@ final readonly class TwoFactorService
     {
         $secret = $user->getTotpSecret();
         if (null === $secret || !$this->totp->verify($secret, $code)) {
+            $this->authMetrics->twoFactorEvent(AuthMetricsCollector::TFA_DISABLE_FAILED);
+
             throw new ValidationException('Invalid TOTP code');
         }
 
@@ -93,6 +103,7 @@ final readonly class TwoFactorService
             actorType: 'user',
             actorId: (string) $user->getId(),
         );
+        $this->authMetrics->twoFactorEvent(AuthMetricsCollector::TFA_DISABLED);
     }
 
     private function tenantIdOf(User $user): ?string

@@ -112,6 +112,82 @@ groups:
           summary: "Шторм 429 (rate limit)"
           description: "Срабатывания rate_limit_exceeded_total > 50/сек (среднее за 5м). Возможны атака/некорректный клиент/слишком жёсткий лимит."
 
+      - alert: TimelineQueueStuck
+        # Очередь таймлайна стоит (P0-1): Redis-транспорт не виден RabbitMQ-
+        # экспортеру, упавший worker = тендеры навсегда в published, заявки
+        # не вскрываются (случай 22.08.2026 — worker лежал > 10 ч незаметно).
+        # min_over_time > 0 за 5м = глубина ни разу не упала до нуля:
+        # задачи есть, а обработки нет. Независимый дубль сигнала —
+        # redis_stream_length{stream="messages"} с redis-exporter.
+        expr: min_over_time(timeline_queue_depth{queue="ready"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: high
+        annotations:
+          summary: "Очередь таймлайна стоит (> 5 мин без обработки)"
+          description: "timeline_queue_depth{queue=ready} не опускалась до нуля 5 минут — задачи таймлайна (start_bid_acceptance/open_bids) не обрабатываются. Проверить контейнер worker (docker compose ps, docker logs worker) и Redis-транспорт live. Сверить с redis_stream_length{stream=messages}. Тендеры в published — tenders_by_status{status=published} растёт."
+
+      - alert: TimelineJobFailed
+        # Отказы обработки задач таймлайна (P0-1): increase > 0 за 10м =
+        # минимум одна неудачная попытка (исход failed пишется до ретрая
+        # messenger'ом, повторные доставки инкрементят снова).
+        expr: increase(timeline_jobs_total{outcome="failed"}[10m]) > 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "Отказы обработки задач таймлайна"
+          description: "timeline_jobs_total{outcome=failed} за 10м > 0 — обработка start_bid_acceptance/open_bids падает (детали по лейблу action и в логах worker). Если отказы устойчивы — вскрытие заявок просрочится (см. bid_opening_overdue_seconds)."
+
+      - alert: MessengerConsumersDown
+        # Консьюмеры messenger умерли при наличии работы (P0-2): rabbitmq_queue_consumers
+        # собирается экспортером, но раньше нигде не использовался.
+        # Очереди tender_events / tender_emails / tender_webhooks / tender_exports.
+        expr: rabbitmq_queue_consumers == 0 and rabbitmq_queue_messages_ready > 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "Нет консьюмеров при непустой очереди"
+          description: "rabbitmq_queue_consumers == 0 при rabbitmq_queue_messages_ready > 0 (2 мин) — консьюмер очереди упал, сообщения копятся (очередь видна по лейблам queue). Проверить контейнеры worker/webhooks (docker compose ps) и логи соответствующего сервиса."
+
+      - alert: MessengerQueueBacklog
+        # Рост бэклога messenger-очередей (P0-2): консьюмеры живы, но не
+        # успевают либо сообщения застревают. Порог dev — уточнить в prod.
+        expr: rabbitmq_queue_messages_ready > 1000
+        for: 10m
+        labels:
+          severity: medium
+        annotations:
+          summary: "Бэклог messenger-очереди > 1000"
+          description: "rabbitmq_queue_messages_ready > 1000 в течение 10 минут — консьюмеры не справляются или сообщения застряли (очередь видна по лейблам queue). Проверить скорость обработки, ретраи и ошибки в логах worker/webhooks."
+
+      - alert: EmailSendFailures
+        # Отправка почты не наблюдаема иначе (P0-3): письмо подтверждения email —
+        # единственный вход нового пользователя; молчащий SMTP = регистрация
+        # «работает», но никто не может войти. failed = попытки исчерпаны
+        # (после 3 ретраев), retried — временный сбой (алерта не даёт).
+        expr: increase(email_send_total{outcome="failed"}[15m]) > 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "Отказы отправки почты (SMTP)"
+          description: "email_send_total{outcome=failed} за 15м > 0 — отправка писем падает после исчерпания ретраев (шаблон — по лейблу template). Без почты невозможны подтверждение email, приглашения и восстановление пароля. Проверить SMTP/Mailpit и логи воркера канала emails."
+
+      - alert: BidOpeningOverdue
+        # Просрочка авто-вскрытия заявок (P1-5): тот же класс отказа, что
+        # TimelineQueueStuck, но в бизнес-терминах — ловит и мёртвую очередь,
+        # и потерянное сообщение, и ошибку самого вскрытия. Порог 5 мин:
+        # вскрытие планируется на bids_end, нормальная задержка обработки — секунды.
+        expr: bid_opening_overdue_seconds > 300
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "Вскрытие заявок просрочено (> 5 мин после bids_end)"
+          description: "bid_opening_overdue_seconds > 300 — тендер(ы) в accepting_bids пережили bids_end, а заявки не вскрыты. Проверить worker и очередь таймлайна (TimelineQueueStuck/TimelineJobFailed), статус тендеров в accepting_bids с прошедшим bids_end."
+
   - name: tender-infra
     rules:
       - alert: DiskSpaceLow

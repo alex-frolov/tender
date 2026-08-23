@@ -12,6 +12,7 @@ use App\Export\ExportRowSourceRegistry;
 use App\Export\Repository\ExportJobRepository;
 use App\Export\Storage\ExportFileStorage;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
+use App\Infrastructure\Metrics\ExportMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use App\Tests\Factory\CompanyFactory;
@@ -66,6 +67,7 @@ final class ExportJobProcessorTest extends KernelTestCase
             storage: $this->storage,
             audit: $this->audit,
             logger: $this->logger,
+            exportMetrics: $container->get(ExportMetricsCollector::class),
         );
     }
 
@@ -198,6 +200,7 @@ final class ExportJobProcessorTest extends KernelTestCase
             storage: $badStorage,
             audit: $this->audit,
             logger: $this->logger,
+            exportMetrics: self::getContainer()->get(ExportMetricsCollector::class),
         );
         $processor->process((string) $job->getId());
 

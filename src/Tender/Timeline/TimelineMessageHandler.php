@@ -31,6 +31,11 @@ use Symfony\Component\Workflow\WorkflowInterface;
  *
  * Обработчик работает в контексте worker (live-транспорт), поэтому повреждённая
  * транзакция не волнует: каждый обработанный тендер выполняет собственный flush.
+ *
+ * Наблюдаемость: каждая обработка задачи пишется в
+ * timeline_jobs_total{action,outcome} — applied | skipped | failed. Упавший
+ * worker по этой очереди иначе не виден никем: RabbitMQ-экспортер Redis-транспорт
+ * не видит, HTTP и health при этом зелёные.
  */
 #[AsMessageHandler]
 final readonly class TimelineMessageHandler
@@ -41,6 +46,7 @@ final readonly class TimelineMessageHandler
         private LoggerInterface $logger,
         private BidOpeningService $bidOpening,
         private LotPhaseService $lotPhases,
+        private TimelineJobRecorder $jobMetrics,
         #[Autowire(service: 'state_machine.tender')]
         private WorkflowInterface $tenderWorkflow,
     ) {
@@ -52,26 +58,37 @@ final readonly class TimelineMessageHandler
             return;
         }
 
-        $tender = $this->em->getRepository(Tender::class)->find($message->aggregateId);
-        if (null === $tender) {
-            $this->logger->warning('Timeline: tender not found', ['tender_id' => $message->aggregateId]);
+        try {
+            $tender = $this->em->getRepository(Tender::class)->find($message->aggregateId);
+            if (null === $tender) {
+                $this->logger->warning('Timeline: tender not found', ['tender_id' => $message->aggregateId]);
+                $this->jobMetrics->record($message->action, TimelineJobRecorder::OUTCOME_SKIPPED);
 
-            return;
+                return;
+            }
+
+            if (TenderTimelineAction::START_BID_ACCEPTANCE->value === $message->action) {
+                $this->startProcedure($tender);
+
+                return;
+            }
+
+            if (TenderTimelineAction::OPEN_BIDS->value === $message->action) {
+                $this->openBids($tender);
+
+                return;
+            }
+
+            $this->logger->warning('Timeline: unknown action', ['action' => $message->action]);
+            $this->jobMetrics->record($message->action, TimelineJobRecorder::OUTCOME_SKIPPED);
+        } catch (\Throwable $e) {
+            // Счётчик отказа до ретрая messenger'ом: повторная доставка
+            // инкрементит failed ещё раз — это честно отражает число неудачных
+            // попыток, а не задач.
+            $this->jobMetrics->record($message->action, TimelineJobRecorder::OUTCOME_FAILED);
+
+            throw $e;
         }
-
-        if (TenderTimelineAction::START_BID_ACCEPTANCE->value === $message->action) {
-            $this->startProcedure($tender);
-
-            return;
-        }
-
-        if (TenderTimelineAction::OPEN_BIDS->value === $message->action) {
-            $this->openBids($tender);
-
-            return;
-        }
-
-        $this->logger->warning('Timeline: unknown action', ['action' => $message->action]);
     }
 
     /**
@@ -93,6 +110,7 @@ final readonly class TimelineMessageHandler
                 'transition' => $transition,
                 'status' => $tender->getStatus()->value,
             ]);
+            $this->jobMetrics->record($transition, TimelineJobRecorder::OUTCOME_SKIPPED);
 
             return;
         }
@@ -116,6 +134,8 @@ final readonly class TimelineMessageHandler
                 'timeline' => $tender->getTimeline(),
             ],
         );
+
+        $this->jobMetrics->record($transition, TimelineJobRecorder::OUTCOME_APPLIED);
     }
 
     /**
@@ -123,9 +143,23 @@ final readonly class TimelineMessageHandler
      * содержимого поданных заявок + событие tender.opened. Идемпотентно:
      * BidOpeningService сам пропускает уже вскрытые тендеры и не-принимающие
      * статусы, поэтому повторная доставка сообщения ничего не дублирует.
+     *
+     * Исход различается ПОСЛЕ вызова (BidOpeningService возвращает void):
+     * bids_opened_at проставлен — вскрытие выполнено, нет — пропуск
+     * (повторная доставка или статус уже не accepting_bids).
      */
     private function openBids(Tender $tender): void
     {
+        $openedAtBefore = $tender->getBidsOpenedAt();
+
         $this->bidOpening->open((string) $tender->getId());
+
+        // Исход различается ПОСЛЕ вызова: bids_opened_at проставлен — вскрытие
+        // выполнено (или уже было), нет — пропуск (статус не accepting_bids).
+        // Счётчик bid_opening_total{outcome} пишет сам BidOpeningService.
+        $outcome = null !== $openedAtBefore || null === $tender->getBidsOpenedAt()
+            ? TimelineJobRecorder::OUTCOME_SKIPPED
+            : TimelineJobRecorder::OUTCOME_APPLIED;
+        $this->jobMetrics->record(TenderTimelineAction::OPEN_BIDS->value, $outcome);
     }
 }

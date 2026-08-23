@@ -7,15 +7,24 @@ namespace App\Infrastructure\Metrics;
 use App\Auction\Entity\Auction;
 use App\Auction\Entity\AuctionBid;
 use App\Auction\Entity\Enum\AuctionStatusEnum;
+use App\Contract\Entity\Contract;
+use App\Contract\Entity\Enum\ContractStatusEnum;
+use App\Iam\Entity\Company;
+use App\Iam\Entity\Enum\CompanyStatusEnum;
 use App\Shared\Entity\Enum\OutboxEventStatusEnum;
 use App\Shared\Entity\OutboxEvent;
+use App\Tender\Entity\Enum\TenderStatusEnum;
+use App\Tender\Entity\Tender;
 use Doctrine\ORM\EntityManagerInterface;
 use Psr\Log\LoggerInterface;
 
 /**
  * Ленивое обновление «дорогих» gauge-метрик перед рендером /metrics
  * (ops/observability.md §1): auction_active_trades, auction_stalled_now
- * (+ счётчик переходов auction_stall_events_total), outbox_pending_seconds.
+ * (+ счётчик переходов auction_stall_events_total), outbox_pending_seconds,
+ * а также бизнес-гейджи: tenders_by_status, contracts_by_status,
+ * bid_opening_overdue_seconds, companies_pending_verification и очередь
+ * таймлайна (timeline_queue_depth, timeline_overdue_seconds).
  * Вычисления требуют обращения к БД, поэтому выполняются
  * не чаще раза в CACHE_TTL_SECONDS (15 c — при скрейпе 15s это даёт ~1
  * вычисление на скрейп) через Redis-флаг; остальные скрейпы читают уже
@@ -34,12 +43,19 @@ use Psr\Log\LoggerInterface;
  *
  * Источник истины активных аукционов — PostgreSQL (auctions.status=TRADE),
  * т.к. Redis-снапшоты живут до TTL даже после выхода из TRADE.
+ *
+ * Очередь таймлайна читается напрямую из Redis-транспорта: stream `messages`
+ * (готовые задачи) + zset `messages__queue` (отложенные; score = runAt).
+ * Ключи принадлежат Symfony RedisTransport (`{stream}__{queue}`), их отсутствие
+ * = пустая очередь (0).
  */
 final class GaugeMetricsUpdater
 {
     private const string FRESH_KEY = 'tender_metrics:gauges:fresh';
     private const string STATE_KEY = 'tender_metrics:gauges:state';
     private const string STALLED_SET_KEY = 'tender_metrics:gauges:stalled_set';
+    private const string TIMELINE_STREAM = 'messages';
+    private const string TIMELINE_DELAYED_KEY = 'messages__queue';
     private const int FRESH_TTL_SECONDS = 15;
     private const int STATE_TTL_SECONDS = 86400;
 
@@ -48,6 +64,11 @@ final class GaugeMetricsUpdater
         private readonly AuctionMetricsCollector $auctionMetrics,
         private readonly OutboxMetricsCollector $outboxMetrics,
         private readonly InfrastructureMetricsCollector $infraMetrics,
+        private readonly TimelineMetricsCollector $timelineMetrics,
+        private readonly TenderMetricsCollector $tenderMetrics,
+        private readonly BidMetricsCollector $bidMetrics,
+        private readonly ContractMetricsCollector $contractMetrics,
+        private readonly CompanyMetricsCollector $companyMetrics,
         private readonly AuctionNoBidEvaluator $noBidEvaluator,
         private readonly \Redis $redis,
         private readonly LoggerInterface $logger,
@@ -126,6 +147,16 @@ final class GaugeMetricsUpdater
         $this->auctionMetrics->setStalledCount(\count($stalledIds));
 
         $this->outboxMetrics->setPendingLag($this->outboxLag());
+
+        // Очередь таймлайна: глубина ready/delayed + просрочка.
+        $this->timelineQueueDepth();
+        $this->timelineOverdue($now);
+
+        // Бизнес-пульс.
+        $this->tenderStatusCounts();
+        $this->contractStatusCounts();
+        $this->bidMetrics->setOpeningOverdueSeconds($this->bidOpeningOverdueSeconds());
+        $this->companyMetrics->setPendingVerification($this->companiesPendingVerification());
 
         $state = json_encode([
             'auction_ids' => array_values($currentIds),
@@ -222,6 +253,162 @@ final class GaugeMetricsUpdater
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
         return max(0, $now->getTimestamp() - $created->getTimestamp());
+    }
+
+    /**
+     * Глубина очереди таймлайна: ready — записи stream'а (XLEN), delayed —
+     * задачи в zset отложенных (ZCARD). Отсутствие ключей = пустая очередь.
+     */
+    private function timelineQueueDepth(): void
+    {
+        $ready = $this->redis->xLen(self::TIMELINE_STREAM);
+        $this->timelineMetrics->setQueueDepth('ready', \is_int($ready) ? $ready : 0);
+
+        $delayed = $this->redis->zCard(self::TIMELINE_DELAYED_KEY);
+        $this->timelineMetrics->setQueueDepth('delayed', \is_int($delayed) ? $delayed : 0);
+    }
+
+    /**
+     * Запаздывание самой просроченной отложенной задачи: score zset'а —
+     * момент запуска (runAt, unix-время), поэтому просрочка = now − score
+     * самой ранней задачи с score ≤ now. Просроченных нет → 0.
+     */
+    private function timelineOverdue(\DateTimeImmutable $now): void
+    {
+        $rows = $this->redis->zRangeByScore(
+            self::TIMELINE_DELAYED_KEY,
+            '-inf',
+            (string) $now->getTimestamp(),
+            ['limit' => [0, 1], 'withscores' => true],
+        );
+        if (!\is_array($rows) || [] === $rows) {
+            $this->timelineMetrics->setOverdueSeconds(0);
+
+            return;
+        }
+
+        // С ключами withscores значение элемента — score (момент запуска).
+        $score = reset($rows);
+        $this->timelineMetrics->setOverdueSeconds(
+            \is_float($score) || \is_int($score) ? max(0.0, $now->getTimestamp() - $score) : 0.0,
+        );
+    }
+
+    /**
+     * Распределение тендеров по статусам; серии выставляются для ВСЕХ
+     * статусов enum (отсутствующие — 0), чтобы пустые фазы оставались видимы.
+     */
+    private function tenderStatusCounts(): void
+    {
+        $counts = [];
+        foreach (TenderStatusEnum::cases() as $case) {
+            $counts[$case->value] = 0;
+        }
+        foreach ($this->countByStatus(Tender::class) as $status => $count) {
+            if (\array_key_exists($status, $counts)) {
+                $counts[$status] = $count;
+            }
+        }
+
+        $this->tenderMetrics->setStatusCounts($counts);
+    }
+
+    /**
+     * Распределение договоров по статусам (см. tenderStatusCounts).
+     */
+    private function contractStatusCounts(): void
+    {
+        $counts = [];
+        foreach (ContractStatusEnum::cases() as $case) {
+            $counts[$case->value] = 0;
+        }
+        foreach ($this->countByStatus(Contract::class) as $status => $count) {
+            if (\array_key_exists($status, $counts)) {
+                $counts[$status] = $count;
+            }
+        }
+
+        $this->contractMetrics->setStatusCounts($counts);
+    }
+
+    /**
+     * GROUP BY status одним запросом (enum-гидратация нормализуется в value).
+     *
+     * @param class-string $entityClass
+     *
+     * @return array<string, int>
+     */
+    private function countByStatus(string $entityClass): array
+    {
+        $qb = $this->em->createQueryBuilder();
+        $qb->select('e.status AS status', 'COUNT(e.id) AS cnt')
+            ->from($entityClass, 'e')
+            ->groupBy('e.status');
+
+        /** @var list<array{status: mixed, cnt: mixed}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
+
+        $counts = [];
+        foreach ($rows as $row) {
+            $status = $this->statusValue($row['status']);
+            if (null === $status) {
+                continue;
+            }
+            $counts[$status] = max(0, is_numeric($row['cnt']) ? (int) $row['cnt'] : 0);
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Значение статуса из результата гидратации: enumType-колонки приходят
+     * BackedEnum-инстансами, «сырые» — скалярами.
+     */
+    private function statusValue(mixed $status): ?string
+    {
+        if ($status instanceof \BackedEnum) {
+            return (string) $status->value;
+        }
+
+        return \is_string($status) && '' !== $status ? $status : null;
+    }
+
+    /**
+     * Максимальная просрочка вскрытия заявок относительно bids_end по
+     * тендерам в accepting_bids. bids_end лежит в JSONB timeline,
+     * поэтому нативный SQL. Просрочки нет → 0.
+     */
+    private function bidOpeningOverdueSeconds(): float
+    {
+        $sql = <<<'SQL'
+            SELECT COALESCE(MAX(EXTRACT(EPOCH FROM (NOW() - (t.timeline ->> 'bids_end')::timestamptz))), 0)
+            FROM tenders t
+            WHERE t.status = :status
+              AND t.timeline ->> 'bids_end' IS NOT NULL
+              AND (t.timeline ->> 'bids_end')::timestamptz < NOW()
+            SQL;
+
+        /** @var int|float|string|null $result */
+        $result = $this->em->getConnection()->executeQuery(
+            $sql,
+            ['status' => TenderStatusEnum::ACCEPTING_BIDS->value],
+        )->fetchOne();
+
+        return max(0.0, (float) ($result ?? 0));
+    }
+
+    /**
+     * Очередь подтверждения компаний (P2-10): SLA суперадмина на UC-38.
+     */
+    private function companiesPendingVerification(): int
+    {
+        $qb = $this->em->createQueryBuilder();
+        $qb->select('COUNT(c.id)')
+            ->from(Company::class, 'c')
+            ->where('c.verificationStatus = :pending')
+            ->setParameter('pending', CompanyStatusEnum::PENDING->value);
+
+        return (int) $qb->getQuery()->getSingleScalarResult();
     }
 
     private function toDateTime(mixed $value): ?\DateTimeImmutable

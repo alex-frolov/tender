@@ -8,6 +8,7 @@ use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\Enum\UserStatusTransition;
 use App\Iam\Entity\PasswordResetToken;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\EmailMetricsCollector;
 use App\Infrastructure\Metrics\RateLimitMetricsCollector;
 use App\Shared\Audit\AuditService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -208,6 +209,9 @@ final readonly class PasswordResetService
                 'minutes' => intdiv($this->tokenTtl, 60),
                 'locale' => $locale,
             ]));
+
+        // Лейбл template для email_send_total (наблюдение SMTP на консьюмере).
+        $email->getHeaders()->addTextHeader(EmailMetricsCollector::TEMPLATE_HEADER, 'password_reset');
 
         $this->mailer->send($email);
     }
