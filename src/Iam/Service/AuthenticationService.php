@@ -8,6 +8,7 @@ use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\RefreshToken;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\AuthMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Totp\TotpService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -21,6 +22,11 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  * - email должен быть подтверждён (FR-1.5.5) — иначе 403;
  * - при включённой 2FA код TOTP обязателен;
  * - при успехе: last_login_at обновляется, refresh-токен сохраняется.
+ *
+ * Наблюдаемость: исход каждой попытки пишется в
+ * auth_logins_total{outcome}. Причина различается только В МЕТРИКЕ — наружу
+ * по-прежнему единый 401 invalid_credentials (контракт API не раскрывает,
+ * что именно не так).
  */
 final readonly class AuthenticationService
 {
@@ -31,6 +37,7 @@ final readonly class AuthenticationService
         private RefreshTokenService $refreshTokens,
         private TotpService $totp,
         private AuditService $audit,
+        private AuthMetricsCollector $authMetrics,
     ) {
     }
 
@@ -42,11 +49,15 @@ final readonly class AuthenticationService
     {
         $user = $this->em->getRepository(User::class)->findOneBy(['email' => $email]);
         if (null === $user) {
+            $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_UNKNOWN_USER);
+
             return null;
         }
 
         // удалённый пользователь не может логиниться (email замаскирован — find по email всё равно не сработает)
         if ($user->isDeleted() || UserStatusEnum::BLOCKED === $user->getVerificationStatus()) {
+            $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_BLOCKED);
+
             return null;
         }
 
@@ -54,17 +65,23 @@ final readonly class AuthenticationService
         if (null === $user->getEmailVerifiedAt()
             || UserStatusEnum::INVITED === $user->getVerificationStatus()
             || UserStatusEnum::EMAIL_PENDING === $user->getVerificationStatus()) {
+            $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_UNVERIFIED);
+
             return null;
         }
 
         if (null === $user->getPasswordHash()
             || !$this->passwordHasher->isPasswordValid($user, $password)) {
+            $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_BAD_CREDENTIALS);
+
             return null;
         }
 
         if ($user->isTwoFactorEnabled()) {
             $secret = $user->getTotpSecret();
             if (null === $secret || null === $totpCode || !$this->totp->verify($secret, $totpCode)) {
+                $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_2FA_REQUIRED);
+
                 return null;
             }
         }
@@ -79,6 +96,7 @@ final readonly class AuthenticationService
      */
     public function issueTokens(User $user, ?string $ip = null, ?string $userAgent = null): array
     {
+        $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_SUCCESS);
         $user->markLastLogin();
 
         $access = $this->jwt->issue(

@@ -14,6 +14,7 @@ use App\Export\Input\CreateExportInput;
 use App\Export\Repository\ExportJobRepository;
 use App\Export\Storage\ExportFileStorage;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\ExportMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use App\Shared\Exception\ConflictException;
@@ -44,6 +45,7 @@ final readonly class ExportService
         private ExportFileStorage $storage,
         private AuditService $audit,
         private MessageBusInterface $bus,
+        private ExportMetricsCollector $exportMetrics,
     ) {
     }
 
@@ -68,6 +70,7 @@ final readonly class ExportService
 
         $this->em->persist($job);
         $this->em->flush();
+        $this->exportMetrics->jobFinished(ExportMetricsCollector::STATUS_QUEUED);
 
         $this->audit->record(
             action: 'export.created',

@@ -269,6 +269,13 @@ services:
       - "9121:9121"
     environment:
       REDIS_ADDR: redis:6379
+      # Очередь таймлайна (P0-1): Redis-транспорт messenger'а не виден
+      # RabbitMQ-экспортеру, а без CHECK_* глубина ключей не собирается.
+      # ready — XLEN stream `messages`; delayed — ZCARD zset `messages__queue`
+      # (redis_key_size). Дублирует timeline_queue_depth из /metrics —
+      # независимый источник на случай падения самого app.
+      REDIS_EXPORTER_CHECK_STREAMS: messages
+      REDIS_EXPORTER_CHECK_KEYS: messages__queue
 
   php-fpm-exporter:
     image: hipages/php-fpm_exporter:2.2.0

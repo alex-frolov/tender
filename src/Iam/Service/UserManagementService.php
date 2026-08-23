@@ -13,6 +13,7 @@ use App\Iam\Exception\LastAdminException;
 use App\Iam\Exception\UserNotFoundException;
 use App\Iam\Input\InviteUserInput;
 use App\Iam\Input\UpdateUserInput;
+use App\Infrastructure\Metrics\EmailMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\StateTransitionException;
@@ -427,6 +428,9 @@ final readonly class UserManagementService
                 'link' => $this->inviteUrlTemplate,
                 'locale' => $locale,
             ]));
+
+        // Лейбл template для email_send_total (наблюдение SMTP на консьюмере).
+        $email->getHeaders()->addTextHeader(EmailMetricsCollector::TEMPLATE_HEADER, 'invite');
 
         $this->mailer->send($email);
     }

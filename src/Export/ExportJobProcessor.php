@@ -9,6 +9,7 @@ use App\Export\Entity\Enum\ExportJobStatusEnum;
 use App\Export\Entity\ExportJob;
 use App\Export\Repository\ExportJobRepository;
 use App\Export\Storage\ExportFileStorage;
+use App\Infrastructure\Metrics\ExportMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use Doctrine\ORM\EntityManagerInterface;
@@ -43,6 +44,7 @@ final class ExportJobProcessor
         private readonly ExportFileStorage $storage,
         private readonly AuditService $audit,
         private readonly LoggerInterface $logger,
+        private readonly ExportMetricsCollector $exportMetrics,
     ) {
     }
 
@@ -68,7 +70,9 @@ final class ExportJobProcessor
 
         try {
             $absolute = $this->storage->absolutePath((string) $job->getId(), $job->getFormat()->value);
+            $started = hrtime(true);
             $this->generate($job, $absolute);
+            $this->exportMetrics->generationDuration((hrtime(true) - $started) / 1e9);
             $storagePath = $this->relativeStoragePath((string) $job->getId(), $job->getFormat()->value);
 
             $job->markReady(
@@ -105,6 +109,7 @@ final class ExportJobProcessor
                 ],
             );
             $this->em->flush();
+            $this->exportMetrics->jobFinished(ExportMetricsCollector::STATUS_READY);
         } catch (\Throwable $e) {
             $this->storage->delete($this->relativeStoragePath((string) $job->getId(), $job->getFormat()->value));
             $job->markFailed($e->getMessage());
@@ -135,6 +140,7 @@ final class ExportJobProcessor
                 'export_type' => $job->getExportType()->value,
                 'error' => $e->getMessage(),
             ]);
+            $this->exportMetrics->jobFinished(ExportMetricsCollector::STATUS_FAILED);
         }
     }
 

@@ -19,6 +19,8 @@ use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
+use Prometheus\CollectorRegistry;
+use Prometheus\RenderTextFormat;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Workflow\WorkflowInterface;
 
@@ -192,6 +194,90 @@ final class TimelineMessageHandlerTest extends KernelTestCase
             ->fetchOne();
         self::assertIsNumeric($count);
         self::assertSame(1, (int) $count);
+    }
+
+    // --- Наблюдаемость очереди таймлайна: timeline_jobs_total ---
+
+    public function testStartBidAcceptanceEmitsAppliedMetric(): void
+    {
+        $tender = $this->publishedTender();
+
+        $this->handler->__invoke(new TimelineMessage(
+            aggregateType: 'tender',
+            aggregateId: (string) $tender->getId(),
+            action: TenderTimelineAction::START_BID_ACCEPTANCE->value,
+            runAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+        ));
+
+        $this->assertMetricAtLeast('timeline_jobs_total{action="start_bid_acceptance",outcome="applied"}', 1.0);
+    }
+
+    public function testUnknownActionEmitsSkippedMetric(): void
+    {
+        $tender = $this->publishedTender();
+
+        $this->handler->__invoke(new TimelineMessage(
+            aggregateType: 'tender',
+            aggregateId: (string) $tender->getId(),
+            action: 'tender.unknown',
+            runAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+        ));
+
+        $this->assertMetricAtLeast('timeline_jobs_total{action="tender.unknown",outcome="skipped"}', 1.0);
+    }
+
+    public function testRepeatedOpenBidsEmitsAppliedThenSkipped(): void
+    {
+        $tender = $this->acceptingBidsTender();
+
+        $message = new TimelineMessage(
+            aggregateType: 'tender',
+            aggregateId: (string) $tender->getId(),
+            action: TenderTimelineAction::OPEN_BIDS->value,
+            runAt: new \DateTimeImmutable('now', new \DateTimeZone('UTC')),
+        );
+        $this->handler->__invoke($message);
+        $this->handler->__invoke($message);
+
+        $body = $this->metricsBody();
+        // Redis-хранилище метрик общее между тестами — значения копятся,
+        // поэтому проверяем наличие серий, а не точные числа.
+        self::assertMatchesRegularExpression(
+            '/timeline_jobs_total\{action="'.TenderTimelineAction::OPEN_BIDS->value.'",outcome="applied"\} [\d.]+/',
+            $body,
+        );
+        self::assertMatchesRegularExpression(
+            '/timeline_jobs_total\{action="'.TenderTimelineAction::OPEN_BIDS->value.'",outcome="skipped"\} [\d.]+/',
+            $body,
+        );
+    }
+
+    private function metricsBody(): string
+    {
+        $registry = self::getContainer()->get(CollectorRegistry::class);
+        self::assertInstanceOf(CollectorRegistry::class, $registry);
+
+        return (new RenderTextFormat())->render($registry->getMetricFamilySamples());
+    }
+
+    /**
+     * Серия существует и её значение >= ожидаемого (метрики в Redis копятся
+     * между тестами — точные значения недетерминированы).
+     */
+    private function assertMetricAtLeast(string $series, float $min): void
+    {
+        $value = $this->metricValue($series);
+        self::assertNotNull($value, "Серия {$series} не найдена в рендере метрик");
+        self::assertGreaterThanOrEqual($min, $value);
+    }
+
+    private function metricValue(string $series): ?float
+    {
+        if (1 !== preg_match('/'.preg_quote($series, '/').' ([\d.]+)/', $this->metricsBody(), $m)) {
+            return null;
+        }
+
+        return (float) $m[1];
     }
 
     private function acceptingBidsTender(): Tender

@@ -21,6 +21,7 @@ use App\Document\Repository\DocumentRepository;
 use App\Document\Storage\FileStorage;
 use App\Iam\CompanyAccessGuard;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\DocumentMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\NotFoundException;
@@ -73,6 +74,7 @@ final class DocumentService implements DocumentServiceContract
         private readonly ContractReadService $contracts,
         private readonly TenderReadService $tenders,
         private readonly DocumentPresenter $presenter,
+        private readonly DocumentMetricsCollector $documentMetrics,
         private readonly int $maxFileBytes,
     ) {
     }
@@ -87,7 +89,14 @@ final class DocumentService implements DocumentServiceContract
         $entityIdUuid = $this->resolveUuid($entityId, 'entity_id');
 
         $this->assertEntityBelongsToTenant($entityTypeEnum, $entityIdUuid, $companyId);
-        $this->assertFile($file);
+
+        try {
+            $this->assertFile($file);
+        } catch (ValidationException $e) {
+            $this->documentMetrics->uploadFinished(DocumentMetricsCollector::OUTCOME_INVALID);
+
+            throw $e;
+        }
 
         $content = $file->getContent();
         $sha256 = hash('sha256', $content);
@@ -95,11 +104,20 @@ final class DocumentService implements DocumentServiceContract
         $documentVisibility = $this->resolveVisibility($visibility ?? $type->getVisibility());
         $documentScope = null !== $scope ? $this->resolveScope($scope) : DocumentScope::TENDER;
 
-        $storagePath = $this->storage->store(
-            $content,
-            (string) Uuid::v4(),
-            $file->getExtension() ?? '',
-        );
+        try {
+            $storagePath = $this->storage->store(
+                $content,
+                (string) Uuid::v4(),
+                $file->getExtension() ?? '',
+            );
+        } catch (StorageException $e) {
+            // Отказ FILES_STORAGE виден в метриках: сбой хранилища иначе
+            // не даёт ни метрики, ни алерта.
+            $this->documentMetrics->uploadFinished(DocumentMetricsCollector::OUTCOME_STORAGE_ERROR);
+            $this->documentMetrics->storageError();
+
+            throw $e;
+        }
 
         $document = new Document(
             documentType: $type,
@@ -148,6 +166,9 @@ final class DocumentService implements DocumentServiceContract
             ip: $ip,
         );
 
+        $this->documentMetrics->uploadFinished(DocumentMetricsCollector::OUTCOME_OK);
+        $this->documentMetrics->bytesStored((int) $file->getSize());
+
         return $document;
     }
 
@@ -155,14 +176,29 @@ final class DocumentService implements DocumentServiceContract
     {
         $companyId = $this->requireCompany($actor);
         $document = $this->resolveForWrite($actor, $companyId, $documentId);
-        $this->assertFile($file);
+
+        try {
+            $this->assertFile($file);
+        } catch (ValidationException $e) {
+            $this->documentMetrics->uploadFinished(DocumentMetricsCollector::OUTCOME_INVALID);
+
+            throw $e;
+        }
 
         $content = $file->getContent();
-        $storagePath = $this->storage->store(
-            $content,
-            (string) Uuid::v4(),
-            $file->getExtension() ?? '',
-        );
+
+        try {
+            $storagePath = $this->storage->store(
+                $content,
+                (string) Uuid::v4(),
+                $file->getExtension() ?? '',
+            );
+        } catch (StorageException $e) {
+            $this->documentMetrics->uploadFinished(DocumentMetricsCollector::OUTCOME_STORAGE_ERROR);
+            $this->documentMetrics->storageError();
+
+            throw $e;
+        }
 
         $version = new DocumentVersion(
             document: $document,
@@ -189,6 +225,9 @@ final class DocumentService implements DocumentServiceContract
             after: ['version' => $version->getVersion(), 'sha256' => $version->getSha256()],
             ip: $ip,
         );
+
+        $this->documentMetrics->uploadFinished(DocumentMetricsCollector::OUTCOME_OK);
+        $this->documentMetrics->bytesStored((int) $file->getSize());
 
         return $document;
     }

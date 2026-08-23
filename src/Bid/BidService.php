@@ -15,6 +15,8 @@ use App\Document\DocumentService;
 use App\Iam\CompanyAccessGuard;
 use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\BidMetricsCollector;
+use App\Infrastructure\Metrics\EmailMetricsCollector;
 use App\Shared\Exception\ConflictException;
 use App\Shared\Exception\StateTransitionException;
 use App\Shared\Exception\ValidationException;
@@ -65,6 +67,7 @@ final readonly class BidService
         private ContractAccessChecker $contractAccess,
         private DocumentService $documents,
         private BidTransaction $transaction,
+        private BidMetricsCollector $bidMetrics,
         private MailerInterface $mailer,
         private Environment $twig,
         private TranslatorInterface $translator,
@@ -148,6 +151,9 @@ final readonly class BidService
         $bid->submit();
 
         $this->transaction->commitSubmitted($bid, $actor, $tender, $lot, $supplierId, $ip);
+        // После коммита (соглашение совпадает с auction_bids_total): замена
+        // тоже инкрементит submitted — это повторная подача содержимого.
+        $this->bidMetrics->action(BidMetricsCollector::ACTION_SUBMITTED);
 
         return $bid;
     }
@@ -238,6 +244,7 @@ final readonly class BidService
         $bid->withdraw($reason);
 
         $this->transaction->commitWithdrawn($bid, $actor, $before, $reason, $ip);
+        $this->bidMetrics->action(BidMetricsCollector::ACTION_WITHDRAWN);
 
         return $bid;
     }
@@ -288,6 +295,12 @@ final readonly class BidService
         }
 
         $this->transaction->commitQualified($bid, $actor, $before, $decisionEnum, $reason, $ip);
+        // После коммита: admitted | rejected (лейблы = значения BidDecisionEnum).
+        $this->bidMetrics->action(
+            BidDecisionEnum::ADMIT === $decisionEnum
+                ? BidMetricsCollector::ACTION_ADMITTED
+                : BidMetricsCollector::ACTION_REJECTED,
+        );
 
         return $bid;
     }
@@ -323,6 +336,9 @@ final readonly class BidService
                     'reason' => $reason,
                     'locale' => $locale,
                 ]));
+
+            // Лейбл template для email_send_total (наблюдение SMTP на консьюмере).
+            $email->getHeaders()->addTextHeader(EmailMetricsCollector::TEMPLATE_HEADER, 'bid_rejected');
 
             $this->mailer->send($email);
         }
@@ -462,6 +478,7 @@ final readonly class BidService
         $bid->submit();
 
         $this->transaction->commitReplaced($bid, $actor, $lot, $before, $ip);
+        $this->bidMetrics->action(BidMetricsCollector::ACTION_SUBMITTED);
 
         return $bid;
     }

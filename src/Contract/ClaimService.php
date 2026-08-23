@@ -19,6 +19,7 @@ use App\Contract\Repository\ClaimRepository;
 use App\Contract\Repository\ContractRepository;
 use App\Contract\Repository\ContractTenderRepository;
 use App\Iam\Entity\User;
+use App\Infrastructure\Metrics\ContractMetricsCollector;
 use App\Shared\Audit\AuditService;
 use App\Shared\Entity\OutboxEvent;
 use App\Shared\Exception\ConflictException;
@@ -57,6 +58,7 @@ final readonly class ClaimService
         private ContractTenderRepository $contractTenders,
         private AuctionLifecycleService $auctionLifecycle,
         private TenderStatusAggregator $tenderAggregator,
+        private ContractMetricsCollector $contractMetrics,
     ) {
     }
 
@@ -126,6 +128,7 @@ final readonly class ClaimService
 
         $this->em->persist($claim);
         $this->em->flush();
+        $this->contractMetrics->claim(ContractMetricsCollector::CLAIM_CREATED);
 
         return $claim;
     }
@@ -157,6 +160,10 @@ final readonly class ClaimService
             default:
                 throw new ValidationException('invalid claim outcome');
         }
+
+        // Лейбл outcome = исход урегулирования (rejected/settled/accepted/
+        // terminate_contract), кардинальность фиксирована.
+        $this->contractMetrics->claim($outcome);
 
         return $claim;
     }
