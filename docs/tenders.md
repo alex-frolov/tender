@@ -9,6 +9,10 @@ A tender is a container of lots. Buyers publish tenders with a timeline; bids ar
 `accepting_bids`; then the tender proceeds through evaluation, awarding and contract phases. The
 tender status is **aggregated** from its lots — the slowest lot determines the tender status.
 
+A tender may also run **without a participation bid** (`bids_required = false`): there is no bid
+phase at all, and it goes from `published` straight to `bidding`. See
+[Tenders without a participation bid](#tenders-without-a-participation-bid).
+
 ```
 Tender
 ┌──────────────────────────────────────────────┐
@@ -34,6 +38,7 @@ Tender
 | `noStartPrice` | prices defined by bids |
 | `currency`, `vatRateBps`, `priceBasis` | pricing model |
 | `accessType` | `open` or `contract_holders` (sealed to active framework contracts) |
+| `bidsRequired` | a participation bid is required (default `true`); `false` drops the bid phase |
 | `status` | workflow-managed |
 | `timeline` | JSON map of ISO-8601 key dates (`bids_start`, `bids_end`) |
 | `securityRequired`, `nationalRegime` | procurement options |
@@ -78,8 +83,10 @@ commit (audit + outbox tender.published)
 a `DelayStamp`:
 
 - `START_BID_ACCEPTANCE` at `bids_start` → workflow `start_bid_acceptance` (published →
-  accepting_bids).
+  accepting_bids); when `bids_required = false` the same message applies
+  `start_trade_without_bids` instead (published → bidding).
 - `OPEN_BIDS` at `bids_end` → `BidOpeningService::open()` (see [bids.md](bids.md#opening)).
+  Not scheduled when `bids_required = false` — there is nothing to open.
 
 ```
 publish ──► published ──[bids_start]──► accepting_bids ──[bids_end]──► bids opened
@@ -93,7 +100,7 @@ publish ──► published ──[bids_start]──► accepting_bids ──[bi
 - `withdraw` (published → withdrawn): only before `accepting_bids`; reason as free text.
 - `republish` (withdrawn → published): guard `lotCount() > 0`; timeline recalculated.
 - `cancel`: from any active or withdrawn status, terminal, requires a reason code
-  (`CancellationReasonEnum`); cascades lots/auctions to `cancelled`.
+  (`CancellationReasonEnum`); cascades lots to `cancelled` (auctions are **not** cascaded — cancel them separately).
 
 ## Multi-lot aggregation
 
@@ -107,6 +114,10 @@ Lot B: bidding ─────────► evaluation ──► ...
 Tender status = min(lot phases)  → follows the slowest lot (B here)
 ```
 
+Lot phases are not decorative: they are written by the tender (publish, bid-acceptance start,
+cancel) and by the lot's auction (trading and execution) through `state_machine.lot` — see
+[state-machines.md](state-machines.md#lot-workflow). Aggregation reads exactly those statuses.
+
 When lot statuses change, `TenderStatusAggregator::recalculate()` walks the FORWARD chain and
 applies each allowed workflow transition:
 
@@ -118,13 +129,43 @@ FORWARD:  accepting_bids → bidding → evaluation → awarding → contract �
 Transitions are applied only through the tender workflow; direct status assignment is forbidden.
 A tender cannot reach `closed` while any lot is still open.
 
+## Tenders without a participation bid
+
+`bids_required` (set at creation, immutable afterwards) answers a single question: must a supplier
+file a participation bid before it can trade?
+
+| | `bids_required = true` (default) | `bids_required = false` |
+|---|---|---|
+| Statuses | draft → published → **accepting_bids** → bidding → … | draft → published → bidding → … |
+| At `bids_start` | `start_bid_acceptance` | `start_trade_without_bids` |
+| At `bids_end` | bids opened (`BidOpeningService`) | nothing scheduled; the date stays as the procedure deadline |
+| `POST /tenders/{id}/bids` | accepted while `accepting_bids` | 409 `This tender does not require participation bids` |
+| Who may trade | companies with an `admitted` bid (`BidReadService::isAdmitted`) | anyone who can see the tender (`access_type`, framework contract) |
+| Aggregation chain | `start_bid_acceptance → start_trade → …` | `start_trade_without_bids → …` |
+
+The two branches are kept apart by workflow guards (`isBidsRequired()` and its negation), so a
+tender can never take both. Admission is asked through `BidReadService::isAdmittedToTrade()`, which
+returns `true` outright when the tender needs no bids; the strict `isAdmitted()` stays in place
+where the *fact of an admitted bid* is what matters — `AuctionStreamVoter` keeps a participant on
+the live stream of their own auction after their framework contract has expired, and a tender
+without bids leaves no such trace to keep.
+
+Access to a closed tender (`access_type = contract_holders`) is unaffected: `PlaceBidUseCase` still
+checks the framework contract before every auction bid.
+
 ## Catalog & dashboards
 
 - `TenderCatalogQueryService` — keyset pagination on `(created_at, id)` with an opaque
   base64url cursor; each page aggregates lot statuses via `STRING_AGG` and includes `bids_end`
   deadline and lot count.
 - `TenderDashboardQueryService` — counts of active tenders, status distribution, upcoming bid
-  deadlines, and facts by dimension (region / customer / period).
+  deadlines, and facts by dimension (region / customer / period). Every one of those takes an
+  optional list of *participating* tender ids on top of the tenant filter: `GET /dashboard` and
+  `GET /stats/tenders` cover procedures the company is involved in **either way** — its own
+  (customer) plus those where it has a bid (`BidDashboardQuery::tenderIdsForSupplier`) or an
+  auction bid (`AuctionDashboardQuery::tenderIdsForBidder`; a tender with `bids_required: false`
+  has no bid to find). Tenant-only was the previous behaviour and left a supplier with an empty
+  dashboard — no active tenders and no deadlines however much it traded.
 - `TenderExportSource` — streaming row source for the export module.
 
 ## Access & rating

@@ -28,9 +28,9 @@ final readonly class TenderDashboardQueryService implements TenderDashboardQuery
     {
     }
 
-    public function countActive(Uuid $tenantId): int
+    public function countActive(Uuid $tenantId, array $participatingTenderIds = []): int
     {
-        $counts = $this->countByStatus($tenantId);
+        $counts = $this->countByStatus($tenantId, $participatingTenderIds);
         $active = 0;
         foreach (self::ACTIVE_STATUSES as $status) {
             $active += $counts[$status->value] ?? 0;
@@ -39,18 +39,18 @@ final readonly class TenderDashboardQueryService implements TenderDashboardQuery
         return $active;
     }
 
-    public function countByStatus(Uuid $tenantId): array
+    public function countByStatus(Uuid $tenantId, array $participatingTenderIds = []): array
     {
-        return $this->tenders->countByAggregatedStatus($tenantId);
+        return $this->tenders->countByAggregatedStatus($tenantId, $participatingTenderIds);
     }
 
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null, array $participatingTenderIds = []): array
     {
-        return $this->tenders->upcomingBidDeadlines($tenantId, max(1, $limit), $until);
+        return $this->tenders->upcomingBidDeadlines($tenantId, max(1, $limit), $until, $participatingTenderIds);
     }
 
-    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to, array $participatingTenderIds = []): array
     {
-        return $this->tenders->factsByDimension($tenantId, $dimension, $from, $to);
+        return $this->tenders->factsByDimension($tenantId, $dimension, $from, $to, $participatingTenderIds);
     }
 }

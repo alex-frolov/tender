@@ -49,22 +49,32 @@ enum TenderStatusEnum: string
      * Круг видимости тендера в этом статусе (FR-1.5.14).
      *
      * Матрица:
-     *   draft, withdrawn, evaluation                  — только заказчик;
-     *   published, accepting_bids, bidding            — участники (с учётом
+     *   draft, withdrawn                              — только заказчик;
+     *   published, accepting_bids, bidding,
+     *   evaluation, awarding, contract                — участники (с учётом
      *                                                   access_type);
-     *   awarding, contract, closed, cancelled         — заказчик и исполнитель.
+     *   closed, cancelled                             — заказчик и исполнитель.
      *
-     * Смысл: наружу закупка открыта ровно на тех стадиях, когда в ней можно
-     * участвовать. До публикации и во время рассмотрения заявок это внутренняя
-     * работа заказчика, а после определения победителя — двусторонние
-     * отношения заказчика и исполнителя.
+     * Смысл: закупка публична всю активную часть процедуры — от публикации до
+     * исполнения договора включительно. Ход закупки виден рынку и после того,
+     * как приём заявок закрыт: рассмотрение (evaluation), определение
+     * победителя (awarding) и работа по договору (contract) — это результат
+     * объявленной процедуры, а не внутренняя переписка сторон. Наружу при этом
+     * уходят только публичные данные: личность победителя и приватные документы
+     * не раскрываются (TenderVisibility НЕ равна доступу к содержимому —
+     * см. TenderPresenter::single и DocumentService::canView).
+     *
+     * Закрыты остаются края процедуры: до публикации (draft/withdrawn) закупки
+     * ещё нет, а после её завершения (closed/cancelled) она перестаёт быть
+     * рыночной информацией и остаётся сторонам — заказчику и исполнителю.
      */
     public function visibilityLevel(): TenderVisibilityLevelEnum
     {
         return match ($this) {
-            self::DRAFT, self::WITHDRAWN, self::EVALUATION => TenderVisibilityLevelEnum::OWNER_ONLY,
-            self::PUBLISHED, self::ACCEPTING_BIDS, self::BIDDING => TenderVisibilityLevelEnum::PARTICIPANTS,
-            self::AWARDING, self::CONTRACT, self::CLOSED, self::CANCELLED => TenderVisibilityLevelEnum::OWNER_AND_WINNER,
+            self::DRAFT, self::WITHDRAWN => TenderVisibilityLevelEnum::OWNER_ONLY,
+            self::PUBLISHED, self::ACCEPTING_BIDS, self::BIDDING,
+            self::EVALUATION, self::AWARDING, self::CONTRACT => TenderVisibilityLevelEnum::PARTICIPANTS,
+            self::CLOSED, self::CANCELLED => TenderVisibilityLevelEnum::OWNER_AND_WINNER,
         };
     }
 

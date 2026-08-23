@@ -15,8 +15,9 @@ use Symfony\Component\EventDispatcher\EventSubscriberInterface;
  * Метрики console-команд (scheduler/worker/webhooks).
  *
  * Покрывает scheduler (auctions:heartbeat, analytics:counters:snapshot,
- * idempotency:cleanup, notifications:digest:schedule — docker/
- * scheduler-entrypoint.sh), worker (outbox:relay, messenger:consume) и
+ * idempotency:cleanup, outbox:cleanup, db:partitions:ensure,
+ * notifications:digest:schedule — docker/scheduler-entrypoint.sh),
+ * worker (outbox:relay, messenger:consume) и
  * webhooks (messenger:consume webhooks). Сбой команды не виден в HTTP-метриках
  * (практика #15 из observability-best-practices-materials.md) — здесь он
  * становится серией console_commands_failed_total.

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tender\UseCase;
 
 use App\Iam\Entity\User;
+use App\Tender\TenderLotView;
 use App\Tender\TenderPresenter;
 use App\Tender\TenderService;
 
@@ -29,6 +30,6 @@ final readonly class PublishTenderUseCase implements TenderUseCase
      */
     public function execute(User $user, string $tenderId, ?string $ip = null): array
     {
-        return $this->presenter->single($this->tenders->publish($user, $tenderId, $ip));
+        return $this->presenter->single($this->tenders->publish($user, $tenderId, $ip), TenderLotView::owner());
     }
 }

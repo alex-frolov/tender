@@ -122,6 +122,71 @@ final class DashboardServiceTest extends KernelTestCase
         }
     }
 
+    /**
+     * Исполнитель: своих тендеров нет ни одного, но заявка подана на чужую
+     * процедуру. Раньше дашборд был пуст целиком (счётчик 0, сроков нет) —
+     * охват считался только по тенанту, то есть по заказчику.
+     */
+    public function testDashboardCountsProceduresOfParticipation(): void
+    {
+        $customer = CompanyFactory::new()->approved()->create();
+        $supplier = CompanyFactory::new()->approved()->create();
+        $supplierId = $supplier->getId();
+
+        $tender = TenderFactory::createOne([
+            'customerId' => $customer->getId(),
+            'nmckMinor' => 100_000,
+        ]);
+        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 100_000]);
+        $lot->setStatus(LotStatusEnum::ACCEPTING_BIDS);
+        $tender->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $tender->setTimeline(['bids_end' => '2099-01-01T12:00:00Z']);
+        $this->em->flush();
+
+        $auction = AuctionFactory::new()->forTender($tender, $lot)->create();
+        $auction->setStatus(AuctionStatusEnum::TRADE);
+        $auction->setPlannedEndAt(new \DateTimeImmutable('2099-01-02T12:00:00+00:00'));
+        $this->em->flush();
+
+        BidFactory::new([
+            'tenderId' => $tender->getId(),
+            'lotId' => $lot->getId(),
+            'tenantId' => $customer->getId(),
+            'supplierId' => $supplierId,
+        ])->afterInstantiate(static fn (Bid $bid) => $bid->setStatus(BidStatusEnum::SUBMITTED))->create();
+
+        $data = $this->dashboard->get(self::actor($supplierId));
+
+        self::assertSame(1, $data['active_tenders']);
+        self::assertSame(1, $data['my_bids']);
+        self::assertSame(
+            [(string) $tender->getId(), (string) $auction->getId()],
+            $this->deadlineEntities($data),
+        );
+    }
+
+    /**
+     * Компания без заявок и ставок чужих процедур не видит: расширение охвата
+     * участием не должно превращать дашборд в общий каталог площадки.
+     */
+    public function testDashboardIgnoresForeignProceduresWithoutParticipation(): void
+    {
+        $customer = CompanyFactory::new()->approved()->create();
+        $outsider = CompanyFactory::new()->approved()->create();
+
+        $tender = TenderFactory::createOne(['customerId' => $customer->getId()]);
+        $lot = LotFactory::createOne(['tender' => $tender]);
+        $lot->setStatus(LotStatusEnum::ACCEPTING_BIDS);
+        $tender->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $tender->setTimeline(['bids_end' => '2099-01-01T12:00:00Z']);
+        $this->em->flush();
+
+        $data = $this->dashboard->get(self::actor($outsider->getId()));
+
+        self::assertSame(0, $data['active_tenders']);
+        self::assertSame([], $data['upcoming_deadlines']);
+    }
+
     public function testDashboardWithoutCompanyThrows(): void
     {
         $this->expectException(\App\Shared\Exception\ConflictException::class);
@@ -247,6 +312,50 @@ final class DashboardServiceTest extends KernelTestCase
         self::assertSame(1, $byRegion['СПб']['tenders_total']);
         self::assertSame(10.0, $byRegion['СПб']['avg_price_reduction_percent']);
         self::assertSame(80_000, $byRegion['СПб']['contracts_amount_sum_minor']);
+    }
+
+    /**
+     * Статистика исполнителя: срез считается по процедурам его участия
+     * (снижение на торгах — такой же факт его статистики, что и у заказчика).
+     */
+    public function testStatsIncludeProceduresOfParticipation(): void
+    {
+        $customer = CompanyFactory::new()->approved()->create();
+        $supplier = CompanyFactory::new()->approved()->create();
+
+        $tender = TenderFactory::createOne([
+            'customerId' => $customer->getId(),
+            'nmckMinor' => 100_000,
+            'region' => 'Москва',
+        ]);
+        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 100_000]);
+        $auction = AuctionFactory::new()->forTender($tender, $lot)->create();
+        $auction->setCurrentPriceMinor(90_000);
+        $this->em->flush();
+
+        BidFactory::new([
+            'tenderId' => $tender->getId(),
+            'lotId' => $lot->getId(),
+            'tenantId' => $customer->getId(),
+            'supplierId' => $supplier->getId(),
+        ])->afterInstantiate(static fn (Bid $bid) => $bid->setStatus(BidStatusEnum::SUBMITTED))->create();
+
+        // Договор по этой процедуре: исполнитель — сторона, а не тенант.
+        $contract = ContractFactory::createOne([
+            'customerId' => $customer->getId(),
+            'supplierId' => $supplier->getId(),
+            'priceNetMinor' => 40_000,
+        ]);
+        $this->em->persist(new ContractTender($contract, $tender->getId(), 40_000, 40_000, self::VAT_BPS));
+        $this->em->flush();
+
+        $items = $this->stats->stats(self::actor($supplier->getId()), 'region', '2026-01-01', '2030-01-01');
+
+        self::assertCount(1, $items);
+        self::assertSame('Москва', $items[0]['dimension_value']);
+        self::assertSame(1, $items[0]['tenders_total']);
+        self::assertSame(10.0, $items[0]['avg_price_reduction_percent']);
+        self::assertSame(40_000, $items[0]['contracts_amount_sum_minor']);
     }
 
     public function testStatsByCustomerAndPeriodDimensions(): void

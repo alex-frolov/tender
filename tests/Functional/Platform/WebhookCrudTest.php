@@ -28,7 +28,9 @@ use Symfony\Component\Uid\Uuid;
  * - Создание (POST /webhooks): секрет отдаётся один раз; события валидируются
  *   (формат prefix.action); фильтры payload (WH-7);
  * - Список (GET /webhooks): подписки без секретов;
- * - Обновление (PATCH): url/events/status; ротация секрета (POST /rotate-secret);
+ * - Обновление (PATCH): url/events/status; отсутствующие в теле поля не меняются;
+ *   дубли событий схлопываются; пустой/неверный events и не-http url → 422;
+ *   ротация секрета (POST /rotate-secret);
  * - Журнал доставок (GET /webhooks/{id}/deliveries);
  * - Удаление (DELETE /webhooks/{id}): 204;
  * - Права (FR-1.5.10): webhooks.manage — admin; manager/agent — 403;
@@ -177,6 +179,66 @@ final class WebhookCrudTest extends WebTestCase
         $list = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($list);
         self::assertSame([], $list['items']);
+    }
+
+    /**
+     * Entity-bound update form (AGENTS.md): в теле только events — url и status
+     * сохраняют текущие значения (clearMissing: false); дубли событий схлопываются.
+     */
+    public function testUpdateKeepsFieldsMissingFromBodyAndDeduplicatesEvents(): void
+    {
+        self::client();
+        $token = self::adminToken();
+
+        $client = self::request('POST', WebhookCreateController::URL, $token, [
+            'url' => 'https://example.com/hooks/partial',
+            'events' => ['tender.published'],
+        ]);
+        self::assertResponseStatusCodeSame(201);
+        $created = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($created);
+        $webhookId = $created['id'];
+        self::assertIsString($webhookId);
+
+        $url = str_replace('{webhookId}', $webhookId, WebhookUpdateController::URL);
+        $client = self::request('PATCH', $url, $token, [
+            'events' => ['tender.updated', 'tender.published', 'tender.updated'],
+        ]);
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertSame(['tender.updated', 'tender.published'], $body['events']);
+        self::assertSame('https://example.com/hooks/partial', $body['url']);
+        self::assertSame('active', $body['status']);
+    }
+
+    public function testUpdateValidatesUrlAndEvents(): void
+    {
+        self::client();
+        $token = self::adminToken();
+
+        $client = self::request('POST', WebhookCreateController::URL, $token, [
+            'url' => 'https://example.com/hooks/validate',
+            'events' => ['tender.published'],
+        ]);
+        self::assertResponseStatusCodeSame(201);
+        $created = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($created);
+        $webhookId = $created['id'];
+        self::assertIsString($webhookId);
+        $url = str_replace('{webhookId}', $webhookId, WebhookUpdateController::URL);
+
+        // Пустой список событий — подписка без событий бессмысленна.
+        self::request('PATCH', $url, $token, ['events' => []]);
+        self::assertResponseStatusCodeSame(422);
+
+        // Неверный формат события.
+        self::request('PATCH', $url, $token, ['events' => ['Tender.Published']]);
+        self::assertResponseStatusCodeSame(422);
+
+        // Схема url — только http/https.
+        self::request('PATCH', $url, $token, ['url' => 'ftp://example.com/hook']);
+        self::assertResponseStatusCodeSame(422);
     }
 
     public function testCreateValidatesEvents(): void

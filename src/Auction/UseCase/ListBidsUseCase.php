@@ -15,7 +15,7 @@ use App\Shared\Repository\KeysetCursor;
  * История ставок аукциона (AM-5, GET /auctions/{auctionId}/bids).
  *
  * Query-use-case: read-модель без мутаций. Принятые и отклонённые ставки
- * (append-only, PR-9) в порядке раундов; анонимность bidder_id (openapi
+ * (append-only, PR-9) в хронологии торгов; анонимность bidder_id (openapi
  * AuctionBid.bidder_id «анонимно до конца торгов») — пока аукцион принимает
  * ставки (TRADE), bidder_id маскируется; после окончания — раскрывается.
  */
@@ -28,8 +28,11 @@ final readonly class ListBidsUseCase implements AuctionUseCase
     }
 
     /**
-     * Keyset-пагинация (AR-6): срез по (placed_at, id) in-memory над историей
-     * ставок (append-only, лимитированный набор); порядок раундов сохраняется.
+     * Keyset-пагинация (AR-6) по (placed_at, id) — условием в SQL, а не срезом
+     * в PHP: история ставок ничем не ограничена сверху, и выборка «взять всё →
+     * отрезать страницу» тянула в память тысячи гидратированных сущностей на
+     * каждый запрос страницы. Запрашивается limit+1 — лишняя строка отвечает,
+     * есть ли следующая страница.
      *
      * @return array{items: list<array<string, mixed>>, next_cursor: string|null}
      */
@@ -37,10 +40,12 @@ final readonly class ListBidsUseCase implements AuctionUseCase
     {
         $revealBidder = !$auction->getStatus()->acceptsBids();
 
-        [$page, $nextCursor] = KeysetCursor::sliceAfter(
-            $this->auctions->listBids($auction),
-            $paginator->cursor,
-            $paginator->limitValue(),
+        $cursor = KeysetCursor::decode($paginator->cursor);
+        $limit = $paginator->limitValue();
+
+        [$page, $nextCursor] = KeysetCursor::pageOf(
+            $this->auctions->listBidsPage($auction, $cursor?->createdAt, $cursor?->id, $limit + 1),
+            $limit,
             static fn (AuctionBid $bid): array => [$bid->getPlacedAt(), (string) $bid->getId()],
         );
 

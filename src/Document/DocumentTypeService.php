@@ -6,7 +6,6 @@ namespace App\Document;
 
 use App\Document\Entity\DocumentType;
 use App\Document\Input\CreateDocumentTypeInput;
-use App\Document\Input\UpdateDocumentTypeInput;
 use App\Iam\Entity\User;
 
 /**
@@ -39,13 +38,6 @@ interface DocumentTypeService
      * @throws \App\Shared\Exception\ValidationException если auto_generated не разрешён (ядро без плагина)
      */
     public function create(User $actor, CreateDocumentTypeInput $input, ?string $ip = null): DocumentType;
-
-    /**
-     * Изменение типа документа суперадмином (FR-1.2.7). null = не менять.
-     *
-     * @throws \App\Shared\Exception\NotFoundException если тип не найден
-     */
-    public function update(User $actor, string $documentTypeId, UpdateDocumentTypeInput $input, ?string $ip = null): DocumentType;
 
     /**
      * Деактивация типа документа суперадмином (FR-1.2.7). Существующие документы

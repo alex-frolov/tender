@@ -144,6 +144,44 @@ final class TenderCrudTest extends WebTestCase
         self::assertStringStartsWith('T-', $body['number']);
     }
 
+    /**
+     * Заявка на участие требуется по умолчанию: ключ bids_required можно
+     * не присылать.
+     */
+    public function testCreateDefaultsToBidsRequired(): void
+    {
+        self::client();
+        $company = VerifiedUserStory::company();
+        $token = self::login();
+
+        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $company->getId()));
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertTrue($body['bids_required']);
+    }
+
+    /**
+     * Тендер без заявки на участие: присланный в JSON false должен долететь
+     * до сущности как false (CheckboxType по умолчанию считает ложью только
+     * null и прочитал бы его как true).
+     */
+    public function testCreateWithoutBidsRequired(): void
+    {
+        self::client();
+        $company = VerifiedUserStory::company();
+        $token = self::login();
+
+        $payload = self::createPayload((string) $company->getId());
+        $payload['bids_required'] = false;
+
+        $client = self::request('POST', TenderCreateController::URL, $token, $payload);
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertFalse($body['bids_required']);
+    }
+
     public function testCreateValidatesMissingRequiredFields(): void
     {
         self::client();

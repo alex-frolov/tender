@@ -24,17 +24,22 @@ final readonly class AuctionDashboardQueryService implements AuctionDashboardQue
         return $this->auctions->countActive($tenantId);
     }
 
-    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
+    public function upcomingTradeEnds(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null, array $participatingTenderIds = []): array
     {
-        return $this->auctions->upcomingTradeEnds($tenantId, max(1, $limit), $until);
+        return $this->auctions->upcomingTradeEnds($tenantId, max(1, $limit), $until, $participatingTenderIds);
     }
 
-    public function avgReductionByTender(Uuid $tenantId, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    public function tenderIdsForBidder(Uuid $companyId): array
+    {
+        return $this->auctions->tenderIdsForBidder($companyId);
+    }
+
+    public function avgReductionByTender(Uuid $tenantId, \DateTimeImmutable $from, \DateTimeImmutable $to, array $participatingTenderIds = []): array
     {
         $sums = [];
         $counts = [];
 
-        foreach ($this->auctions->reductionRows($tenantId, $from, $to) as $row) {
+        foreach ($this->auctions->reductionRows($tenantId, $from, $to, $participatingTenderIds) as $row) {
             $start = $row['start_price_minor'];
             $final = $row['final_price_minor'];
             if ($start <= 0 || $final >= $start) {

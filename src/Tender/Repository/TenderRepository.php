@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Tender\Repository;
 
 use App\Tender\Entity\Enum\AccessTypeEnum;
-use App\Tender\Entity\Enum\LotStatusEnum;
 use App\Tender\Entity\Enum\TenderStatusEnum;
 use App\Tender\Entity\Enum\TenderVisibilityLevelEnum;
 use App\Tender\Entity\Tender;
@@ -26,9 +25,13 @@ use Symfony\Component\Uid\Uuid;
  *   попадают в условие списком id, а не построчной проверкой.
  * - listForTenant(): eager-загрузка лотов (JOIN + addSelect) — один запрос вместо
  *   N+1 на lotCount()/aggregatedStatus() в списке.
- * - aggregatedStatuses(): агрегация статуса при мультилоте на стороне БД через
- *   STRING_AGG статусов лотов. Результат пересобирается Tender::aggregateStatus()
- *   (единый источник истины варианта C), без гидратации объектов Lot.
+ * - aggregatedStatuses()/countByAggregatedStatus(): агрегированный статус при
+ *   мультилоте (FR-1.1.3, вариант C) читается из материализованной колонки
+ *   tenders.aggregated_status. Раньше он считался на лету — LEFT JOIN lots +
+ *   STRING_AGG + GROUP BY по ВСЕМ тендерам компании без LIMIT, на каждое
+ *   открытие дашборда и статистики. Колонку пишет Tender::refreshAggregatedStatus()
+ *   на изменении входов агрегации;
+ *   единый источник истины — по-прежнему Tender::aggregateStatus().
  *
  * @extends ServiceEntityRepository<Tender>
  */
@@ -91,7 +94,7 @@ final class TenderRepository extends ServiceEntityRepository
      * @param Uuid|null               $cursorId        id позиции курсора (tiebreaker, null — первая страница)
      * @param int                     $limit           размер страницы
      *
-     * @return list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}>
+     * @return list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, aggregated_status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}>
      */
     public function listCatalogPage(TenderVisibilityScope $scope, TenderFilters $filters, ?\DateTimeImmutable $cursorCreatedAt, ?Uuid $cursorId, int $limit): array
     {
@@ -101,6 +104,7 @@ final class TenderRepository extends ServiceEntityRepository
                 't.number AS number',
                 't.title AS title',
                 't.status AS status',
+                't.aggregatedStatusCache AS aggregated_status',
                 't.nmckMinor AS nmck_minor',
                 't.currency AS currency',
                 't.region AS region',
@@ -172,7 +176,7 @@ final class TenderRepository extends ServiceEntityRepository
                 ->setParameter('cursorId', $cursorId);
         }
 
-        /** @var list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}> $result */
+        /** @var list<array{id: string, number: string, title: string, status: TenderStatusEnum|string, aggregated_status: TenderStatusEnum|string, nmck_minor: int|string|null, currency: string, region: string|null, okpd2: string|null, timeline: array<string, string>|null, created_at: \DateTimeImmutable}> $result */
         $result = $qb->getQuery()->getArrayResult();
 
         return $result;
@@ -272,26 +276,27 @@ final class TenderRepository extends ServiceEntityRepository
     }
 
     /**
-     * Агрегация статусов и число лотов по id конкретных тендеров (страница
-     * каталога, FR-1.1.3 вариант C + lot_count). Та же DB-агрегация
-     * (STRING_AGG/COUNT), что и aggregatedStatuses(), но только по набору
-     * id страницы — без сканирования всего каталога. Результат пересобирается
-     * вызывающим через Tender::aggregateStatus() (единый источник истины).
+     * Число лотов по id тендеров страницы каталога (lot_count, FR-1.1.3).
+     *
+     * Раньше этот же запрос собирал ещё и STRING_AGG статусов лотов, чтобы
+     * вызывающий пересобрал из них агрегированный статус. Теперь агрегат
+     * приходит готовой колонкой в самой строке каталога
+     * (listCatalogPage → aggregated_status), и от JOIN'а остался только
+     * счётчик.
      *
      * @param list<Uuid> $ids id тендеров страницы
      *
-     * @return array<string, array{lot_statuses: list<LotStatusEnum>, lot_count: int}> tender_id → статусы лотов + счётчик
+     * @return array<string, int> tender_id → число лотов
      */
-    public function aggregatedStatusesForIds(array $ids): array
+    public function lotCountsForIds(array $ids): array
     {
         if ([] === $ids) {
             return [];
         }
 
-        /** @var list<array{tender_id: string, statuses: string|null, lot_count: int|string}> $rows */
+        /** @var list<array{tender_id: string, lot_count: int|string}> $rows */
         $rows = $this->createQueryBuilder('t')
             ->select('t.id AS tender_id')
-            ->addSelect("STRING_AGG(l.status, ',') AS statuses")
             ->addSelect('COUNT(l.id) AS lot_count')
             ->leftJoin('t.lots', 'l')
             ->where('t.id IN (:ids)')
@@ -300,21 +305,12 @@ final class TenderRepository extends ServiceEntityRepository
             ->getQuery()
             ->getArrayResult();
 
-        $map = [];
+        $counts = [];
         foreach ($rows as $row) {
-            $statusesRaw = $row['statuses'];
-            $map[(string) $row['tender_id']] = [
-                'lot_statuses' => null === $statusesRaw || '' === $statusesRaw
-                    ? []
-                    : array_map(
-                        static fn (string $s): LotStatusEnum => LotStatusEnum::from($s),
-                        explode(',', $statusesRaw),
-                    ),
-                'lot_count' => (int) $row['lot_count'],
-            ];
+            $counts[(string) $row['tender_id']] = (int) $row['lot_count'];
         }
 
-        return $map;
+        return $counts;
     }
 
     /**
@@ -364,18 +360,31 @@ final class TenderRepository extends ServiceEntityRepository
     }
 
     /**
-     * Карта агрегированных статусов тендеров компании (FR-1.1.3, вариант C).
-     * Агрегация выполняется на стороне БД (STRING_AGG статусов лотов по тендеру),
-     * затем пересобирается Tender::aggregateStatus() — тот же результат, что у
-     * Tender::aggregatedStatus(), но без гидратации коллекций лотов (N+1-free).
+     * Карта агрегированных статусов тендеров компании (FR-1.1.3, вариант C):
+     * чтение материализованной колонки tenders.aggregated_status.
+     *
+     * Прежняя версия считала агрегат на лету — LEFT JOIN lots + STRING_AGG +
+     * GROUP BY по всем тендерам тенанта без LIMIT.
+     * Значение колонки — то же, что вернул бы
+     * Tender::aggregatedStatus(): её пишет Tender::refreshAggregatedStatus()
+     * на каждом изменении входов агрегации.
      *
      * @return array<string, TenderStatusEnum> тендер_id → агрегированный статус
      */
     public function aggregatedStatuses(Uuid $tenantId): array
     {
+        /** @var list<array{tender_id: string, aggregated: TenderStatusEnum|string}> $rows */
+        $rows = $this->createQueryBuilder('t')
+            ->select('t.id AS tender_id')
+            ->addSelect('t.aggregatedStatusCache AS aggregated')
+            ->where('t.tenantId = :tenantId')
+            ->setParameter('tenantId', $tenantId)
+            ->getQuery()
+            ->getArrayResult();
+
         $result = [];
-        foreach ($this->aggregatedStatusRows($tenantId) as $row) {
-            $result[(string) $row['tender_id']] = self::aggregateRow($row);
+        foreach ($rows as $row) {
+            $result[(string) $row['tender_id']] = self::toStatus($row['aggregated']);
         }
 
         return $result;
@@ -383,20 +392,49 @@ final class TenderRepository extends ServiceEntityRepository
 
     /**
      * Счётчик тендеров компании по агрегированному статусу (FR-1.1.3, AM-13):
-     * карта статус → число тендеров. Та же DB-агрегация, что и aggregatedStatuses,
-     * но результат группируется по статусу — для дашборда (active_tenders и др.).
+     * карта статус → число тендеров, для дашборда (active_tenders и др.).
+     * COUNT + GROUP BY по колонке aggregated_status — лоты в запрос не входят
+     * вовсе; выборку покрывает idx_tenders_tenant_aggregated.
+     *
+     * $participatingTenderIds добавляет процедуры участия компании (чужие по
+     * тенанту): у исполнителя своих тендеров нет, и без них счётчик всегда 0.
+     *
+     * @param list<Uuid> $participatingTenderIds
      *
      * @return array<string, int> агрегированный статус (value) → количество
      */
-    public function countByAggregatedStatus(Uuid $tenantId): array
+    public function countByAggregatedStatus(Uuid $tenantId, array $participatingTenderIds = []): array
     {
+        $qb = $this->createQueryBuilder('t')
+            ->select('t.aggregatedStatusCache AS aggregated')
+            ->addSelect('COUNT(t.id) AS total')
+            ->where([] === $participatingTenderIds
+                ? 't.tenantId = :tenantId'
+                : 't.tenantId = :tenantId OR t.id IN (:participating)')
+            ->setParameter('tenantId', $tenantId)
+            ->groupBy('t.aggregatedStatusCache');
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
+
+        /** @var list<array{aggregated: TenderStatusEnum|string, total: int|string}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
+
         $counts = [];
-        foreach ($this->aggregatedStatusRows($tenantId) as $row) {
-            $status = self::aggregateRow($row);
-            $counts[$status->value] = ($counts[$status->value] ?? 0) + 1;
+        foreach ($rows as $row) {
+            $counts[self::toStatus($row['aggregated'])->value] = (int) $row['total'];
         }
 
         return $counts;
+    }
+
+    /**
+     * DQL-проекция enum-колонки отдаёт то перечисление, то строку (зависит от
+     * гидратора) — приводим к перечислению в одном месте.
+     */
+    private static function toStatus(TenderStatusEnum|string $value): TenderStatusEnum
+    {
+        return $value instanceof TenderStatusEnum ? $value : TenderStatusEnum::from($value);
     }
 
     /**
@@ -406,20 +444,30 @@ final class TenderRepository extends ServiceEntityRepository
      * (period day/week/month дашборда): null = без ограничения.
      * Результат для GET /dashboard upcoming_deadlines.
      *
+     * $participatingTenderIds — процедуры участия компании (чужие по тенанту):
+     * срок подачи заявки по чужой процедуре и есть дедлайн исполнителя.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return list<array{tender_id: string, deadline_at: string}> до $limit записей
      */
-    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null): array
+    public function upcomingBidDeadlines(Uuid $tenantId, int $limit, ?\DateTimeImmutable $until = null, array $participatingTenderIds = []): array
     {
-        /** @var list<array{id: string, status: string, timeline: array<string, string>|null}> $rows */
-        $rows = $this->createQueryBuilder('t')
+        $qb = $this->createQueryBuilder('t')
             ->select('t.id', 't.status', 't.timeline')
-            ->where('t.tenantId = :tenantId')
+            ->where([] === $participatingTenderIds
+                ? 't.tenantId = :tenantId'
+                : 't.tenantId = :tenantId OR t.id IN (:participating)')
             ->andWhere('t.timeline IS NOT NULL')
             ->andWhere('t.status IN (:statuses)')
             ->setParameter('tenantId', $tenantId)
-            ->setParameter('statuses', [TenderStatusEnum::PUBLISHED->value, TenderStatusEnum::ACCEPTING_BIDS->value])
-            ->getQuery()
-            ->getArrayResult();
+            ->setParameter('statuses', [TenderStatusEnum::PUBLISHED->value, TenderStatusEnum::ACCEPTING_BIDS->value]);
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
+
+        /** @var list<array{id: string, status: string, timeline: array<string, string>|null}> $rows */
+        $rows = $qb->getQuery()->getArrayResult();
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $items = [];
@@ -457,19 +505,29 @@ final class TenderRepository extends ServiceEntityRepository
      * пустой результат. Значение среза — на стороне БД: TO_CHAR для даты,
      * TO_TEXT (CAST AS text) для uuid-заказчика.
      *
+     * $participatingTenderIds добавляет процедуры участия компании (чужие по
+     * тенанту) — иначе у исполнителя статистика пуста при любых торгах.
+     *
+     * @param list<Uuid> $participatingTenderIds
+     *
      * @return list<array{tender_id: string, dimension_value: string, nmck_minor: int|null}>
      */
-    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to): array
+    public function factsByDimension(Uuid $tenantId, string $dimension, \DateTimeImmutable $from, \DateTimeImmutable $to, array $participatingTenderIds = []): array
     {
         $qb = $this->createQueryBuilder('t')
             ->select('t.id AS tender_id')
             ->addSelect('t.nmckMinor AS nmck_minor')
-            ->where('t.tenantId = :tenantId')
+            ->where([] === $participatingTenderIds
+                ? 't.tenantId = :tenantId'
+                : 't.tenantId = :tenantId OR t.id IN (:participating)')
             ->andWhere('t.createdAt >= :from')
             ->andWhere('t.createdAt < :to')
             ->setParameter('tenantId', $tenantId)
             ->setParameter('from', $from)
             ->setParameter('to', $to);
+        if ([] !== $participatingTenderIds) {
+            $qb->setParameter('participating', $participatingTenderIds);
+        }
 
         switch ($dimension) {
             case 'region':
@@ -499,50 +557,5 @@ final class TenderRepository extends ServiceEntityRepository
         }
 
         return $facts;
-    }
-
-    /**
-     * Сырые ряды агрегации статусов (FR-1.1.3): STRING_AGG статусов лотов по
-     * тендеру + админ-статус. Единый источник для aggregatedStatuses() и
-     * countByAggregatedStatus() — DB-агрегация без гидратации лотов.
-     *
-     * @return list<array{tender_id: string, admin_status: TenderStatusEnum|string, statuses: string|null}>
-     */
-    private function aggregatedStatusRows(Uuid $tenantId): array
-    {
-        /** @var list<array{tender_id: string, admin_status: TenderStatusEnum|string, statuses: string|null}> $rows */
-        $rows = $this->createQueryBuilder('t')
-            ->select('t.id AS tender_id')
-            ->addSelect('t.status AS admin_status')
-            ->addSelect("STRING_AGG(l.status, ',') AS statuses")
-            ->leftJoin('t.lots', 'l')
-            ->where('t.tenantId = :tenantId')
-            ->setParameter('tenantId', $tenantId)
-            ->groupBy('t.id', 't.status')
-            ->getQuery()
-            ->getArrayResult();
-
-        return $rows;
-    }
-
-    /**
-     * Агрегированный статус тендера из ряда DB-агрегации (FR-1.1.3, вариант C).
-     *
-     * @param array{tender_id: string, admin_status: TenderStatusEnum|string, statuses: string|null} $row
-     */
-    private static function aggregateRow(array $row): TenderStatusEnum
-    {
-        /** @var string|null $statusesRaw */
-        $statusesRaw = $row['statuses'];
-        $admin = $row['admin_status'];
-        $adminStatus = $admin instanceof TenderStatusEnum ? $admin : TenderStatusEnum::from($admin);
-        $statuses = null === $statusesRaw || '' === $statusesRaw
-            ? []
-            : array_map(
-                static fn (string $s): LotStatusEnum => LotStatusEnum::from($s),
-                explode(',', $statusesRaw),
-            );
-
-        return Tender::aggregateStatus($statuses, $adminStatus);
     }
 }

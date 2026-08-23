@@ -33,6 +33,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Table(name: 'bids')]
 #[ORM\UniqueConstraint(name: 'uniq_bids_tender_lot_supplier', columns: ['tender_id', 'lot_id', 'supplier_id'])]
 #[ORM\Index(name: 'idx_bids_tender_status', columns: ['tender_id', 'status'])]
+#[ORM\Index(name: 'idx_bids_supplier_status', columns: ['supplier_id', 'status'])]
 class Bid
 {
     #[ORM\Id]

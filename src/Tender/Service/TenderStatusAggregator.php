@@ -73,7 +73,7 @@ final class TenderStatusAggregator implements TenderStatusAggregatorContract
 
         $before = $tender->getStatus();
         $applied = false;
-        foreach (self::FORWARD as $transition => $status) {
+        foreach ($this->forwardChain($tender) as $transition => $status) {
             if ($tender->getStatus()->phase() >= $status->phase()) {
                 continue;
             }
@@ -102,6 +102,31 @@ final class TenderStatusAggregator implements TenderStatusAggregatorContract
                 after: ['status' => $tender->getStatus()->value, 'aggregated' => $target->value, 'lot_count' => $tender->lotCount()],
             );
         }
+    }
+
+    /**
+     * Цепочка переходов для конкретного тендера. У тендера без заявок на участие
+     * фазы accepting_bids не существует: приёма заявок нет, и торги открываются
+     * из published напрямую (START_TRADE_WITHOUT_BIDS). Просто пропустить
+     * START_BID_ACCEPTANCE в общем цикле нельзя — он останавливается на первом
+     * недопустимом переходе, чтобы не перескакивать фазы.
+     *
+     * @return array<string, TenderStatusEnum> имя перехода → целевая фаза
+     */
+    private function forwardChain(Tender $tender): array
+    {
+        if ($tender->isBidsRequired()) {
+            return self::FORWARD;
+        }
+
+        $chain = self::FORWARD;
+        unset(
+            $chain[TenderStatusTransition::START_BID_ACCEPTANCE->value],
+            $chain[TenderStatusTransition::START_TRADE->value],
+        );
+
+        // Порядок важен: переход в bidding должен идти первым в цепочке.
+        return [TenderStatusTransition::START_TRADE_WITHOUT_BIDS->value => TenderStatusEnum::BIDDING] + $chain;
     }
 
     public function applyTransition(Tender $tender, TenderStatusTransition $transition): void

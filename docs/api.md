@@ -128,15 +128,25 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/users/me` | current user profile |
+| PATCH | `/users/me` | update own profile / change password |
 | POST | `/users` | invite a user (admin) |
 | GET | `/users` | list users (admin) |
 | PATCH | `/users/{userId}` | update user (admin) |
 | DELETE | `/users/{userId}` | soft-delete user (admin) |
+| GET | `/companies` | card of the actor's own company |
+| PATCH | `/companies` | update own company details (admin) |
 | GET | `/companies/search` | find a counterparty by name or INN (approved companies only) |
+| GET | `/admin/companies` | list companies of the platform (platform admin) |
 | POST | `/companies/{companyId}/verify` | approve/reject/suspend company (platform admin) |
+| GET | `/suppliers/profile` | own supplier profile |
+| PUT | `/suppliers/profile` | create or update own supplier profile (upsert) |
+| GET | `/suppliers/{supplierId}` | public supplier profile |
 | GET | `/permissions` | permission catalog (platform admin) |
 | GET | `/role-permissions` | role permission matrix (platform admin) |
 | PUT | `/role-permissions` | update role permissions (platform admin) |
+| GET | `/platform/timezone` | platform domain timezone |
+| PUT | `/platform/timezone` | change platform domain timezone (platform admin) |
 
 ### Tenders & lots
 
@@ -151,6 +161,10 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/tenders/{tenderId}/cancel` | cancel with reason |
 | GET | `/tenders/{tenderId}/access` | check participation access |
 | POST | `/tenders/{tenderId}/rating` | rate closed tender |
+| GET | `/tenders/{tenderId}/lots` | lots of the tender (visibility-filtered) |
+| POST | `/tenders/{tenderId}/lots` | add a lot |
+| PATCH | `/tenders/{tenderId}/lots/{lotId}` | update a lot |
+| DELETE | `/tenders/{tenderId}/lots/{lotId}` | delete a lot (remaining lots are renumbered) |
 | GET | `/tenders/{tenderId}/questions` | questions and answers |
 | POST | `/tenders/{tenderId}/questions` | ask a question |
 | POST | `/tenders/{tenderId}/questions/{questionId}/answer` | answer a question (customer) |
@@ -171,7 +185,9 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/auctions` | list auctions visible to the company (no pagination) |
 | POST | `/auctions` | create auction |
+| GET | `/auctions/stream` | SSE discovery for every visible auction at once |
 | PATCH | `/auctions/{auctionId}` | update auction |
 | GET | `/auctions/{auctionId}/state` | current auction state |
 | GET | `/auctions/{auctionId}/stream` | SSE discovery (hub, topic, token, state) |
@@ -202,6 +218,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/claims` | create a claim |
 | POST | `/claims/{claimId}/resolve` | resolve a claim |
 | GET | `/securities` | list security deposits of the actor's company |
+| POST | `/contract_tenders/{contractTenderId}/stages` | add an execution stage to a contract/tender link |
 | POST | `/securities/{securityId}/forfeit` | forfeit security |
 | POST | `/securities/{securityId}/release` | release security |
 
@@ -217,6 +234,15 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | POST | `/document-types` | create document type |
 | PUT | `/document-types/{documentTypeId}` | update document type |
 | DELETE | `/document-types/{documentTypeId}` | deactivate document type |
+
+Upload is scoped per `entity_type`: `tender` requires the tender to belong to the actor's company,
+`contract` requires the company to be a party, and `lot` requires only that the **procedure is
+visible** to the company (FR-1.5.14). The looser rule on lots is deliberate — acceptance documents
+(acts, waybills) at the execution stage are uploaded by the performer, whose company is not the
+tender's tenant. A lot of an invisible procedure answers 404, same as the tender itself.
+
+Visibility of an uploaded acceptance document must be `public`: `listForEntity` returns own
+documents plus public ones, so a `private` act stays invisible to the counterparty.
 
 ### Platform: api keys, webhooks, exports, notifications, favorites, saved searches, analytics
 
@@ -237,7 +263,7 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/exports/{jobId}/download` | download ready export |
 | GET | `/notifications/subscriptions` | list notification subscriptions |
 | POST | `/notifications/subscriptions` | create subscription |
-| DELETE | `/notifications/subscriptions/{subscriptionId}` | delete subscription |
+| DELETE | `/notifications/subscriptions?subscriptionId=...` | delete subscription |
 | POST | `/notifications/subscriptions/{subscriptionId}/toggle` | toggle subscription |
 | GET | `/favorites` | list favorites |
 | POST | `/favorites` | add favorite |
@@ -245,8 +271,12 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 | GET | `/saved-searches` | list saved searches |
 | POST | `/saved-searches` | create saved search |
 | DELETE | `/saved-searches?savedSearchId=...` | delete saved search |
-| GET | `/dashboard` | dashboard summary |
-| GET | `/stats/tenders` | tender statistics |
+| GET | `/procurement-plans` | list procurement plans |
+| POST | `/procurement-plans` | create a procurement plan |
+| GET | `/dashboard` | dashboard summary (customer and supplier side) |
+| GET | `/stats/tenders` | tender statistics (customer and supplier side) |
+| GET | `/usage` | tenant quota usage |
+| GET | `/rate-limits` | current rate limits for the actor |
 
 ### Health
 
@@ -259,5 +289,10 @@ has more? → next_cursor = base64url({c: created_at, i: id}) : null
 
 This document mirrors the endpoint map and conventions implemented in `src/*/Controller/`. Route
 paths are defined as `public const string URL` on each controller and are referenced by tests.
+
+The tables above cover every `/api/v1/*` route of the application (121 endpoints, verified against
+`php bin/console debug:router` on 2026-08-22). Which user case each endpoint belongs to —
+[use-case-route-map.md](use-case-route-map.md); the machine-readable contract —
+`api/openapi.yaml` in the repository root.
 Request bodies are validated through form types in `src/{Module}/Form/`, and the JSON body schemas
 follow the OpenAPI 3.1 specification that describes this API.

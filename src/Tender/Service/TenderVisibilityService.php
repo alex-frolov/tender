@@ -10,6 +10,7 @@ use App\Tender\Entity\Enum\AccessTypeEnum;
 use App\Tender\Entity\Enum\TenderVisibilityLevelEnum;
 use App\Tender\Entity\Tender;
 use App\Tender\Repository\TenderRepository;
+use App\Tender\TenderLotView;
 use App\Tender\TenderVisibility as TenderVisibilityContract;
 use App\Tender\TenderVisibilityScope;
 use Symfony\Component\Uid\Uuid;
@@ -21,14 +22,19 @@ use Symfony\Component\Uid\Uuid;
  *
  * Правило (FR-1.1.1, FR-1.5.14) — свой тендер виден всегда, чужой зависит от
  * стадии закупки (TenderStatusEnum::visibilityLevel):
- *   - OWNER_ONLY (draft/withdrawn/evaluation) — чужому не виден вовсе: это
- *     внутренняя работа заказчика;
- *   - PARTICIPANTS (published/accepting_bids/bidding) — виден, если тендер
- *     открытый либо закрытый, но с заказчиком есть действующий multi_use-договор;
- *   - OWNER_AND_WINNER (awarding/contract/closed/cancelled) — виден только
- *     компании-исполнителю (winning-заявка). Обратим внимание: договор здесь
- *     доступа уже НЕ даёт — после определения победителя закупка перестаёт
- *     быть публичной даже для тех, кто имел право участвовать.
+ *   - OWNER_ONLY (draft/withdrawn) — чужому не виден вовсе: закупки как
+ *     объявленной процедуры ещё нет;
+ *   - PARTICIPANTS (published/accepting_bids/bidding/evaluation/awarding/
+ *     contract) — виден, если тендер открытый либо закрытый, но с заказчиком
+ *     есть действующий multi_use-договор;
+ *   - OWNER_AND_WINNER (closed/cancelled) — виден только компании-исполнителю
+ *     (winning-заявка). Обратим внимание: договор здесь доступа уже НЕ даёт —
+ *     завершённая закупка перестаёт быть публичной даже для тех, кто имел
+ *     право участвовать.
+ *
+ * Видимость тендера НЕ равна видимости его содержимого: состав карточки для
+ * стороннего зрителя ограничивает TenderLotView (lotViewOf) — завершённые лоты
+ * и личность победителя наружу не уходят.
  *
  * Кросс-модульные проверки идут через публичные контракты: договор —
  * ContractAccessChecker (модуль Contract), победитель — BidWinnerQuery
@@ -58,6 +64,21 @@ final readonly class TenderVisibilityService implements TenderVisibilityContract
         $tender = $this->tenders->findById((string) $tenderId);
 
         return null !== $tender && $this->isTenderVisible($tender, $companyId);
+    }
+
+    /**
+     * Состав видимой карточки тендера для компании-зрителя (FR-1.5.14):
+     * какие лоты показывать и раскрывать ли победителя. Заказчику — полный
+     * взгляд без запросов в соседний модуль; остальным список выигранных лотов
+     * берётся одним запросом через публичный контракт BidWinnerQuery.
+     */
+    public function lotViewOf(Tender $tender, Uuid $companyId): TenderLotView
+    {
+        if ($tender->getTenantId()->equals($companyId)) {
+            return TenderLotView::owner();
+        }
+
+        return TenderLotView::outsider($tender->getStatus(), $this->winners->lotIdsWonBy($companyId));
     }
 
     public function filterVisible(array $tenderIds, Uuid $companyId): array

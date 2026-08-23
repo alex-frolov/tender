@@ -1,0 +1,115 @@
+framework:
+    workflows:
+        # Статусная модель лота (FR-1.1.3/1.1.7, domain/tender-state-machine.md).
+        #
+        # Лот повторяет фазы тендера, но, в отличие от него, отражает реальный
+        # процесс: заявки подаются на лот, торгуется лот, исполняется лот.
+        # Фазы проставляют двое:
+        #   - тендер (административно): публикация, старт приёма заявок, отмена
+        #     — App\Tender\Service\LotPhaseService из TenderService/TimelineMessageHandler;
+        #   - аукцион лота: торги и исполнение — слушатель
+        #     App\Auction\Service\AuctionLotPhaseListener по карте
+        #     AuctionStatusEnum::lotTransition().
+        # Обратно по фазам лотов агрегируется статус тендера (вариант C
+        # «бутылочное горлышко») — App\Tender\Service\TenderStatusAggregator.
+        #
+        # Модель — «монотонное продвижение фазы», а не строгая цепочка: каждый
+        # переход разрешён из ЛЮБОЙ более ранней фазы, но не назад и не из
+        # терминальной. Причина в том, что фаза лота — производная от реальности,
+        # а не самостоятельный процесс: аукцион создаётся без проверки статуса
+        # тендера (AuctionWriteService::create), поэтому торги вполне могут идти
+        # по лоту, который через публикацию не проводили. Отказать такому лоту
+        # в переходе означало бы хранить статус, противоречащий происходящему;
+        # пропуск промежуточных фаз агрегации не мешает — она смотрит на номер
+        # фазы (LotStatusEnum::phase()).
+        #
+        # Переходы идемпотентны на уровне вызова: продвигающая сторона спрашивает
+        # can() и молча пропускает недопустимый переход (например, RESUME снова
+        # просит START_TRADE, а лот уже в bidding).
+        lot:
+            type: state_machine
+            marking_store:
+                type: method
+                property: status
+            supports:
+                - App\Tender\Entity\Lot
+            initial_marking: !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+            places:
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::EVALUATION->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::AWARDING->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::CONTRACT->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::CLOSED->value
+                - !php/enum App\Tender\Entity\Enum\LotStatusEnum::CANCELLED->value
+            transitions:
+                # Публикация тендера (каскад на его лоты).
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::PUBLISH->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                # Наступил bids_start у тендера с заявками на участие.
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::START_BID_ACCEPTANCE->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                # Аукцион лота вышел в TRADE (или возобновился после паузы).
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::START_TRADE->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                # Аукцион ушёл в CHOICE — торги закончились, выбирается победитель.
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::START_EVALUATION->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::EVALUATION->value
+                # Победитель утверждён (аукцион в APPROVE).
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::START_AWARDING->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::EVALUATION->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::AWARDING->value
+                # Исполнитель приступил к работам (IN_WORK, DONE_BY_PERFORMER, CLAIM).
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::START_CONTRACT->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::EVALUATION->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::AWARDING->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::CONTRACT->value
+                # Исполнение принято заказчиком (DONE / DONE_BY_CLAIM).
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::CLOSE->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::EVALUATION->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::AWARDING->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::CONTRACT->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::CLOSED->value
+                # Отмена: каскад отмены тендера либо отмена/истечение аукциона.
+                # Из closed отмены нет — исполненный лот терминален.
+                !php/enum App\Tender\Entity\Enum\LotStatusTransition::CANCEL->value:
+                    from:
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::DRAFT->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::PUBLISHED->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::ACCEPTING_BIDS->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::BIDDING->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::EVALUATION->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::AWARDING->value
+                        - !php/enum App\Tender\Entity\Enum\LotStatusEnum::CONTRACT->value
+                    to: !php/enum App\Tender\Entity\Enum\LotStatusEnum::CANCELLED->value

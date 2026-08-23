@@ -6,6 +6,7 @@ namespace App\Tender\UseCase;
 
 use App\Iam\Entity\User;
 use App\Tender\Input\CancelTenderInput;
+use App\Tender\TenderLotView;
 use App\Tender\TenderPresenter;
 use App\Tender\TenderService;
 
@@ -30,12 +31,15 @@ final readonly class CancelTenderUseCase implements TenderUseCase
      */
     public function execute(User $user, string $tenderId, CancelTenderInput $input, ?string $ip = null): array
     {
-        return $this->presenter->single($this->tenders->cancel(
-            $user,
-            $tenderId,
-            $input->cancellationReasonCode,
-            $input->cancellationReasonText,
-            $ip,
-        ));
+        return $this->presenter->single(
+            $this->tenders->cancel(
+                $user,
+                $tenderId,
+                $input->cancellationReasonCode,
+                $input->cancellationReasonText,
+                $ip,
+            ),
+            TenderLotView::owner(),
+        );
     }
 }

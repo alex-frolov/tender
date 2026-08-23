@@ -17,7 +17,8 @@ use Symfony\Component\Security\Core\Authorization\Voter\Voter;
  * право webhooks.manage (группа platform): admin/platform_admin — всегда,
  * manager/agent — по настройке (по умолчанию отключено). Subject не
  * используется: подписки принадлежат компании актора, tenant-изоляцию
- * (404 для чужих) выполняет WebhookService.
+ * (404 для чужих) выполняет резолв подписки — WebhookService, а для
+ * PATCH /webhooks/{id} — WebhookRepository::findOwnedOrFail в контроллере.
  *
  * @extends Voter<string, null>
  */

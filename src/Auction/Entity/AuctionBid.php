@@ -22,11 +22,20 @@ use Symfony\Component\Uid\Uuid;
  * - idempotency_key (AR-4): уникальность повторной доставки ставки.
  * - Инвариант (data-model): unique (auction_id, bidder_id, round) — одна ставка
  *   на участника на ход.
+ *
+ * Таблица партиционирована по месяцам (RANGE placed_at, миграция
+ * Version20260822180000, ../docs/db-query-audit.md п. 9): при целевых 5 млн
+ * ставок это делает retention и архив отсоединением партиции, а не DELETE по
+ * всей истории. Ключ партиционирования обязан входить в каждый уникальный
+ * индекс, поэтому оба unique дополнены placed_at — уникальность гарантируется
+ * в пределах партиции. На инвариант это не влияет: обе пары ключей начинаются
+ * с auction_id, а торги одного аукциона идут минуты и целиком попадают
+ * в один месяц.
  */
 #[ORM\Entity]
 #[ORM\Table(name: 'auction_bids')]
-#[ORM\UniqueConstraint(name: 'uniq_auction_bids_auction_bidder_round', columns: ['auction_id', 'bidder_id', 'round'])]
-#[ORM\UniqueConstraint(name: 'uniq_auction_bids_auction_idem', columns: ['auction_id', 'idempotency_key'])]
+#[ORM\UniqueConstraint(name: 'uniq_auction_bids_auction_bidder_round', columns: ['auction_id', 'bidder_id', 'round', 'placed_at'])]
+#[ORM\UniqueConstraint(name: 'uniq_auction_bids_auction_idem', columns: ['auction_id', 'idempotency_key', 'placed_at'])]
 #[ORM\Index(name: 'idx_auction_bids_auction_round', columns: ['auction_id', 'round'])]
 #[ORM\Index(name: 'idx_auction_bids_auction_price', columns: ['auction_id', 'price_minor'])]
 #[ORM\Index(name: 'idx_auction_bids_bidder_auction', columns: ['bidder_id', 'auction_id'])]

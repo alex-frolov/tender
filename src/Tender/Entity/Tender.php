@@ -30,6 +30,7 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Table(name: 'tenders')]
 #[ORM\Index(name: 'idx_tenders_tenant_status', columns: ['tenant_id', 'status'])]
 #[ORM\Index(name: 'idx_tenders_tenant_customer', columns: ['tenant_id', 'customer_id'])]
+#[ORM\Index(name: 'idx_tenders_tenant_aggregated', columns: ['tenant_id', 'aggregated_status'])]
 class Tender
 {
     #[ORM\Id]
@@ -87,6 +88,24 @@ class Tender
     #[ORM\Column(type: 'string', length: 20, enumType: TenderStatusEnum::class, options: ['default' => 'draft'])]
     private TenderStatusEnum $status = TenderStatusEnum::DRAFT;
 
+    /**
+     * Материализованный агрегированный статус (FR-1.1.3, вариант C) —
+     * КЭШ результата aggregatedStatus(), а не самостоятельное состояние.
+     *
+     * Нужен затем, что читается он несопоставимо чаще, чем меняется: дашборд,
+     * статистика и каталог спрашивают агрегат на каждый запрос, а меняется он
+     * только на переходах статуса тендера или лота. Считать его на лету
+     * означало `LEFT JOIN lots + STRING_AGG + GROUP BY` по всем процедурам
+     * компании без LIMIT на каждое открытие дашборда.
+     *
+     * Актуальность поддерживает refreshAggregatedStatus(), вызываемый из всех
+     * точек, где меняются входы агрегации: setStatus() тендера и Lot::setStatus()
+     * (сеттеры marking_store — через них идёт ЛЮБОЙ переход workflow) плюс
+     * addLot()/removeLot() при изменении состава лотов.
+     */
+    #[ORM\Column(name: 'aggregated_status', type: 'string', length: 20, enumType: TenderStatusEnum::class, options: ['default' => 'draft'])]
+    private TenderStatusEnum $aggregatedStatusCache = TenderStatusEnum::DRAFT;
+
     #[ORM\Column(type: 'integer', nullable: true)]
     private ?int $executionRating = null;
 
@@ -114,6 +133,17 @@ class Tender
 
     #[ORM\Column(type: 'boolean', options: ['default' => false])]
     private bool $securityRequired = false;
+
+    /**
+     * Требуется ли заявка на участие (FR-1.2.1, domain/tender-state-machine.md
+     * раздел 1c). true (по умолчанию) — классический порядок: приём заявок,
+     * вскрытие, допуск, и только допущенный участник торгуется. false —
+     * заявок нет вовсе: фаза accepting_bids для такого тендера не существует
+     * (published → bidding напрямую по таймлайну), торговаться может любой,
+     * кому тендер доступен (access_type/договор).
+     */
+    #[ORM\Column(type: 'boolean', options: ['default' => true])]
+    private bool $bidsRequired = true;
 
     /** @var array<string, mixed>|null */
     #[ORM\Column(type: 'json', nullable: true)]
@@ -167,6 +197,7 @@ class Tender
         ?string $okpd2 = null,
         bool $securityRequired = false,
         ?array $nationalRegime = null,
+        bool $bidsRequired = true,
     ) {
         $this->id = Uuid::v4();
         $this->tenantId = $customerId;
@@ -189,9 +220,11 @@ class Tender
         $this->okpd2 = $okpd2;
         $this->securityRequired = $securityRequired;
         $this->nationalRegime = $nationalRegime;
+        $this->bidsRequired = $bidsRequired;
         $this->createdAt = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         $this->updatedAt = $this->createdAt;
         $this->lots = new ArrayCollection();
+        $this->aggregatedStatusCache = $this->status;
     }
 
     public function getId(): Uuid
@@ -331,6 +364,15 @@ class Tender
         return $this->securityRequired;
     }
 
+    /**
+     * Требуется ли заявка на участие (FR-1.2.1). Читается guard'ами workflow
+     * (config/workflow/tender.yaml) — отсюда имя без префикса get.
+     */
+    public function isBidsRequired(): bool
+    {
+        return $this->bidsRequired;
+    }
+
     /** @return array<string, mixed>|null */
     public function getNationalRegime(): ?array
     {
@@ -367,6 +409,7 @@ class Tender
     {
         if (!$this->lots->contains($lot)) {
             $this->lots->add($lot);
+            $this->refreshAggregatedStatus();
         }
     }
 
@@ -378,6 +421,7 @@ class Tender
     {
         if ($this->lots->contains($lot)) {
             $this->lots->removeElement($lot);
+            $this->refreshAggregatedStatus();
         }
     }
 
@@ -409,6 +453,27 @@ class Tender
         }
 
         return self::aggregateStatus($statuses, $this->status);
+    }
+
+    /**
+     * Пересчитать и запомнить агрегированный статус в колонке.
+     * Вызывается на любом изменении входных
+     * данных агрегации — статуса тендера, статуса лота, состава лотов;
+     * колонка уезжает в БД ближайшим flush вместе с самим изменением.
+     */
+    public function refreshAggregatedStatus(): TenderStatusEnum
+    {
+        return $this->aggregatedStatusCache = $this->aggregatedStatus();
+    }
+
+    /**
+     * Значение из колонки aggregated_status — то, что читают списки и
+     * счётчики. Совпадает с aggregatedStatus(); расхождение означало бы
+     * пропущенный вызов refreshAggregatedStatus() (см. тесты агрегации).
+     */
+    public function cachedAggregatedStatus(): TenderStatusEnum
+    {
+        return $this->aggregatedStatusCache;
     }
 
     /**
@@ -513,10 +578,17 @@ class Tender
      * Только для workflow (marking_store property: status).
      * Напрямую статус не менять — переходы через symfony/workflow (AGENTS.md).
      */
+    /**
+     * Только для workflow (marking_store property: status). Пересчитывает и
+     * материализованный агрегат: административный статус входит в агрегацию
+     * (правило 2 варианта C — фазы draft/published не агрегируются, берётся
+     * статус тендера), поэтому его смена меняет и агрегат.
+     */
     public function setStatus(TenderStatusEnum $status): void
     {
         $this->status = $status;
         $this->touch();
+        $this->refreshAggregatedStatus();
     }
 
     public function cancel(CancellationReasonEnum $reasonCode, ?string $reasonText = null): void

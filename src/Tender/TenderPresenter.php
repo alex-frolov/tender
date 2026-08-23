@@ -12,15 +12,23 @@ use App\Tender\Entity\Tender;
  * Публичное представление тендера и лота (openapi schemas Tender/TenderListItem/Lot).
  * Деньги — minor units (int); vat_rate выводится в процентах (bps / 100).
  * Перевод minor → major — только в presentation (PR-2).
+ *
+ * Состав карточки зависит от зрителя (FR-1.5.14): заказчик видит все лоты
+ * и победителя каждого, сторонняя компания — только лоты в публичных статусах
+ * и без ссылки на победившую заявку. Правило приходит объектом TenderLotView
+ * (TenderVisibilityService::lotViewOf); ответы на собственные мутации
+ * презентуются как TenderLotView::owner().
  */
 final readonly class TenderPresenter
 {
     /**
      * Полная карточка тендера (openapi Tender).
      *
+     * @param TenderLotView $view взгляд зрителя на состав тендера (лоты, победитель)
+     *
      * @return array<string, mixed>
      */
-    public function single(Tender $tender): array
+    public function single(Tender $tender, TenderLotView $view): array
     {
         return [
             'id' => (string) $tender->getId(),
@@ -40,6 +48,7 @@ final readonly class TenderPresenter
             'price_basis' => $tender->getPriceBasis()->value,
             'status' => $tender->getStatus()->value,
             'access_type' => $tender->getAccessType()->value,
+            'bids_required' => $tender->isBidsRequired(),
             'execution_rating' => $tender->getExecutionRating(),
             'region' => $tender->getRegion(),
             'okpd2' => $tender->getOkpd2(),
@@ -47,10 +56,7 @@ final readonly class TenderPresenter
             'deadline' => $this->deadline($tender),
             'cancellation_reason_code' => $tender->getCancellationReasonCode()?->value,
             'cancellation_reason_text' => $tender->getCancellationReasonText(),
-            'lots' => array_map(
-                fn (Lot $lot): array => $this->lot($lot, $tender),
-                $tender->getLots()->toArray(),
-            ),
+            'lots' => $this->visibleLots($tender, $view),
             'created_at' => $tender->getCreatedAt()->format('Y-m-d\TH:i:s\Z'),
             'updated_at' => $tender->getUpdatedAt()->format('Y-m-d\TH:i:s\Z'),
             'version' => $tender->getVersion(),
@@ -110,24 +116,42 @@ final readonly class TenderPresenter
     /**
      * Список лотов тендера (openapi GET /tenders/{tenderId}/lots → {items}).
      *
+     * @param TenderLotView $view взгляд зрителя на состав тендера
+     *
      * @return list<array<string, mixed>>
      */
-    public function lotsList(Tender $tender): array
+    public function lotsList(Tender $tender, TenderLotView $view): array
     {
-        return array_values(array_map(
-            fn (Lot $lot): array => $this->lot($lot, $tender),
-            $tender->getLots()->toArray(),
-        ));
+        return $this->visibleLots($tender, $view);
     }
 
     /**
      * Презентация одного лота (openapi Lot) — для ответов мутаций лота.
+     * Мутирует лот только заказчик, поэтому взгляд здесь всегда владельческий.
      *
      * @return array<string, mixed>
      */
     public function singleLot(Lot $lot, Tender $tender): array
     {
-        return $this->lot($lot, $tender);
+        return $this->lot($lot, $tender, TenderLotView::owner());
+    }
+
+    /**
+     * Лоты тендера, доступные зрителю (FR-1.5.14): завершённые и отменённые
+     * лоты видны заказчику и исполнителю лота, прочим — нет.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function visibleLots(Tender $tender, TenderLotView $view): array
+    {
+        $items = [];
+        foreach ($tender->getLots() as $lot) {
+            if ($view->includes($lot)) {
+                $items[] = $this->lot($lot, $tender, $view);
+            }
+        }
+
+        return $items;
     }
 
     /**
@@ -135,7 +159,7 @@ final readonly class TenderPresenter
      *
      * @return array<string, mixed>
      */
-    private function lot(Lot $lot, Tender $tender): array
+    private function lot(Lot $lot, Tender $tender, TenderLotView $view): array
     {
         return [
             'id' => (string) $lot->getId(),
@@ -151,7 +175,11 @@ final readonly class TenderPresenter
             'execution_start_at' => $lot->getExecutionStartAt()?->format('Y-m-d\TH:i:s\Z'),
             'trade_end_lead_hours' => $lot->getTradeEndLeadHours(),
             'status' => $lot->getStatus()->value,
-            'winner_bid_id' => null !== $lot->getWinnerBidId() ? (string) $lot->getWinnerBidId() : null,
+            // Личность исполнителя наружу не уходит: посторонний зритель видит
+            // ход закупки, но не то, кто её выиграл (FR-1.5.14).
+            'winner_bid_id' => $view->revealsWinner($lot) && null !== $lot->getWinnerBidId()
+                ? (string) $lot->getWinnerBidId()
+                : null,
         ];
     }
 

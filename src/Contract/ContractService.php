@@ -25,6 +25,7 @@ use App\Shared\Exception\StateTransitionException;
 use App\Shared\Exception\ValidationException;
 use App\Shared\Input\InputValue;
 use App\Shared\Money\MoneyService;
+use App\Shared\Repository\KeysetCursor;
 use App\Tender\Entity\Enum\PriceBasisEnum;
 use App\Tender\TenderReadService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -276,12 +277,20 @@ final readonly class ContractService
     }
 
     /**
-     * Список договоров компании актора (AM-9 GET /contracts): как заказчика,
-     * так и исполнителя. Необязательный фильтр по статусу.
+     * Страница договоров компании актора (AM-9 GET /contracts): как заказчика,
+     * так и исполнителя. Необязательные фильтры — по статусу и по привязанной
+     * процедуре (contract_tenders.tender_id).
      *
-     * @return list<Contract>
+     * Пагинация — keyset в SQL (AR-6): курсор уходит условием в запрос, из БД
+     * приходит ровно страница. Прежний вариант выбирал ВСЕ договоры компании
+     * и резал их в PHP — цена запроса росла вместе с историей закупок.
+     *
+     * @return array{0: list<Contract>, 1: string|null} [страница, next_cursor]
+     *
+     * @throws ValidationException если статус вне каталога, tender_id не uuid
+     *                             или курсор невалиден
      */
-    public function list(User $actor, ?string $status = null): array
+    public function listPage(User $actor, ?string $status, ?string $tenderId, ?string $cursor, int $limit): array
     {
         $companyId = InputValue::companyId($actor);
 
@@ -293,7 +302,29 @@ final readonly class ContractService
             }
         }
 
-        return $this->contracts->listForParties($companyId, $companyId, $statusEnum);
+        $tender = null;
+        if (null !== $tenderId && '' !== $tenderId) {
+            if (!Uuid::isValid($tenderId)) {
+                throw new ValidationException('tender_id must be a valid UUID');
+            }
+            $tender = Uuid::fromString($tenderId);
+        }
+
+        $position = KeysetCursor::decode($cursor);
+
+        return KeysetCursor::pageOf(
+            $this->contracts->listPageForParties(
+                $companyId,
+                $companyId,
+                $statusEnum,
+                $tender,
+                $position?->createdAt,
+                $position?->id,
+                $limit + 1,
+            ),
+            $limit,
+            static fn (Contract $c): array => [$c->getCreatedAt(), (string) $c->getId()],
+        );
     }
 
     /**

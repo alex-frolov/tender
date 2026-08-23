@@ -8,6 +8,7 @@ use App\RuStateProcurement\Config\ProcurementConfig;
 use App\Tender\Entity\Enum\ProcedureTypeEnum;
 use App\Tender\Entity\Tender;
 use App\Tender\Timeline\TimelineRules;
+use Symfony\Component\Clock\ClockInterface;
 
 /**
  * Реализация контракта TimelineRules для РФ (44-ФЗ/223-ФЗ) — policy-плагин
@@ -23,18 +24,22 @@ use App\Tender\Timeline\TimelineRules;
  * в data-model MVP отсутствует — правило не применяется, см. ProcurementConfig).
  *
  * bids_start = now (публикация), bids_end = now + срок. Хранение — UTC; расчёт
- * рабочих дней — в доменном поясе (FR-1.5.16, для РФ — Europe/Moscow).
+ * рабочих дней — в доменном поясе (FR-1.5.16, для РФ — Europe/Moscow). Поздним
+ * вечером по UTC московская дата уже следующая, поэтому граница суток здесь
+ * значима: «сейчас» берётся из ClockInterface, чтобы результат можно было
+ * зафиксировать в тестах, а не зависеть от момента прогона.
  */
 final readonly class RuTimelineRules implements TimelineRules
 {
     public function __construct(
         private ProcurementConfig $config,
+        private ClockInterface $clock,
     ) {
     }
 
     public function calculate(Tender $tender): array
     {
-        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $now = $this->clock->now()->setTimezone(new \DateTimeZone('UTC'));
 
         $bidsEnd = ProcedureTypeEnum::RFQ === $tender->getProcedureType()
             ? $this->addWorkingDays($now, $this->config->timelineRfqWorkingDays(), $this->config->defaultTimezone())

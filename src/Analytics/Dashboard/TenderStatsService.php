@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Analytics\Dashboard;
 
 use App\Auction\AuctionDashboardQuery;
+use App\Bid\BidDashboardQuery;
 use App\Contract\ContractDashboardQuery;
 use App\Iam\Entity\User;
 use App\Shared\Exception\ConflictException;
@@ -20,6 +21,10 @@ use Symfony\Component\Uid\Uuid;
  * по тендеру, PR-6) и сумма цен договоров по тендеру. Факты тендеров — из
  * публичного read-контракта Tender, снижение — из Auction, суммы — из Contract:
  * группа (по значению среза) собирается здесь, в Analytics, из фактов модулей.
+ *
+ * Охват тот же, что у дашборда (DashboardService): свои процедуры + процедуры
+ * участия компании. Без второй части у исполнителя раздел был пуст всегда —
+ * своих тендеров у него нет, а торгуется он в чужих.
  */
 final readonly class TenderStatsService
 {
@@ -28,6 +33,7 @@ final readonly class TenderStatsService
 
     public function __construct(
         private TenderDashboardQuery $tenders,
+        private BidDashboardQuery $bids,
         private AuctionDashboardQuery $auctions,
         private ContractDashboardQuery $contracts,
     ) {
@@ -53,8 +59,9 @@ final readonly class TenderStatsService
             throw new ValidationException('from must be before to');
         }
 
-        $facts = $this->tenders->factsByDimension($companyId, $dimension, $fromDate, $toDate);
-        $reductions = $this->auctions->avgReductionByTender($companyId, $fromDate, $toDate);
+        $participating = $this->participatingTenderIds($companyId);
+        $facts = $this->tenders->factsByDimension($companyId, $dimension, $fromDate, $toDate, $participating);
+        $reductions = $this->auctions->avgReductionByTender($companyId, $fromDate, $toDate, $participating);
         $amounts = $this->contracts->amountSumByTender($companyId, $fromDate, $toDate);
 
         $groups = [];
@@ -100,6 +107,22 @@ final readonly class TenderStatsService
         );
 
         return $items;
+    }
+
+    /**
+     * Процедуры участия компании (не свои по тенанту): тендеры её заявок плюс
+     * тендеры аукционов, где она ставила ставки. Тот же охват, что у дашборда.
+     *
+     * @return list<Uuid>
+     */
+    private function participatingTenderIds(Uuid $companyId): array
+    {
+        $ids = [];
+        foreach ([...$this->bids->tenderIdsForSupplier($companyId), ...$this->auctions->tenderIdsForBidder($companyId)] as $id) {
+            $ids[(string) $id] = $id;
+        }
+
+        return array_values($ids);
     }
 
     /**
