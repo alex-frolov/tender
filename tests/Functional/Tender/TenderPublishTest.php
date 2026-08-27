@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Tender;
 
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderCreateController;
 use App\Tender\Controller\TenderPublishController;
@@ -27,6 +28,21 @@ final class TenderPublishTest extends WebTestCase
     private const string EMAIL = VerifiedUserStory::EMAIL;
     private static ?KernelBrowser $client = null;
 
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->token = $this->loginAs(self::EMAIL);
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -45,7 +61,7 @@ final class TenderPublishTest extends WebTestCase
         return '14.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -87,9 +103,9 @@ final class TenderPublishTest extends WebTestCase
     /**
      * Создать черновик через API и вернуть его id.
      */
-    private static function createDraft(string $companyId, string $token): string
+    private function createDraft(): string
     {
-        $client = self::request('POST', TenderCreateController::URL, $token, [
+        $client = self::request('POST', TenderCreateController::URL, $this->token, [
             'title' => 'Закупка на публикацию',
             'procedure_type' => 'auction',
             'law_type' => 'commercial',
@@ -98,7 +114,7 @@ final class TenderPublishTest extends WebTestCase
             'currency' => 'RUB',
             'vat_rate' => 20,
             'price_basis' => 'net',
-            'customer_id' => $companyId,
+            'customer_id' => (string) $this->company->getId(),
             'access_type' => 'open',
             'lots' => [
                 ['title' => 'Серверы', 'price_net_minor' => 60000],
@@ -115,13 +131,10 @@ final class TenderPublishTest extends WebTestCase
 
     public function testPublishTransitionsToPublishedWithTimeline(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderPublishController::URL);
-        $client = self::request('POST', $url, $token);
+        $client = self::request('POST', $url, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -139,42 +152,32 @@ final class TenderPublishTest extends WebTestCase
 
     public function testRepublishReturns409(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderPublishController::URL);
-        self::request('POST', $url, $token);
+        self::request('POST', $url, $this->token);
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('POST', $url, $token);
+        $client = self::request('POST', $url, $this->token);
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testPublishUnknownTenderReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderPublishController::URL);
-        $client = self::request('POST', $url, $token);
+        $client = self::request('POST', $url, $this->token);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testAgentCannotPublishReturns403(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $adminToken = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $adminToken);
+        $id = $this->createDraft();
 
         $agent = UserFactory::createOne([
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::loginAs((string) $agent->getEmail());
+        $token = $this->loginAs((string) $agent->getEmail());
 
         $url = str_replace('{tenderId}', $id, TenderPublishController::URL);
         $client = self::request('POST', $url, $token);
@@ -183,7 +186,6 @@ final class TenderPublishTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderPublishController::URL);
         $client = self::request('POST', $url, '');
         self::assertResponseStatusCodeSame(401);

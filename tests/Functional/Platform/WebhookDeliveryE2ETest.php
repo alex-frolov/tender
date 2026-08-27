@@ -24,6 +24,7 @@ use App\Tender\Timeline\TimelineMessageHandler;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
@@ -41,6 +42,12 @@ use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
  * Проверяется контракт подписи (WH-3): X-Signature = HMAC-SHA256(payload,
  * секрет подписки) и заголовок X-Event-Id, совпадающий с event_id в теле.
  * Rate limit api_global в тестах = 3/мин на IP → каждый запрос с нового IP.
+ *
+ * QueryGuard: E2E-сценарий (подписка → outbox → relayer → консьюмеры →
+ * HTTP POST на receiver) сам является предметом теста и превышает базовый
+ * бюджет 35 запросов — задан #[AllowQueries(60)]; вклад вносят также
+ * AuthMiddleware:84 (SELECT пользователя на каждый запрос) и AuditService:75
+ * (append-only аудит). Прод-код не меняем — см. docs/guard-test/refactor-report.md.
  */
 final class WebhookDeliveryE2ETest extends WebTestCase
 {
@@ -57,6 +64,9 @@ final class WebhookDeliveryE2ETest extends WebTestCase
 
     /** @var list<string> тенанты теста — чистка Redis-счётчиков аналитики в tearDown */
     private static array $tenantIds = [];
+
+    /** @var array{companyId: string, token: string} */
+    private static array $customer;
 
     public static function setUpBeforeClass(): void
     {
@@ -95,7 +105,13 @@ final class WebhookDeliveryE2ETest extends WebTestCase
 
     protected function setUp(): void
     {
-        self::$client = null;
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        self::$customer = self::customer();
     }
 
     protected function tearDown(): void
@@ -355,12 +371,11 @@ final class WebhookDeliveryE2ETest extends WebTestCase
         self::$tenantIds = [];
     }
 
+    #[AllowQueries(60)]
     public function testWebhookDeliveryEndToEnd(): void
     {
-        self::client();
-        $customer = self::customer();
-        $tenantId = $customer['companyId'];
-        $token = $customer['token'];
+        $tenantId = self::$customer['companyId'];
+        $token = self::$customer['token'];
 
         // 1. подписка через API (WH-7): url receiver'а + событие tender.opened.
         $client = self::request('POST', WebhookCreateController::URL, $token, [

@@ -31,6 +31,43 @@ final class ClaimListTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private string $customerToken;
+    private string $supplierToken;
+    private Claim $own;
+    private Claim $foreign;
+    private Uuid $contractId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cl-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $supplier->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cl-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->contractId = Uuid::v4();
+        $this->own = self::claim($customer->getId(), $customer->getId(), $supplier->getId(), $this->contractId);
+        // Претензия между двумя посторонними компаниями — не должна попадать в выдачу.
+        $foreignCompany = Uuid::v4();
+        $this->foreign = self::claim($foreignCompany, $foreignCompany, Uuid::v4(), Uuid::v4());
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -66,7 +103,7 @@ final class ClaimListTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -105,45 +142,9 @@ final class ClaimListTest extends WebTestCase
         return $claim;
     }
 
-    /**
-     * @return array{customerToken: string, supplierToken: string, own: Claim, foreign: Claim, contractId: Uuid}
-     */
-    private static function context(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cl-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cl-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $contractId = Uuid::v4();
-        $own = self::claim($customer->getId(), $customer->getId(), $supplier->getId(), $contractId);
-        // Претензия между двумя посторонними компаниями — не должна попадать в выдачу.
-        $foreignCompany = Uuid::v4();
-        $foreign = self::claim($foreignCompany, $foreignCompany, Uuid::v4(), Uuid::v4());
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'own' => $own,
-            'foreign' => $foreign,
-            'contractId' => $contractId,
-        ];
-    }
-
     public function testCustomerSeesOwnClaimsAndNotForeign(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request(ClaimListController::URL, $ctx['customerToken']);
+        $client = self::request(ClaimListController::URL, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -151,8 +152,8 @@ final class ClaimListTest extends WebTestCase
         self::assertArrayHasKey('next_cursor', $body);
 
         $ids = array_column($body['items'], 'id');
-        self::assertContains((string) $ctx['own']->getId(), $ids);
-        self::assertNotContains((string) $ctx['foreign']->getId(), $ids);
+        self::assertContains((string) $this->own->getId(), $ids);
+        self::assertNotContains((string) $this->foreign->getId(), $ids);
 
         $item = $body['items'][0];
         self::assertIsArray($item);
@@ -164,56 +165,47 @@ final class ClaimListTest extends WebTestCase
 
     public function testPerformerSeesClaimAgainstIt(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request(ClaimListController::URL, $ctx['supplierToken']);
+        $client = self::request(ClaimListController::URL, $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertIsArray($body['items']);
         $ids = array_column($body['items'], 'id');
         // Исполнитель видит претензию к себе: разбирательство двустороннее.
-        self::assertContains((string) $ctx['own']->getId(), $ids);
+        self::assertContains((string) $this->own->getId(), $ids);
     }
 
     public function testFilterByContractNarrowsList(): void
     {
-        self::client();
-        $ctx = self::context();
         // Вторая претензия той же компании, но по другому договору.
         $other = self::claim(
-            $ctx['own']->getTenantId(),
-            $ctx['own']->getCustomerId(),
-            $ctx['own']->getSupplierId(),
+            $this->own->getTenantId(),
+            $this->own->getCustomerId(),
+            $this->own->getSupplierId(),
             Uuid::v4(),
         );
 
         $client = self::request(
-            ClaimListController::URL.'?contract_id='.$ctx['contractId'],
-            $ctx['customerToken'],
+            ClaimListController::URL.'?contract_id='.$this->contractId,
+            $this->customerToken,
         );
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertIsArray($body['items']);
         $ids = array_column($body['items'], 'id');
-        self::assertContains((string) $ctx['own']->getId(), $ids);
+        self::assertContains((string) $this->own->getId(), $ids);
         self::assertNotContains((string) $other->getId(), $ids);
     }
 
     public function testInvalidContractIdIsRejected(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        self::request(ClaimListController::URL.'?contract_id=not-a-uuid', $ctx['customerToken']);
+        self::request(ClaimListController::URL.'?contract_id=not-a-uuid', $this->customerToken);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testUnauthorized(): void
     {
-        self::client();
         self::request(ClaimListController::URL, null);
         self::assertResponseStatusCodeSame(401);
     }

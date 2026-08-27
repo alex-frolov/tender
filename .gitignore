@@ -70,3 +70,5 @@ yarn-error.log
 
 # Протокол e2e-прогона (scripts/e2e-procedure-types.py) — артефакт запуска
 /e2e-result.json
+
+/docs/guard-test/

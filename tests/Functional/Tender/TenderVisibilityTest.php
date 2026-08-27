@@ -13,6 +13,7 @@ use App\Contract\Entity\Contract;
 use App\Contract\Entity\Enum\ContractScopeEnum;
 use App\Contract\Entity\Enum\ContractStatusTransition;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderGetController;
@@ -31,9 +32,10 @@ use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
-use Symfony\Component\Uid\Uuid;
 use Symfony\Component\Workflow\WorkflowInterface;
 
 /**
@@ -55,10 +57,50 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * Невидимый тендер неотличим от несуществующего (404).
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый запрос → n-plus-one/query-in-loop в
+ * мульти-запросных сценариях) и visibility-подзапросы ContractRepository:188 /
+ * BidRepository:152 (duplicate-query); прод-код менять не нужно, см.
+ * docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('query-in-loop')]
+#[IgnoreRule('duplicate-query')]
 final class TenderVisibilityTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private Company $outsiderCompany;
+    private string $customerToken;
+    private string $outsiderToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'vis-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->outsiderCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $outsiderUser = UserFactory::createOne([
+            'companyId' => $this->outsiderCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'vis-out-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->outsiderToken = $this->loginAs((string) $outsiderUser->getEmail());
+    }
 
     protected function tearDown(): void
     {
@@ -105,44 +147,15 @@ final class TenderVisibilityTest extends WebTestCase
     }
 
     /**
-     * Заказчик (владелец тендеров) и сторонний поставщик из другой компании.
-     *
-     * @return array{customer: \App\Iam\Entity\Company, outsider: \App\Iam\Entity\Company, customerToken: string, outsiderToken: string}
-     */
-    private static function parties(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'vis-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $outsider = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $outsiderUser = UserFactory::createOne([
-            'companyId' => $outsider->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'vis-out-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return [
-            'customer' => $customer,
-            'outsider' => $outsider,
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'outsiderToken' => self::loginAs((string) $outsiderUser->getEmail()),
-        ];
-    }
-
-    /**
      * Тендер заказчика с уникальным заголовком-маркером (по нему фильтруется
      * список, чтобы не зависеть от остальных данных теста).
      */
-    private static function tender(Uuid $customerId, AccessTypeEnum $accessType, string $marker, bool $publish): Tender
+    private function tender(AccessTypeEnum $accessType, string $marker, bool $publish): Tender
     {
         $tender = TenderFactory::createOne([
             'nmckMinor' => 10000,
             'title' => $marker,
-            'customerId' => $customerId,
+            'customerId' => $this->customerCompany->getId(),
             'accessType' => $accessType,
         ]);
         LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
@@ -159,13 +172,14 @@ final class TenderVisibilityTest extends WebTestCase
     }
 
     /**
-     * Подписанный рамочный multi_use-договор между сторонами (FR-1.4.8).
+     * Подписанный рамочный multi_use-договор между заказчиком и сторонней
+     * компанией (FR-1.4.8).
      */
-    private static function signedContract(Uuid $customerId, Uuid $supplierId): Contract
+    private function signedContract(): Contract
     {
         $contract = ContractFactory::createOne([
-            'customerId' => $customerId,
-            'supplierId' => $supplierId,
+            'customerId' => $this->customerCompany->getId(),
+            'supplierId' => $this->outsiderCompany->getId(),
             'scope' => ContractScopeEnum::MULTI_USE,
         ]);
 
@@ -198,17 +212,15 @@ final class TenderVisibilityTest extends WebTestCase
 
     public function testOpenPublishedTenderIsVisibleToAnotherCompany(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-OPEN-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, $marker, publish: true);
 
-        self::assertContains((string) $tender->getId(), self::catalogIds($ctx['outsiderToken'], $marker));
+        self::assertContains((string) $tender->getId(), self::catalogIds($this->outsiderToken, $marker));
 
         $client = self::request(
             'GET',
             str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(200);
         self::assertSame((string) $tender->getId(), self::body($client)['id']);
@@ -216,56 +228,50 @@ final class TenderVisibilityTest extends WebTestCase
 
     public function testDraftTenderIsVisibleOnlyToItsOwnCompany(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-DRAFT-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, $marker, publish: false);
+        $tender = $this->tender(AccessTypeEnum::OPEN, $marker, publish: false);
 
         // владелец видит свой черновик
-        self::assertContains((string) $tender->getId(), self::catalogIds($ctx['customerToken'], $marker));
+        self::assertContains((string) $tender->getId(), self::catalogIds($this->customerToken, $marker));
 
         // сторонняя компания — нет ни в списке, ни в карточке
-        self::assertNotContains((string) $tender->getId(), self::catalogIds($ctx['outsiderToken'], $marker));
+        self::assertNotContains((string) $tender->getId(), self::catalogIds($this->outsiderToken, $marker));
 
         $client = self::request(
             'GET',
             str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testClosedTenderIsHiddenWithoutContract(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-CLOSED-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::CONTRACT_HOLDERS, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::CONTRACT_HOLDERS, $marker, publish: true);
 
-        self::assertNotContains((string) $tender->getId(), self::catalogIds($ctx['outsiderToken'], $marker));
+        self::assertNotContains((string) $tender->getId(), self::catalogIds($this->outsiderToken, $marker));
 
         $client = self::request(
             'GET',
             str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testClosedTenderIsVisibleWithActiveMultiUseContract(): void
     {
-        self::client();
-        $ctx = self::parties();
-        self::signedContract($ctx['customer']->getId(), $ctx['outsider']->getId());
+        $this->signedContract();
         $marker = 'VIS-CONTRACT-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::CONTRACT_HOLDERS, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::CONTRACT_HOLDERS, $marker, publish: true);
 
-        self::assertContains((string) $tender->getId(), self::catalogIds($ctx['outsiderToken'], $marker));
+        self::assertContains((string) $tender->getId(), self::catalogIds($this->outsiderToken, $marker));
 
         $client = self::request(
             'GET',
             str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(200);
     }
@@ -276,10 +282,8 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testAuctionVisibilityFollowsTenderVisibility(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $visibleTender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, 'VIS-AUC-'.random_int(1000, 999999), publish: true);
-        $hiddenTender = self::tender($ctx['customer']->getId(), AccessTypeEnum::CONTRACT_HOLDERS, 'VIS-AUC-HID-'.random_int(1000, 999999), publish: true);
+        $visibleTender = $this->tender(AccessTypeEnum::OPEN, 'VIS-AUC-'.random_int(1000, 999999), publish: true);
+        $hiddenTender = $this->tender(AccessTypeEnum::CONTRACT_HOLDERS, 'VIS-AUC-HID-'.random_int(1000, 999999), publish: true);
 
         // лот №1 уже создан хелпером — аукцион вешаем на отдельный лот
         $visibleAuction = AuctionFactory::new()
@@ -291,7 +295,7 @@ final class TenderVisibilityTest extends WebTestCase
             ->with(['status' => AuctionStatusEnum::TRADE])
             ->create();
 
-        $client = self::request('GET', AuctionListController::URL, $ctx['outsiderToken']);
+        $client = self::request('GET', AuctionListController::URL, $this->outsiderToken);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
@@ -303,7 +307,7 @@ final class TenderVisibilityTest extends WebTestCase
         $client = self::request(
             'GET',
             str_replace('{auctionId}', (string) $visibleAuction->getId(), AuctionStateController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(200);
 
@@ -311,7 +315,7 @@ final class TenderVisibilityTest extends WebTestCase
         $client = self::request(
             'GET',
             str_replace('{auctionId}', (string) $hiddenAuction->getId(), AuctionStateController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(403);
     }
@@ -323,10 +327,8 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testBidHistoryAndStreamFollowTenderVisibility(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $visibleTender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, 'VIS-BIDS-'.random_int(1000, 999999), publish: true);
-        $hiddenTender = self::tender($ctx['customer']->getId(), AccessTypeEnum::CONTRACT_HOLDERS, 'VIS-BIDS-HID-'.random_int(1000, 999999), publish: true);
+        $visibleTender = $this->tender(AccessTypeEnum::OPEN, 'VIS-BIDS-'.random_int(1000, 999999), publish: true);
+        $hiddenTender = $this->tender(AccessTypeEnum::CONTRACT_HOLDERS, 'VIS-BIDS-HID-'.random_int(1000, 999999), publish: true);
 
         $visibleAuction = AuctionFactory::new()
             ->forTender($visibleTender, LotFactory::createOne(['tender' => $visibleTender, 'number' => 2, 'priceNetMinor' => 10000]))
@@ -341,14 +343,14 @@ final class TenderVisibilityTest extends WebTestCase
             $client = self::request(
                 'GET',
                 str_replace('{auctionId}', (string) $visibleAuction->getId(), $url),
-                $ctx['outsiderToken'],
+                $this->outsiderToken,
             );
             self::assertResponseStatusCodeSame(200);
 
             $client = self::request(
                 'GET',
                 str_replace('{auctionId}', (string) $hiddenAuction->getId(), $url),
-                $ctx['outsiderToken'],
+                $this->outsiderToken,
             );
             self::assertResponseStatusCodeSame(403);
         }
@@ -382,38 +384,37 @@ final class TenderVisibilityTest extends WebTestCase
      * процедуры: сторонняя компания продолжает видеть закупку и в каталоге,
      * и в карточке. Закрывается она только на завершении (closed).
      */
+    #[AllowQueries(55)]
     public function testProcedureStaysVisibleToOutsidersUntilItIsClosed(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-EVAL-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, $marker, publish: true);
 
         foreach ([TenderStatusEnum::EVALUATION, TenderStatusEnum::AWARDING, TenderStatusEnum::CONTRACT] as $status) {
             self::forceStatus($tender, $status);
             self::assertContains(
                 (string) $tender->getId(),
-                self::catalogIds($ctx['outsiderToken'], $marker),
+                self::catalogIds($this->outsiderToken, $marker),
                 $status->value.': закупка должна оставаться в каталоге постороннего',
             );
 
             self::request(
                 'GET',
                 str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-                $ctx['outsiderToken'],
+                $this->outsiderToken,
             );
             self::assertResponseStatusCodeSame(200);
         }
 
         // Завершённая закупка — только заказчику и исполнителю.
         self::forceStatus($tender, TenderStatusEnum::CLOSED);
-        self::assertNotContains((string) $tender->getId(), self::catalogIds($ctx['outsiderToken'], $marker));
-        self::assertContains((string) $tender->getId(), self::catalogIds($ctx['customerToken'], $marker));
+        self::assertNotContains((string) $tender->getId(), self::catalogIds($this->outsiderToken, $marker));
+        self::assertContains((string) $tender->getId(), self::catalogIds($this->customerToken, $marker));
 
         self::request(
             'GET',
             str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(404);
     }
@@ -424,32 +425,30 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testFinishedTenderIsVisibleOnlyToCustomerAndWinner(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-CLOSED-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, $marker, publish: true);
 
-        // победитель — сторонняя компания $ctx['outsider'], проигравший — третья
-        $loserToken = self::supplierToken('vis-loser');
+        // победитель — сторонняя компания ($this->outsiderCompany), проигравший — третья
+        $loserToken = $this->supplierToken('vis-loser');
 
         BidFactory::new()
-            ->with(['tenderId' => $tender->getId(), 'tenantId' => $ctx['customer']->getId(), 'supplierId' => $ctx['outsider']->getId()])
+            ->with(['tenderId' => $tender->getId(), 'tenantId' => $this->customerCompany->getId(), 'supplierId' => $this->outsiderCompany->getId()])
             ->winning()
             ->create();
 
         self::forceStatus($tender, TenderStatusEnum::CLOSED);
 
         // исполнитель видит и в каталоге, и в карточке
-        self::assertContains((string) $tender->getId(), self::catalogIds($ctx['outsiderToken'], $marker));
+        self::assertContains((string) $tender->getId(), self::catalogIds($this->outsiderToken, $marker));
         self::request(
             'GET',
             str_replace('{tenderId}', (string) $tender->getId(), TenderGetController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(200);
 
         // заказчик видит всегда
-        self::assertContains((string) $tender->getId(), self::catalogIds($ctx['customerToken'], $marker));
+        self::assertContains((string) $tender->getId(), self::catalogIds($this->customerToken, $marker));
 
         // посторонний (проигравший) — уже нет
         self::assertNotContains((string) $tender->getId(), self::catalogIds($loserToken, $marker));
@@ -468,10 +467,8 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testWinnerIsNotRevealedToOutsiders(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-WINNER-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, $marker, publish: true);
         $lot = $tender->getLots()->first();
         self::assertInstanceOf(Lot::class, $lot);
 
@@ -479,8 +476,8 @@ final class TenderVisibilityTest extends WebTestCase
             ->with([
                 'tenderId' => $tender->getId(),
                 'lotId' => $lot->getId(),
-                'tenantId' => $ctx['customer']->getId(),
-                'supplierId' => $ctx['outsider']->getId(),
+                'tenantId' => $this->customerCompany->getId(),
+                'supplierId' => $this->outsiderCompany->getId(),
             ])
             ->winning()
             ->create();
@@ -492,10 +489,10 @@ final class TenderVisibilityTest extends WebTestCase
 
         self::forceStatus($tender, TenderStatusEnum::AWARDING);
 
-        $loserToken = self::supplierToken('vis-winner-loser');
+        $loserToken = $this->supplierToken('vis-winner-loser');
         self::assertNull(self::lotField($loserToken, $tender, 'winner_bid_id'));
-        self::assertSame((string) $winningBid->getId(), self::lotField($ctx['customerToken'], $tender, 'winner_bid_id'));
-        self::assertSame((string) $winningBid->getId(), self::lotField($ctx['outsiderToken'], $tender, 'winner_bid_id'));
+        self::assertSame((string) $winningBid->getId(), self::lotField($this->customerToken, $tender, 'winner_bid_id'));
+        self::assertSame((string) $winningBid->getId(), self::lotField($this->outsiderToken, $tender, 'winner_bid_id'));
     }
 
     /**
@@ -505,10 +502,8 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testClosedLotIsHiddenFromOutsidersInsideVisibleTender(): void
     {
-        self::client();
-        $ctx = self::parties();
         $marker = 'VIS-LOT-'.random_int(1000, 999999);
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, $marker, publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, $marker, publish: true);
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
         self::assertInstanceOf(EntityManagerInterface::class, $em);
@@ -523,27 +518,27 @@ final class TenderVisibilityTest extends WebTestCase
             ->with([
                 'tenderId' => $tender->getId(),
                 'lotId' => $closedLot->getId(),
-                'tenantId' => $ctx['customer']->getId(),
-                'supplierId' => $ctx['outsider']->getId(),
+                'tenantId' => $this->customerCompany->getId(),
+                'supplierId' => $this->outsiderCompany->getId(),
             ])
             ->winning()
             ->create();
         $em->flush();
 
-        $loserToken = self::supplierToken('vis-lot-loser');
+        $loserToken = $this->supplierToken('vis-lot-loser');
 
         // посторонний видит только незакрытый лот
         self::assertSame([(string) $openLot->getId()], self::lotIds($loserToken, $tender));
         // заказчик — оба
-        self::assertCount(2, self::lotIds($ctx['customerToken'], $tender));
+        self::assertCount(2, self::lotIds($this->customerToken, $tender));
         // исполнитель закрытого лота — тоже оба
-        self::assertCount(2, self::lotIds($ctx['outsiderToken'], $tender));
+        self::assertCount(2, self::lotIds($this->outsiderToken, $tender));
     }
 
     /**
      * Поставщик из отдельной компании (проигравший/посторонний) с токеном.
      */
-    private static function supplierToken(string $prefix): string
+    private function supplierToken(string $prefix): string
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $user = UserFactory::createOne([
@@ -552,7 +547,7 @@ final class TenderVisibilityTest extends WebTestCase
             'email' => $prefix.'-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return self::loginAs((string) $user->getEmail());
+        return $this->loginAs((string) $user->getEmail());
     }
 
     /**
@@ -600,16 +595,14 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testAuctionInPreparationIsHiddenFromOutsiders(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, 'VIS-AUC-PREP-'.random_int(1000, 999999), publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, 'VIS-AUC-PREP-'.random_int(1000, 999999), publish: true);
 
         $auction = AuctionFactory::new()
             ->forTender($tender, LotFactory::createOne(['tender' => $tender, 'number' => 2, 'priceNetMinor' => 10000]))
             ->with(['status' => AuctionStatusEnum::SCHEDULED])
             ->create();
 
-        $client = self::request('GET', AuctionListController::URL, $ctx['outsiderToken']);
+        $client = self::request('GET', AuctionListController::URL, $this->outsiderToken);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
@@ -618,12 +611,12 @@ final class TenderVisibilityTest extends WebTestCase
         $client = self::request(
             'GET',
             str_replace('{auctionId}', (string) $auction->getId(), AuctionStateController::URL),
-            $ctx['outsiderToken'],
+            $this->outsiderToken,
         );
         self::assertResponseStatusCodeSame(403);
 
         // заказчику своя подготовка видна
-        $client = self::request('GET', AuctionListController::URL, $ctx['customerToken']);
+        $client = self::request('GET', AuctionListController::URL, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
@@ -636,9 +629,7 @@ final class TenderVisibilityTest extends WebTestCase
      */
     public function testAuctionInExecutionIsVisibleOnlyToCustomerAndWinner(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $tender = self::tender($ctx['customer']->getId(), AccessTypeEnum::OPEN, 'VIS-AUC-EXEC-'.random_int(1000, 999999), publish: true);
+        $tender = $this->tender(AccessTypeEnum::OPEN, 'VIS-AUC-EXEC-'.random_int(1000, 999999), publish: true);
         $lot = LotFactory::createOne(['tender' => $tender, 'number' => 2, 'priceNetMinor' => 10000]);
 
         $auction = AuctionFactory::new()
@@ -646,17 +637,11 @@ final class TenderVisibilityTest extends WebTestCase
             ->with(['status' => AuctionStatusEnum::IN_WORK])
             ->create();
 
-        BidFactory::new()->forAuction($auction, $ctx['outsider']->getId())->winning()->create();
+        BidFactory::new()->forAuction($auction, $this->outsiderCompany->getId())->winning()->create();
 
-        $loser = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $loserUser = UserFactory::createOne([
-            'companyId' => $loser->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'vis-auc-loser-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $loserToken = self::loginAs((string) $loserUser->getEmail());
+        $loserToken = $this->supplierToken('vis-auc-loser');
 
-        $client = self::request('GET', AuctionListController::URL, $ctx['outsiderToken']);
+        $client = self::request('GET', AuctionListController::URL, $this->outsiderToken);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
@@ -676,7 +661,7 @@ final class TenderVisibilityTest extends WebTestCase
         self::assertResponseStatusCodeSame(403);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());

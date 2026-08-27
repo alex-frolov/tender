@@ -6,8 +6,12 @@ namespace App\Tests\Functional\Auction;
 
 use App\Auction\Controller\AuctionCreateController;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\User;
+use App\Tender\Entity\Lot;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
@@ -33,6 +37,59 @@ final class AuctionCreateTest extends WebTestCase
     private const STEP_MINOR = 5_000_00;
 
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private User $customerUser;
+    private User $agentUser;
+    private Company $supplierCompany;
+    private User $supplierUser;
+    private Tender $tender;
+    private Lot $lot;
+    private string $customerToken;
+    private string $agentToken;
+    private string $supplierToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $this->customerUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cr-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->agentUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'cr-agent-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplierCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $this->supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplierCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cr-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne([
+            'nmckMinor' => self::START_MINOR,
+            'customerId' => $this->customerCompany->getId(),
+        ]);
+        $this->lot = LotFactory::createOne([
+            'tender' => $this->tender,
+            'priceNetMinor' => self::START_MINOR,
+            'tradeEndLeadHours' => 2,
+        ]);
+
+        $this->customerToken = $this->loginAs((string) $this->customerUser->getEmail());
+        $this->agentToken = $this->loginAs((string) $this->agentUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $this->supplierUser->getEmail());
+    }
 
     protected function tearDown(): void
     {
@@ -71,7 +128,7 @@ final class AuctionCreateTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -96,60 +153,11 @@ final class AuctionCreateTest extends WebTestCase
         return (new \DateTimeImmutable('+1 day', new \DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z');
     }
 
-    /**
-     * @return array{customerToken: string, agentToken: string,
-     *               supplierToken: string, tender: \App\Tender\Entity\Tender,
-     *               lot: \App\Tender\Entity\Lot}
-     */
-    private static function customerTender(): array
-    {
-        self::client();
-        self::getContainer();
-
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cr-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $agent = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::AGENT,
-            'email' => 'cr-agent-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cr-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne([
-            'nmckMinor' => self::START_MINOR,
-            'customerId' => $customer->getId(),
-        ]);
-        $lot = LotFactory::createOne([
-            'tender' => $tender,
-            'priceNetMinor' => self::START_MINOR,
-            'tradeEndLeadHours' => 2,
-        ]);
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'agentToken' => self::loginAs((string) $agent->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'tender' => $tender,
-            'lot' => $lot,
-        ];
-    }
-
     public function testCustomerCreatesReductionAuction(): void
     {
-        $ctx = self::customerTender();
-        $lot = $ctx['lot'];
+        $lot = $this->lot;
 
-        $client = self::request('POST', AuctionCreateController::URL, $ctx['customerToken'], [
+        $client = self::request('POST', AuctionCreateController::URL, $this->customerToken, [
             'lot_id' => (string) $lot->getId(),
             'type' => 'reduction',
             'step_mode' => 'fixed',
@@ -178,10 +186,8 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testCustomerCreatesScheduledAuction(): void
     {
-        $ctx = self::customerTender();
-
-        $client = self::request('POST', AuctionCreateController::URL, $ctx['customerToken'], [
-            'lot_id' => (string) $ctx['lot']->getId(),
+        $client = self::request('POST', AuctionCreateController::URL, $this->customerToken, [
+            'lot_id' => (string) $this->lot->getId(),
             'type' => 'reduction',
             'bid_step_minor' => self::STEP_MINOR,
             'scheduled_start_at' => self::futureDateTime(),
@@ -196,17 +202,14 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testCustomerCreatesAuctionForNoStartPriceTender(): void
     {
-        $ctx = self::customerTender();
-        $customerToken = $ctx['customerToken'];
-
         $tender = TenderFactory::createOne([
             'nmckMinor' => null,
             'noStartPrice' => true,
-            'customerId' => $ctx['tender']->getCustomerId(),
+            'customerId' => $this->tender->getCustomerId(),
         ]);
         $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
 
-        $client = self::request('POST', AuctionCreateController::URL, $customerToken, [
+        $client = self::request('POST', AuctionCreateController::URL, $this->customerToken, [
             'lot_id' => (string) $lot->getId(),
             'type' => 'reduction',
             'bid_step_minor' => self::STEP_MINOR,
@@ -220,11 +223,10 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testDuplicateAuctionForLotReturns409(): void
     {
-        $ctx = self::customerTender();
-        AuctionFactory::new()->forTender($ctx['tender'], $ctx['lot'])->create();
+        AuctionFactory::new()->forTender($this->tender, $this->lot)->create();
 
-        self::request('POST', AuctionCreateController::URL, $ctx['customerToken'], [
-            'lot_id' => (string) $ctx['lot']->getId(),
+        self::request('POST', AuctionCreateController::URL, $this->customerToken, [
+            'lot_id' => (string) $this->lot->getId(),
             'type' => 'reduction',
             'bid_step_minor' => self::STEP_MINOR,
         ]);
@@ -233,10 +235,8 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testAgentCannotCreate(): void
     {
-        $ctx = self::customerTender();
-
-        self::request('POST', AuctionCreateController::URL, $ctx['agentToken'], [
-            'lot_id' => (string) $ctx['lot']->getId(),
+        self::request('POST', AuctionCreateController::URL, $this->agentToken, [
+            'lot_id' => (string) $this->lot->getId(),
             'type' => 'reduction',
             'bid_step_minor' => self::STEP_MINOR,
         ]);
@@ -245,10 +245,8 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testForeignCompanyCannotCreate(): void
     {
-        $ctx = self::customerTender();
-
-        self::request('POST', AuctionCreateController::URL, $ctx['supplierToken'], [
-            'lot_id' => (string) $ctx['lot']->getId(),
+        self::request('POST', AuctionCreateController::URL, $this->supplierToken, [
+            'lot_id' => (string) $this->lot->getId(),
             'type' => 'reduction',
             'bid_step_minor' => self::STEP_MINOR,
         ]);
@@ -257,20 +255,16 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testMissingTypeReturns422(): void
     {
-        $ctx = self::customerTender();
-
-        self::request('POST', AuctionCreateController::URL, $ctx['customerToken'], [
-            'lot_id' => (string) $ctx['lot']->getId(),
+        self::request('POST', AuctionCreateController::URL, $this->customerToken, [
+            'lot_id' => (string) $this->lot->getId(),
         ]);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testReductionFixedWithoutStepReturns422(): void
     {
-        $ctx = self::customerTender();
-
-        self::request('POST', AuctionCreateController::URL, $ctx['customerToken'], [
-            'lot_id' => (string) $ctx['lot']->getId(),
+        self::request('POST', AuctionCreateController::URL, $this->customerToken, [
+            'lot_id' => (string) $this->lot->getId(),
             'type' => 'reduction',
             'step_mode' => 'fixed',
         ]);
@@ -279,10 +273,8 @@ final class AuctionCreateTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        $ctx = self::customerTender();
-
         self::request('POST', AuctionCreateController::URL, '', [
-            'lot_id' => (string) $ctx['lot']->getId(),
+            'lot_id' => (string) $this->lot->getId(),
             'type' => 'reduction',
             'bid_step_minor' => self::STEP_MINOR,
         ]);

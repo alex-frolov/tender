@@ -37,7 +37,38 @@ final class BidFlowTest extends WebTestCase
 {
     use TenderLotTrait;
 
+    private const START_MINOR = 10000;
+
     private static ?KernelBrowser $client = null;
+
+    private Tender $tender;
+    private string $supplierToken;
+    private string $supplierId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $this->tender = TenderFactory::createOne(['nmckMinor' => self::START_MINOR, 'customerId' => $customer->getId()]);
+        LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => self::START_MINOR]);
+
+        $container = static::getContainer();
+        $workflow = $container->get('state_machine.tender');
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $workflow->apply($this->tender, TenderStatusTransition::PUBLISH->value);
+        $workflow->apply($this->tender, TenderStatusTransition::START_BID_ACCEPTANCE->value);
+        $container->get(EntityManagerInterface::class)->flush();
+        self::assertSame(TenderStatusEnum::ACCEPTING_BIDS, $this->tender->getStatus());
+
+        $supplier = $this->supplier();
+        $this->supplierToken = $supplier['token'];
+        $this->supplierId = $supplier['supplierId'];
+    }
 
     protected function tearDown(): void
     {
@@ -57,7 +88,7 @@ final class BidFlowTest extends WebTestCase
         return '18.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -97,31 +128,11 @@ final class BidFlowTest extends WebTestCase
     }
 
     /**
-     * Тендер в accepting_bids (через workflow), принадлежащий заказчику.
-     */
-    private static function acceptingBidsTender(): Tender
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $tender = TenderFactory::createOne(['nmckMinor' => 10000, 'customerId' => $customer->getId()]);
-        LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
-
-        $container = static::getContainer();
-        $workflow = $container->get('state_machine.tender');
-        self::assertInstanceOf(WorkflowInterface::class, $workflow);
-        $workflow->apply($tender, TenderStatusTransition::PUBLISH->value);
-        $workflow->apply($tender, TenderStatusTransition::START_BID_ACCEPTANCE->value);
-        $container->get(EntityManagerInterface::class)->flush();
-        self::assertSame(TenderStatusEnum::ACCEPTING_BIDS, $tender->getStatus());
-
-        return $tender;
-    }
-
-    /**
      * Подтверждённая компания-исполнитель + её admin-пользователь.
      *
      * @return array{token: string, supplierId: string}
      */
-    private static function supplier(): array
+    private function supplier(): array
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $user = UserFactory::createOne([
@@ -130,7 +141,7 @@ final class BidFlowTest extends WebTestCase
             'email' => 'supplier-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return ['token' => self::loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
+        return ['token' => $this->loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
     }
 
     private static function submitUrl(string $tenderId): string
@@ -161,25 +172,22 @@ final class BidFlowTest extends WebTestCase
 
     public function testSubmitReplaceAndWithdrawFlow(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-        $url = self::submitUrl((string) $tender->getId());
+        $url = self::submitUrl((string) $this->tender->getId());
 
         // 1. подача заявки (FR-1.2.1): 201, статус submitted, содержимое скрыто
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
+        $client = self::request('POST', $url, $this->supplierToken, self::bidPayload($this->supplierId, self::firstLotId($this->tender)));
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
         self::assertSame('submitted', $bid['status']);
-        self::assertSame($supplier['supplierId'], $bid['supplier_id']);
+        self::assertSame($this->supplierId, $bid['supplier_id']);
         self::assertArrayNotHasKey('part1', $bid);
         self::assertArrayNotHasKey('price_minor', $bid);
         $bidId = $bid['id'];
         self::assertIsString($bidId);
 
         // 2. повторная подача на тот же лот до конца приёма = замена (FR-1.2.5)
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender), 850000));
+        $client = self::request('POST', $url, $this->supplierToken, self::bidPayload($this->supplierId, self::firstLotId($this->tender), 850000));
         self::assertResponseStatusCodeSame(201);
         $replaced = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($replaced);
@@ -187,7 +195,7 @@ final class BidFlowTest extends WebTestCase
         self::assertSame('submitted', $replaced['status']);
 
         // 3. отзыв с причиной (FR-1.2.5, AM-4): 200, статус withdrawn
-        $client = self::request('POST', self::withdrawUrl($bidId), $supplier['token'], ['reason' => 'Сняли заявку']);
+        $client = self::request('POST', self::withdrawUrl($bidId), $this->supplierToken, ['reason' => 'Сняли заявку']);
         self::assertResponseStatusCodeSame(200);
         $withdrawn = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($withdrawn);
@@ -198,44 +206,33 @@ final class BidFlowTest extends WebTestCase
 
     public function testSubmitAfterAcceptanceClosedReturns409(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-
         // закрыть приём (отмена тендера — терминальна)
         $workflow = static::getContainer()->get('state_machine.tender');
-        $workflow->apply($tender, TenderStatusTransition::CANCEL->value);
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $workflow->apply($this->tender, TenderStatusTransition::CANCEL->value);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
 
-        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
+        $client = self::request('POST', self::submitUrl((string) $this->tender->getId()), $this->supplierToken, self::bidPayload($this->supplierId, self::firstLotId($this->tender)));
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testWithdrawWithoutReasonReturns422(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-        $url = self::submitUrl((string) $tender->getId());
-
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
+        $client = self::request('POST', self::submitUrl((string) $this->tender->getId()), $this->supplierToken, self::bidPayload($this->supplierId, self::firstLotId($this->tender)));
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
         self::assertIsString($bid['id']);
 
-        $client = self::request('POST', self::withdrawUrl($bid['id']), $supplier['token'], []);
+        $client = self::request('POST', self::withdrawUrl($bid['id']), $this->supplierToken, []);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testWithdrawOthersBidReturns404(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $owner = self::supplier();
-        $other = self::supplier();
+        $other = $this->supplier();
 
-        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $owner['token'], self::bidPayload($owner['supplierId'], self::firstLotId($tender)));
+        $client = self::request('POST', self::submitUrl((string) $this->tender->getId()), $this->supplierToken, self::bidPayload($this->supplierId, self::firstLotId($this->tender)));
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid);
@@ -247,24 +244,20 @@ final class BidFlowTest extends WebTestCase
 
     public function testAgentCannotSubmitReturns403(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $agent = UserFactory::createOne([
             'companyId' => $company->getId(),
             'role' => UserRoleEnum::AGENT,
             'email' => 'agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $token = self::loginAs((string) $agent->getEmail());
+        $token = $this->loginAs((string) $agent->getEmail());
 
-        $client = self::request('POST', self::submitUrl((string) $tender->getId()), $token, self::bidPayload((string) $company->getId(), self::firstLotId($tender)));
+        $client = self::request('POST', self::submitUrl((string) $this->tender->getId()), $token, self::bidPayload((string) $company->getId(), self::firstLotId($this->tender)));
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('POST', self::submitUrl('00000000-0000-0000-0000-000000000000'), '', []);
         self::assertResponseStatusCodeSame(401);
     }

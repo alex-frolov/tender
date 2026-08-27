@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Tender;
 
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderCreateController;
 use App\Tender\Controller\TenderGetController;
@@ -32,6 +33,21 @@ final class TenderCrudTest extends WebTestCase
     private const EMAIL = VerifiedUserStory::EMAIL;
     private static ?KernelBrowser $client = null;
 
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->token = $this->login();
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -50,12 +66,12 @@ final class TenderCrudTest extends WebTestCase
         return '12.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(): string
+    private function login(): string
     {
-        return self::loginAs(self::EMAIL);
+        return $this->loginAs(self::EMAIL);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -121,11 +137,7 @@ final class TenderCrudTest extends WebTestCase
 
     public function testCreateTenderDraftWithLots(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $company->getId()));
+        $client = self::request('POST', TenderCreateController::URL, $this->token, self::createPayload((string) $this->company->getId()));
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -150,11 +162,7 @@ final class TenderCrudTest extends WebTestCase
      */
     public function testCreateDefaultsToBidsRequired(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $company->getId()));
+        $client = self::request('POST', TenderCreateController::URL, $this->token, self::createPayload((string) $this->company->getId()));
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -168,14 +176,10 @@ final class TenderCrudTest extends WebTestCase
      */
     public function testCreateWithoutBidsRequired(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::login();
-
-        $payload = self::createPayload((string) $company->getId());
+        $payload = self::createPayload((string) $this->company->getId());
         $payload['bids_required'] = false;
 
-        $client = self::request('POST', TenderCreateController::URL, $token, $payload);
+        $client = self::request('POST', TenderCreateController::URL, $this->token, $payload);
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -184,26 +188,22 @@ final class TenderCrudTest extends WebTestCase
 
     public function testCreateValidatesMissingRequiredFields(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('POST', TenderCreateController::URL, $token, [
+        $client = self::request('POST', TenderCreateController::URL, $this->token, [
             'title' => '',
             'procedure_type' => 'auction',
             'currency' => 'RUB',
             'price_basis' => 'net',
-            'customer_id' => (string) $company->getId(),
+            'customer_id' => (string) $this->company->getId(),
             'lots' => [['title' => 'Лот', 'price_net_minor' => 1]],
         ]);
         self::assertResponseStatusCodeSame(422);
 
-        $client = self::request('POST', TenderCreateController::URL, $token, [
+        $client = self::request('POST', TenderCreateController::URL, $this->token, [
             'title' => 'Без лотов',
             'procedure_type' => 'auction',
             'currency' => 'RUB',
             'price_basis' => 'net',
-            'customer_id' => (string) $company->getId(),
+            'customer_id' => (string) $this->company->getId(),
             'lots' => [],
         ]);
         self::assertResponseStatusCodeSame(422);
@@ -211,28 +211,21 @@ final class TenderCrudTest extends WebTestCase
 
     public function testCreateRejectsLotsSumMismatch(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::login();
-
-        $payload = self::createPayload((string) $company->getId());
+        $payload = self::createPayload((string) $this->company->getId());
         // сумма лотов 90000 != nmck 100000 → инвариант (FR-1.1.7)
         $payload['lots'] = [
             ['title' => 'Серверы', 'price_net_minor' => 50000],
             ['title' => 'СХД', 'price_net_minor' => 40000],
         ];
-        $client = self::request('POST', TenderCreateController::URL, $token, $payload);
+        $client = self::request('POST', TenderCreateController::URL, $this->token, $payload);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testListAndGetTender(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId()]);
-        $token = self::login();
+        TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId()]);
 
-        $client = self::request('GET', TenderListController::URL, $token);
+        $client = self::request('GET', TenderListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $list = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($list);
@@ -244,7 +237,7 @@ final class TenderCrudTest extends WebTestCase
         $id = $item['id'];
 
         $url = str_replace('{tenderId}', $id, TenderGetController::URL);
-        $client = self::request('GET', $url, $token);
+        $client = self::request('GET', $url, $this->token);
         self::assertResponseStatusCodeSame(200);
         $single = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($single);
@@ -253,11 +246,8 @@ final class TenderCrudTest extends WebTestCase
 
     public function testGetTenderFromAnotherTenantReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
         // тендер другого tenant (customer != company актора)
         TenderFactory::createOne(['customerId' => \Symfony\Component\Uid\Uuid::v4()]);
-        $token = self::login();
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $others = $em->getRepository(Tender::class)->findAll();
@@ -266,19 +256,16 @@ final class TenderCrudTest extends WebTestCase
         self::assertInstanceOf(Tender::class, $other);
 
         $url = str_replace('{tenderId}', (string) $other->getId(), TenderGetController::URL);
-        $client = self::request('GET', $url, $token);
+        $client = self::request('GET', $url, $this->token);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testUpdateTenderFields(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $tender = TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId()]);
-        $token = self::login();
+        $tender = TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId()]);
 
         $url = str_replace('{tenderId}', (string) $tender->getId(), TenderUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, [
+        $client = self::request('PATCH', $url, $this->token, [
             'title' => 'Новое наименование',
             'region' => 'Санкт-Петербург',
             'change_reason' => 'Уточнение требований',
@@ -302,17 +289,14 @@ final class TenderCrudTest extends WebTestCase
      */
     public function testUpdateClearsDescriptionWithEmptyString(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
             'description' => 'Старое описание',
         ]);
-        $token = self::login();
 
         $url = str_replace('{tenderId}', (string) $tender->getId(), TenderUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, [
+        $client = self::request('PATCH', $url, $this->token, [
             'description' => '',
             'change_reason' => 'Описание больше не актуально',
         ]);
@@ -334,17 +318,14 @@ final class TenderCrudTest extends WebTestCase
      */
     public function testUpdateKeepsDescriptionWhenKeyOmitted(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
             'description' => 'Старое описание',
         ]);
-        $token = self::login();
 
         $url = str_replace('{tenderId}', (string) $tender->getId(), TenderUpdateController::URL);
-        self::request('PATCH', $url, $token, ['title' => 'Только заголовок']);
+        self::request('PATCH', $url, $this->token, ['title' => 'Только заголовок']);
         self::assertResponseStatusCodeSame(200);
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
@@ -356,49 +337,40 @@ final class TenderCrudTest extends WebTestCase
 
     public function testPatchUnknownTenderReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::login();
-
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['title' => 'X']);
+        $client = self::request('PATCH', $url, $this->token, ['title' => 'X']);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('GET', TenderListController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testAgentCannotCreateTenderReturns403(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $agent = UserFactory::createOne([
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::loginAs((string) $agent->getEmail());
+        $token = $this->loginAs((string) $agent->getEmail());
 
-        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $company->getId()));
+        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $this->company->getId()));
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testAgentCannotUpdateTenderReturns403(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $agent = UserFactory::createOne([
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId()]);
-        $token = self::loginAs((string) $agent->getEmail());
+        TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId()]);
+        $token = $this->loginAs((string) $agent->getEmail());
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
-        $tender = $em->getRepository(Tender::class)->findOneBy(['tenantId' => $company->getId()]);
+        $tender = $em->getRepository(Tender::class)->findOneBy(['tenantId' => $this->company->getId()]);
         self::assertNotNull($tender);
 
         $url = str_replace('{tenderId}', (string) $tender->getId(), TenderUpdateController::URL);
@@ -408,14 +380,12 @@ final class TenderCrudTest extends WebTestCase
 
     public function testAgentCanViewTenders(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $agent = UserFactory::createOne([
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId()]);
-        $token = self::loginAs((string) $agent->getEmail());
+        TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId()]);
+        $token = $this->loginAs((string) $agent->getEmail());
 
         $client = self::request('GET', TenderListController::URL, $token);
         self::assertResponseStatusCodeSame(200);
@@ -423,15 +393,13 @@ final class TenderCrudTest extends WebTestCase
 
     public function testManagerCanCreateAndUpdateTender(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $manager = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::loginAs((string) $manager->getEmail());
+        $token = $this->loginAs((string) $manager->getEmail());
 
-        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $company->getId()));
+        $client = self::request('POST', TenderCreateController::URL, $token, self::createPayload((string) $this->company->getId()));
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);

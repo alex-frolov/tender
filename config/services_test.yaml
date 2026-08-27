@@ -1,0 +1,3 @@
+services:
+    QueryGuard\Adapter\Doctrine\Middleware:
+        tags: ['doctrine.middleware']

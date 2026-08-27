@@ -15,11 +15,13 @@ use App\Contract\Entity\Contract;
 use App\Contract\Entity\Enum\ContractScopeEnum;
 use App\Contract\Entity\Enum\ContractStatusTransition;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderAccessController;
 use App\Tender\Entity\Enum\AccessTypeEnum;
 use App\Tender\Entity\Enum\TenderStatusTransition;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\BidFactory;
 use App\Tests\Factory\CompanyFactory;
@@ -28,6 +30,7 @@ use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Workflow\WorkflowInterface;
@@ -45,10 +48,43 @@ use Symfony\Component\Workflow\WorkflowInterface;
  *   (доступ проверяется и на входе в торги, а не только при подаче заявки).
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuditService:75
+ * (батчинг flush Doctrine) при terminate договора и подаче ставки даёт
+ * query-in-loop; прод-код менять не нужно, см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('query-in-loop')]
 final class ClosedTenderAccessTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private Company $supplierCompany;
+    private Tender $tender;
+    private string $supplierToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+
+        $this->supplierCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplierCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'closed-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+
+        // Закрытый тендер заказчика с одним лотом — общий для всех сценариев.
+        $this->tender = $this->closedTender();
+    }
 
     protected function tearDown(): void
     {
@@ -88,40 +124,13 @@ final class ClosedTenderAccessTest extends WebTestCase
     }
 
     /**
-     * @return array{customer: \App\Iam\Entity\Company, supplier: \App\Iam\Entity\Company, customerToken: string, supplierToken: string}
+     * Закрытый тендер заказчика (contract_holders) с одним лотом.
      */
-    private static function parties(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'closed-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'closed-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return [
-            'customer' => $customer,
-            'supplier' => $supplier,
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-        ];
-    }
-
-    /**
-     * @param string $customerId id заказчика (string из компаний теста)
-     */
-    private static function closedTender(string $customerId): \App\Tender\Entity\Tender
+    private function closedTender(): Tender
     {
         $tender = TenderFactory::createOne([
             'nmckMinor' => 10000,
-            'customerId' => \Symfony\Component\Uid\Uuid::fromString($customerId),
+            'customerId' => $this->customerCompany->getId(),
             'accessType' => AccessTypeEnum::CONTRACT_HOLDERS,
         ]);
         LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
@@ -138,11 +147,11 @@ final class ClosedTenderAccessTest extends WebTestCase
     /**
      * Подписанный рамочный multi_use-договор (ФР-1.4.8) через workflow.
      */
-    private static function signedContract(string $customerId, string $supplierId): Contract
+    private function signedContract(): Contract
     {
         $contract = ContractFactory::createOne([
-            'customerId' => \Symfony\Component\Uid\Uuid::fromString($customerId),
-            'supplierId' => \Symfony\Component\Uid\Uuid::fromString($supplierId),
+            'customerId' => $this->customerCompany->getId(),
+            'supplierId' => $this->supplierCompany->getId(),
             'scope' => ContractScopeEnum::MULTI_USE,
         ]);
 
@@ -162,7 +171,7 @@ final class ClosedTenderAccessTest extends WebTestCase
      * заявка «на тендер целиком» не принимается (допуск к торгам сверяется
      * парой тендер+лот).
      */
-    private static function lotId(\App\Tender\Entity\Tender $tender): string
+    private static function lotId(Tender $tender): string
     {
         $lot = $tender->getLots()->first();
         self::assertNotFalse($lot);
@@ -188,17 +197,13 @@ final class ClosedTenderAccessTest extends WebTestCase
 
     public function testSupplierWithoutContractCannotSubmitToClosedTender(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $customerId = (string) $ctx['customer']->getId();
-        $supplierId = (string) $ctx['supplier']->getId();
-        $tender = self::closedTender($customerId);
+        $supplierId = (string) $this->supplierCompany->getId();
 
         $client = self::request(
             'POST',
-            str_replace('{tenderId}', (string) $tender->getId(), BidSubmitController::URL),
-            $ctx['supplierToken'],
-            self::bidPayload($supplierId, self::lotId($tender)),
+            str_replace('{tenderId}', (string) $this->tender->getId(), BidSubmitController::URL),
+            $this->supplierToken,
+            self::bidPayload($supplierId, self::lotId($this->tender)),
         );
         self::assertResponseStatusCodeSame(409);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -213,18 +218,14 @@ final class ClosedTenderAccessTest extends WebTestCase
 
     public function testSupplierWithSignedContractCanSubmitToClosedTender(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $customerId = (string) $ctx['customer']->getId();
-        $supplierId = (string) $ctx['supplier']->getId();
-        self::signedContract($customerId, $supplierId);
-        $tender = self::closedTender($customerId);
+        $this->signedContract();
+        $supplierId = (string) $this->supplierCompany->getId();
 
         $client = self::request(
             'POST',
-            str_replace('{tenderId}', (string) $tender->getId(), BidSubmitController::URL),
-            $ctx['supplierToken'],
-            self::bidPayload($supplierId, self::lotId($tender)),
+            str_replace('{tenderId}', (string) $this->tender->getId(), BidSubmitController::URL),
+            $this->supplierToken,
+            self::bidPayload($supplierId, self::lotId($this->tender)),
         );
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
@@ -239,13 +240,8 @@ final class ClosedTenderAccessTest extends WebTestCase
      */
     public function testAdmittedSupplierCannotBidAfterContractTerminated(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $customerId = (string) $ctx['customer']->getId();
-        $supplierId = (string) $ctx['supplier']->getId();
-        $contract = self::signedContract($customerId, $supplierId);
-        $tender = self::closedTender($customerId);
-        $auction = self::tradingAuction($tender, $ctx['supplier']->getId());
+        $contract = $this->signedContract();
+        $auction = $this->tradingAuction($this->supplierCompany->getId());
 
         $container = static::getContainer();
         $workflow = $container->get('state_machine.contract');
@@ -256,7 +252,7 @@ final class ClosedTenderAccessTest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{auctionId}', (string) $auction->getId(), AuctionBidController::URL),
-            $ctx['supplierToken'],
+            $this->supplierToken,
             ['price_minor' => 9000],
         );
         self::assertResponseStatusCodeSame(409);
@@ -271,13 +267,13 @@ final class ClosedTenderAccessTest extends WebTestCase
     /**
      * Аукцион на лоте закрытого тендера в TRADE с допущенной заявкой участника.
      */
-    private static function tradingAuction(\App\Tender\Entity\Tender $tender, \Symfony\Component\Uid\Uuid $supplierId): Auction
+    private function tradingAuction(\Symfony\Component\Uid\Uuid $supplierId): Auction
     {
-        $lot = $tender->getLots()->first();
+        $lot = $this->tender->getLots()->first();
         self::assertNotFalse($lot);
 
         $auction = AuctionFactory::new()
-            ->forTender($tender, $lot)
+            ->forTender($this->tender, $lot)
             ->with([
                 'type' => AuctionTypeEnum::REDUCTION,
                 'stepMode' => AuctionStepModeEnum::FIXED,
@@ -301,14 +297,10 @@ final class ClosedTenderAccessTest extends WebTestCase
 
     public function testAccessEndpointContractRequiredWithoutContract(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $tender = self::closedTender((string) $ctx['customer']->getId());
-
         $client = self::request(
             'GET',
-            str_replace('{tenderId}', (string) $tender->getId(), TenderAccessController::URL),
-            $ctx['supplierToken'],
+            str_replace('{tenderId}', (string) $this->tender->getId(), TenderAccessController::URL),
+            $this->supplierToken,
         );
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -319,15 +311,12 @@ final class ClosedTenderAccessTest extends WebTestCase
 
     public function testAccessEndpointOkWithSignedContract(): void
     {
-        self::client();
-        $ctx = self::parties();
-        self::signedContract((string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId());
-        $tender = self::closedTender((string) $ctx['customer']->getId());
+        $this->signedContract();
 
         $client = self::request(
             'GET',
-            str_replace('{tenderId}', (string) $tender->getId(), TenderAccessController::URL),
-            $ctx['supplierToken'],
+            str_replace('{tenderId}', (string) $this->tender->getId(), TenderAccessController::URL),
+            $this->supplierToken,
         );
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -336,7 +325,7 @@ final class ClosedTenderAccessTest extends WebTestCase
         self::assertSame('ok', $body['reason']);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());

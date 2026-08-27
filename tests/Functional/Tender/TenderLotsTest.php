@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace App\Tests\Functional\Tender;
 
+use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Tender\Controller\TenderLotsController;
+use App\Tender\Entity\Lot;
 use App\Tender\Entity\Tender;
+use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Story\VerifiedUserStory;
 use Doctrine\ORM\EntityManagerInterface;
@@ -23,6 +27,42 @@ final class TenderLotsTest extends WebTestCase
 {
     private const EMAIL = VerifiedUserStory::EMAIL;
     private static ?KernelBrowser $client = null;
+
+    private Company $company;
+    private Tender $tender;
+    private Lot $lotA;
+    private Lot $lotB;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->tender = TenderFactory::createOne([
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
+            'nmckMinor' => 100000,
+        ]);
+        // два лота с номерами 1,2 — проверяем порядок
+        $this->lotA = LotFactory::createOne([
+            'tender' => $this->tender,
+            'number' => 1,
+            'title' => 'Лот А',
+            'priceNetMinor' => 60000,
+        ]);
+        $this->lotB = LotFactory::createOne([
+            'tender' => $this->tender,
+            'number' => 2,
+            'title' => 'Лот Б',
+            'priceNetMinor' => 40000,
+        ]);
+        $this->token = $this->login();
+    }
 
     protected function tearDown(): void
     {
@@ -42,13 +82,13 @@ final class TenderLotsTest extends WebTestCase
         return '12.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(): string
+    private function login(): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
         $client->request(
             'POST',
-            '/api/v1/auth/token',
+            TokenController::URL,
             [],
             [],
             ['CONTENT_TYPE' => 'application/json'],
@@ -81,29 +121,8 @@ final class TenderLotsTest extends WebTestCase
 
     public function testListTenderLots(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
-        ]);
-        // два лота с номерами 1,2 — проверяем порядок
-        $lotA = \App\Tests\Factory\LotFactory::createOne([
-            'tender' => $tender,
-            'number' => 1,
-            'title' => 'Лот А',
-            'priceNetMinor' => 60000,
-        ]);
-        $lotB = \App\Tests\Factory\LotFactory::createOne([
-            'tender' => $tender,
-            'number' => 2,
-            'title' => 'Лот Б',
-            'priceNetMinor' => 40000,
-        ]);
-        $token = self::login();
-
-        $url = str_replace('{tenderId}', (string) $tender->getId(), TenderLotsController::URL);
-        $client = self::request('GET', $url, $token);
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), TenderLotsController::URL);
+        $client = self::request('GET', $url, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -114,18 +133,15 @@ final class TenderLotsTest extends WebTestCase
         self::assertIsArray($items[1]);
         self::assertSame('Лот А', $items[0]['title']);
         self::assertSame('Лот Б', $items[1]['title']);
-        self::assertSame((string) $lotA->getId(), $items[0]['id']);
-        self::assertSame((string) $lotB->getId(), $items[1]['id']);
-        self::assertSame((string) $tender->getId(), $items[0]['tender_id']);
+        self::assertSame((string) $this->lotA->getId(), $items[0]['id']);
+        self::assertSame((string) $this->lotB->getId(), $items[1]['id']);
+        self::assertSame((string) $this->tender->getId(), $items[0]['tender_id']);
     }
 
     public function testLotsOfAnotherTenantReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
         // тендер другого tenant
         TenderFactory::createOne(['customerId' => Uuid::v4(), 'createdBy' => Uuid::v4()]);
-        $token = self::login();
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $others = $em->getRepository(Tender::class)->findAll();
@@ -134,28 +150,20 @@ final class TenderLotsTest extends WebTestCase
         self::assertInstanceOf(Tender::class, $other);
 
         $url = str_replace('{tenderId}', (string) $other->getId(), TenderLotsController::URL);
-        $client = self::request('GET', $url, $token);
+        $client = self::request('GET', $url, $this->token);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testLotsOfInvalidUuidReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company(); // story инициализирует auth@test.ru до логина
-        $token = self::login();
-
         $url = str_replace('{tenderId}', 'not-a-uuid', TenderLotsController::URL);
-        $client = self::request('GET', $url, $token);
+        $client = self::request('GET', $url, $this->token);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testLotsRequireAuthentication(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $tender = TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId()]);
-
-        $url = str_replace('{tenderId}', (string) $tender->getId(), TenderLotsController::URL);
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), TenderLotsController::URL);
         $client = self::request('GET', $url, 'invalid-token');
         self::assertResponseStatusCodeSame(401);
     }

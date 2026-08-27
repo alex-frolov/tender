@@ -29,6 +29,7 @@ use App\Iam\Controller\Company\CompanyVerifyController;
 use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyStatusEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\User;
 use App\Tender\Controller\TenderCreateController;
 use App\Tender\Controller\TenderPublishController;
 use App\Tender\Controller\TenderRateController;
@@ -42,6 +43,8 @@ use App\Tender\Timeline\TimelineMessageHandler;
 use App\Tests\Factory\ContractTypeFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Mailer\EventListener\MessageLoggerListener;
@@ -66,7 +69,16 @@ use Symfony\Component\Mime\Email;
  * - итоговое состояние в БД согласовано.
  *
  * Rate limit api_global в тестах = 3/мин на IP → каждый запрос с нового IP.
+ *
+ * QueryGuard: `n-plus-one`, `query-in-loop`, `duplicate-query` — AuthMiddleware:84
+ * (SELECT пользователя на каждый HTTP-запрос), батчинг аудита (AuditService:75),
+ * дубликаты — visibility-подзапросы ContractRepository:188/BidRepository:152 на
+ * каждый запрос; `AllowQueries(310)` — весь сквозной E2E в одном тесте
+ * (261 запрос); см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('query-in-loop')]
+#[IgnoreRule('duplicate-query')]
 final class FullCycleE2ETest extends WebTestCase
 {
     private const PASSWORD = 'secret123';
@@ -74,6 +86,24 @@ final class FullCycleE2ETest extends WebTestCase
     private const STEP_MINOR = 5_000_00;
 
     private static ?KernelBrowser $client = null;
+
+    private User $admin;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры (суперадмин и справочник типов договоров) создаются в setUp →
+        // QueryGuard считает их как fixtureQueries. Сам E2E-флоу — в теле теста.
+        $this->admin = UserFactory::createOne([
+            'email' => self::uniqueEmail(),
+            'name' => 'Суперадмин',
+            'role' => UserRoleEnum::PLATFORM_ADMIN,
+            'password' => self::PASSWORD,
+        ]);
+    }
 
     protected function tearDown(): void
     {
@@ -310,10 +340,9 @@ final class FullCycleE2ETest extends WebTestCase
         ];
     }
 
+    #[AllowQueries(310)]
     public function testFullCycleRegistrationTenderBidsAuctionContractExecution(): void
     {
-        self::client();
-
         // ── 1. Регистрация двух компаний + подтверждение email (FR-1.5.4/1.5.5)
         $customer = self::registerAndVerify('customer', 'ООО E2E Заказчик');
         $supplier = self::registerAndVerify('supplier', 'ООО E2E Исполнитель');
@@ -324,13 +353,7 @@ final class FullCycleE2ETest extends WebTestCase
         self::assertSame(CompanyStatusEnum::PENDING, $customerCompany->getVerificationStatus());
 
         // ── 2. Подтверждение компаний суперадмином (FR-1.5.7)
-        $admin = UserFactory::createOne([
-            'email' => self::uniqueEmail(),
-            'name' => 'Суперадмин',
-            'role' => UserRoleEnum::PLATFORM_ADMIN,
-            'password' => self::PASSWORD,
-        ]);
-        $adminToken = self::login((string) $admin->getEmail());
+        $adminToken = self::login((string) $this->admin->getEmail());
         self::approveCompany($adminToken, $customer['company_id']);
         self::approveCompany($adminToken, $supplier['company_id']);
 

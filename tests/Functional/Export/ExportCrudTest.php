@@ -45,6 +45,23 @@ final class ExportCrudTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    /** @var array{company: Company, user: User, token: string} */
+    private array $adminCtx;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+        // Кэш наборов прав (Redis) общий с dev: мог быть собран до добавления
+        // exports.export (миграция 20260812140000) — инвалидируем (как DashboardTest).
+        self::getContainer()->get(RolePermissionCache::class)->clear();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->adminCtx = self::adminContext();
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -54,10 +71,6 @@ final class ExportCrudTest extends WebTestCase
     private static function client(): KernelBrowser
     {
         self::$client ??= self::createClient();
-
-        // Кэш наборов прав (Redis) общий с dev: мог быть собран до добавления
-        // exports.export (миграция 20260812140000) — инвалидируем (как DashboardTest).
-        self::getContainer()->get(RolePermissionCache::class)->clear();
 
         return self::$client;
     }
@@ -86,7 +99,7 @@ final class ExportCrudTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -109,7 +122,7 @@ final class ExportCrudTest extends WebTestCase
     /**
      * @return array{company: Company, user: User, token: string}
      */
-    private static function adminContext(): array
+    private function adminContext(): array
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $user = UserFactory::createOne([
@@ -118,7 +131,7 @@ final class ExportCrudTest extends WebTestCase
             'email' => 'exp-admin-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return ['company' => $company, 'user' => $user, 'token' => self::loginAs((string) $user->getEmail())];
+        return ['company' => $company, 'user' => $user, 'token' => $this->loginAs((string) $user->getEmail())];
     }
 
     /**
@@ -133,8 +146,7 @@ final class ExportCrudTest extends WebTestCase
 
     public function testFullLifecycleCreateProcessStatusDownload(): void
     {
-        self::client();
-        $ctx = self::adminContext();
+        $ctx = $this->adminCtx;
         TenderFactory::createOne(['customerId' => $ctx['company']->getId(), 'title' => 'API export row']);
 
         // Создание → 202 {job_id, status}.
@@ -190,8 +202,7 @@ final class ExportCrudTest extends WebTestCase
 
     public function testDownloadNotReadyReturns409(): void
     {
-        self::client();
-        $ctx = self::adminContext();
+        $ctx = $this->adminCtx;
         $job = ExportJobFactory::createOne([
             'tenantId' => $ctx['company']->getId(),
             'exportType' => ExportTypeEnum::TENDERS,
@@ -207,8 +218,7 @@ final class ExportCrudTest extends WebTestCase
 
     public function testCreateValidatesTypeAndFormat(): void
     {
-        self::client();
-        $token = self::adminContext()['token'];
+        $token = $this->adminCtx['token'];
 
         $client = self::request('POST', ExportCreateController::URL, $token, [
             'export_type' => 'invoices',
@@ -225,9 +235,8 @@ final class ExportCrudTest extends WebTestCase
 
     public function testForeignJobReturns404(): void
     {
-        self::client();
         $other = ExportJobFactory::createOne();
-        $token = self::adminContext()['token'];
+        $token = $this->adminCtx['token'];
 
         $client = self::request('GET', str_replace('{jobId}', (string) $other->getId(), ExportStatusController::URL), $token);
         self::assertResponseStatusCodeSame(404);
@@ -238,7 +247,6 @@ final class ExportCrudTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('POST', ExportCreateController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
@@ -258,8 +266,8 @@ final class ExportCrudTest extends WebTestCase
             'role' => UserRoleEnum::AGENT,
             'email' => 'exp-agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $managerToken = self::loginAs((string) $manager->getEmail());
-        $agentToken = self::loginAs((string) $agent->getEmail());
+        $managerToken = $this->loginAs((string) $manager->getEmail());
+        $agentToken = $this->loginAs((string) $agent->getEmail());
 
         // exports.export — common: включено по умолчанию (миграция 20260812140000).
         $client = self::request('POST', ExportCreateController::URL, $managerToken, [
@@ -297,7 +305,7 @@ final class ExportCrudTest extends WebTestCase
             ['exports.export' => false],
         );
 
-        $token = self::loginAs((string) $agent->getEmail());
+        $token = $this->loginAs((string) $agent->getEmail());
         $client = self::request('POST', ExportCreateController::URL, $token, [
             'export_type' => 'tenders',
             'format' => 'csv',

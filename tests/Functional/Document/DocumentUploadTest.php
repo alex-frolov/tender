@@ -17,6 +17,7 @@ use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Story\DocumentUploadStory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
@@ -32,11 +33,38 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * - лимиты: неверный mime (422), слишком большой файл;
  * - документы лота (entity_type=lot, документы приёмки при отметке
  *   о выполнении): грузит любая сторона, которой видна процедура.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый запрос) и AuditService:75 (append-only аудит с
+ * батчингом flush). Прод-код не меняем — правило отключено атрибутом класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
 final class DocumentUploadTest extends WebTestCase
 {
     private const EMAIL = DocumentUploadStory::CUSTOMER_EMAIL;
     private static ?KernelBrowser $client = null;
+
+    private string $token;
+    private string $otherToken;
+    private string $approvedSupplierEmail;
+
+    /** @var array{document_type_id: string, entity_type: string, entity_id: string} */
+    private array $fx;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->fx = self::fixture();
+        $this->token = $this->login();
+        $this->otherToken = $this->login(DocumentUploadStory::OTHER_EMAIL);
+        $this->approvedSupplierEmail = self::approvedSupplierEmail();
+    }
 
     protected function tearDown(): void
     {
@@ -56,7 +84,7 @@ final class DocumentUploadTest extends WebTestCase
         return '20.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(string $email = self::EMAIL): string
+    private function login(string $email = self::EMAIL): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -122,17 +150,14 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testUploadDocumentReturnsMetadataAndHash(): void
     {
-        $fx = self::fixture();
-        $token = self::login();
-
         $file = new UploadedFile($this->tempFile('Приложение.pdf', 'hello-document-content'), 'Приложение.pdf', 'application/pdf');
-        $client = self::multipart(DocumentUploadController::URL, $token, $fx, ['file' => $file]);
+        $client = self::multipart(DocumentUploadController::URL, $this->token, $this->fx, ['file' => $file]);
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
-        self::assertSame((int) $fx['document_type_id'], $body['document_type_id']);
+        self::assertSame((int) $this->fx['document_type_id'], $body['document_type_id']);
         self::assertSame('tender', $body['entity_type']);
-        self::assertSame($fx['entity_id'], $body['entity_id']);
+        self::assertSame($this->fx['entity_id'], $body['entity_id']);
         self::assertSame('public', $body['visibility']);
         self::assertSame('customer', $body['owner_role']);
         self::assertFalse($body['is_auto_generated']);
@@ -150,11 +175,8 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testAddVersionIncrementsVersions(): void
     {
-        $fx = self::fixture();
-        $token = self::login();
-
         $file1 = new UploadedFile($this->tempFile('spec.pdf', 'version-one'), 'spec.pdf', 'application/pdf');
-        $client = self::multipart(DocumentUploadController::URL, $token, $fx, ['file' => $file1]);
+        $client = self::multipart(DocumentUploadController::URL, $this->token, $this->fx, ['file' => $file1]);
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -162,7 +184,7 @@ final class DocumentUploadTest extends WebTestCase
         $documentId = $body['id'];
 
         $getUrl = str_replace('{documentId}', $documentId, DocumentGetController::URL);
-        $client = self::jsonGet($getUrl, $token);
+        $client = self::jsonGet($getUrl, $this->token);
         self::assertResponseStatusCodeSame(200);
         $single = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($single);
@@ -175,11 +197,8 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testDownloadReturnsFileContent(): void
     {
-        $fx = self::fixture();
-        $token = self::login();
-
         $file = new UploadedFile($this->tempFile('doc.pdf', 'binary-content-123'), 'doc.pdf', 'application/pdf');
-        $client = self::multipart(DocumentUploadController::URL, $token, $fx, ['file' => $file]);
+        $client = self::multipart(DocumentUploadController::URL, $this->token, $this->fx, ['file' => $file]);
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -187,7 +206,7 @@ final class DocumentUploadTest extends WebTestCase
         $documentId = $body['id'];
 
         $dlUrl = str_replace('{documentId}', $documentId, DocumentDownloadController::URL);
-        $client = self::jsonGet($dlUrl, $token);
+        $client = self::jsonGet($dlUrl, $this->token);
         self::assertResponseStatusCodeSame(200);
         self::assertSame('binary-content-123', $client->getResponse()->getContent());
         self::assertStringContainsString('doc.pdf', (string) $client->getResponse()->headers->get('Content-Disposition'));
@@ -203,10 +222,7 @@ final class DocumentUploadTest extends WebTestCase
      */
     public function testListDocumentsOfEntityRespectsVisibility(): void
     {
-        self::client();
         $tenderId = (string) DocumentUploadStory::tender()->getId();
-        $token = self::login();
-
         $publicFx = [
             'document_type_id' => (string) DocumentUploadStory::publicType()->getId(),
             'entity_type' => 'tender',
@@ -214,7 +230,7 @@ final class DocumentUploadTest extends WebTestCase
         ];
         $client = self::multipart(
             DocumentUploadController::URL,
-            $token,
+            $this->token,
             $publicFx,
             ['file' => new UploadedFile($this->tempFile('public.pdf', 'public-content'), 'public.pdf', 'application/pdf')],
         );
@@ -231,7 +247,7 @@ final class DocumentUploadTest extends WebTestCase
         ];
         $client = self::multipart(
             DocumentUploadController::URL,
-            $token,
+            $this->token,
             $privateFx,
             ['file' => new UploadedFile($this->tempFile('secret.pdf', 'secret-content'), 'secret.pdf', 'application/pdf')],
         );
@@ -244,7 +260,7 @@ final class DocumentUploadTest extends WebTestCase
         $listUrl = DocumentListController::URL.'?entity_type=tender&entity_id='.$tenderId;
 
         // Владелец видит оба документа.
-        $client = self::jsonGet($listUrl, $token);
+        $client = self::jsonGet($listUrl, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -255,8 +271,7 @@ final class DocumentUploadTest extends WebTestCase
         self::assertContains($privateId, $ids);
 
         // Чужая компания — только публичный.
-        $otherToken = self::login((string) DocumentUploadStory::other()->getEmail());
-        $client = self::jsonGet($listUrl, $otherToken);
+        $client = self::jsonGet($listUrl, $this->otherToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -269,25 +284,17 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testListDocumentsRequiresEntityParameters(): void
     {
-        // Стори строится лениво — без обращения к ней пользователя ещё нет,
-        // и логин в этом тесте отвечал бы invalid_credentials.
-        self::fixture();
-        $token = self::login();
-
-        self::jsonGet(DocumentListController::URL, $token);
+        self::jsonGet(DocumentListController::URL, $this->token);
         self::assertResponseStatusCodeSame(422);
 
-        self::jsonGet(DocumentListController::URL.'?entity_type=tender&entity_id=not-a-uuid', $token);
+        self::jsonGet(DocumentListController::URL.'?entity_type=tender&entity_id=not-a-uuid', $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testUploadRejectsUnsupportedMime(): void
     {
-        $fx = self::fixture();
-        $token = self::login();
-
         $file = new UploadedFile($this->tempFile('virus.exe', 'MZ...'), 'virus.exe', 'application/x-msdownload');
-        $client = self::multipart(DocumentUploadController::URL, $token, $fx, ['file' => $file]);
+        $client = self::multipart(DocumentUploadController::URL, $this->token, $this->fx, ['file' => $file]);
         self::assertResponseStatusCodeSame(422);
     }
 
@@ -301,17 +308,12 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testGetPrivateDocumentByOtherTenantIs403(): void
     {
-        self::client();
-        $type = DocumentUploadStory::privateType();
-        $token = self::login();
-
-        $fx = [
-            'document_type_id' => (string) $type->getId(),
+        $file = new UploadedFile($this->tempFile('private.pdf', 'private-content'), 'private.pdf', 'application/pdf');
+        $client = self::multipart(DocumentUploadController::URL, $this->token, [
+            'document_type_id' => (string) DocumentUploadStory::privateType()->getId(),
             'entity_type' => 'tender',
             'entity_id' => (string) DocumentUploadStory::tender()->getId(),
-        ];
-        $file = new UploadedFile($this->tempFile('private.pdf', 'private-content'), 'private.pdf', 'application/pdf');
-        $client = self::multipart(DocumentUploadController::URL, $token, $fx, ['file' => $file]);
+        ], ['file' => $file]);
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -319,10 +321,8 @@ final class DocumentUploadTest extends WebTestCase
         $documentId = $body['id'];
 
         // другой пользователь (другой tenant) не видит приватный документ
-        $other = DocumentUploadStory::other();
-        $otherToken = self::login((string) $other->getEmail());
         $getUrl = str_replace('{documentId}', $documentId, DocumentGetController::URL);
-        $client = self::jsonGet($getUrl, $otherToken);
+        $client = self::jsonGet($getUrl, $this->otherToken);
         self::assertResponseStatusCodeSame(403);
     }
 
@@ -334,13 +334,11 @@ final class DocumentUploadTest extends WebTestCase
      */
     public function testUploadToLotOfOwnTenderIsAllowed(): void
     {
-        $fx = self::fixture();
-        $token = self::login();
         $lot = LotFactory::createOne(['tender' => DocumentUploadStory::tender(), 'priceNetMinor' => 10000]);
 
         $file = new UploadedFile($this->tempFile('akt.pdf', 'lot-document'), 'akt.pdf', 'application/pdf');
-        $client = self::multipart(DocumentUploadController::URL, $token, [
-            'document_type_id' => $fx['document_type_id'],
+        $client = self::multipart(DocumentUploadController::URL, $this->token, [
+            'document_type_id' => $this->fx['document_type_id'],
             'entity_type' => 'lot',
             'entity_id' => (string) $lot->getId(),
         ], ['file' => $file]);
@@ -354,14 +352,13 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testUploadToLotOfInvisibleTenderIs404(): void
     {
-        $fx = self::fixture();
         // Тендер стори — черновик: чужой компании он не виден вовсе.
         $lot = LotFactory::createOne(['tender' => DocumentUploadStory::tender(), 'priceNetMinor' => 10000]);
-        $token = self::login(self::approvedSupplierEmail());
+        $supplierToken = $this->login($this->approvedSupplierEmail);
 
         $file = new UploadedFile($this->tempFile('akt.pdf', 'lot-document'), 'akt.pdf', 'application/pdf');
-        self::multipart(DocumentUploadController::URL, $token, [
-            'document_type_id' => $fx['document_type_id'],
+        self::multipart(DocumentUploadController::URL, $supplierToken, [
+            'document_type_id' => $this->fx['document_type_id'],
             'entity_type' => 'lot',
             'entity_id' => (string) $lot->getId(),
         ], ['file' => $file]);
@@ -371,7 +368,6 @@ final class DocumentUploadTest extends WebTestCase
 
     public function testUploadToLotOfPublishedTenderIsAllowedForParticipant(): void
     {
-        $fx = self::fixture();
         $tender = DocumentUploadStory::tender();
         $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
 
@@ -381,10 +377,10 @@ final class DocumentUploadTest extends WebTestCase
         $workflow->apply($tender, TenderStatusTransition::PUBLISH->value);
         $container->get(EntityManagerInterface::class)->flush();
 
-        $token = self::login(self::approvedSupplierEmail());
+        $supplierToken = $this->login($this->approvedSupplierEmail);
         $file = new UploadedFile($this->tempFile('akt.pdf', 'lot-document'), 'akt.pdf', 'application/pdf');
-        self::multipart(DocumentUploadController::URL, $token, [
-            'document_type_id' => $fx['document_type_id'],
+        self::multipart(DocumentUploadController::URL, $supplierToken, [
+            'document_type_id' => $this->fx['document_type_id'],
             'entity_type' => 'lot',
             'entity_id' => (string) $lot->getId(),
         ], ['file' => $file]);

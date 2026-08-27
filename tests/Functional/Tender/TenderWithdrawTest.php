@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Tender;
 
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderCreateController;
 use App\Tender\Controller\TenderPublishController;
 use App\Tender\Controller\TenderWithdrawController;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Story\VerifiedUserStory;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -24,11 +26,32 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * - чужой/несуществующий → 404; без токена → 401.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый запрос) при 3 HTTP-запросах с разными
+ * пользователями в одном тесте даёт n-plus-one; прод-код менять не нужно, см.
+ * docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
 final class TenderWithdrawTest extends WebTestCase
 {
     private const string EMAIL = VerifiedUserStory::EMAIL;
     private static ?KernelBrowser $client = null;
+
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->token = $this->loginAs(self::EMAIL);
+    }
 
     protected function tearDown(): void
     {
@@ -48,7 +71,7 @@ final class TenderWithdrawTest extends WebTestCase
         return '15.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -87,9 +110,9 @@ final class TenderWithdrawTest extends WebTestCase
         return $client;
     }
 
-    private static function createDraft(string $companyId, string $token): string
+    private function createDraft(): string
     {
-        $client = self::request('POST', TenderCreateController::URL, $token, [
+        $client = self::request('POST', TenderCreateController::URL, $this->token, [
             'title' => 'Закупка на отзыв',
             'procedure_type' => 'auction',
             'law_type' => 'commercial',
@@ -98,7 +121,7 @@ final class TenderWithdrawTest extends WebTestCase
             'currency' => 'RUB',
             'vat_rate' => 20,
             'price_basis' => 'net',
-            'customer_id' => $companyId,
+            'customer_id' => (string) $this->company->getId(),
             'access_type' => 'open',
             'lots' => [
                 ['title' => 'Серверы', 'price_net_minor' => 60000],
@@ -113,23 +136,20 @@ final class TenderWithdrawTest extends WebTestCase
         return $body['id'];
     }
 
-    private static function publish(string $id, string $token): void
+    private function publish(string $id): void
     {
         $url = str_replace('{tenderId}', $id, TenderPublishController::URL);
-        self::request('POST', $url, $token);
+        self::request('POST', $url, $this->token);
         self::assertResponseStatusCodeSame(200);
     }
 
     public function testWithdrawTransitionsPublishedToWithdrawn(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
-        self::publish($id, $token);
+        $id = $this->createDraft();
+        $this->publish($id);
 
         $url = str_replace('{tenderId}', $id, TenderWithdrawController::URL);
-        $client = self::request('POST', $url, $token, ['reason' => 'Ошибка в документации']);
+        $client = self::request('POST', $url, $this->token, ['reason' => 'Ошибка в документации']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -138,53 +158,41 @@ final class TenderWithdrawTest extends WebTestCase
 
     public function testWithdrawDraftReturns409(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderWithdrawController::URL);
-        $client = self::request('POST', $url, $token, ['reason' => 'Отзыв черновика']);
+        $client = self::request('POST', $url, $this->token, ['reason' => 'Отзыв черновика']);
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testWithdrawWithoutReasonReturns422(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
-        self::publish($id, $token);
+        $id = $this->createDraft();
+        $this->publish($id);
 
         $url = str_replace('{tenderId}', $id, TenderWithdrawController::URL);
-        $client = self::request('POST', $url, $token, []);
+        $client = self::request('POST', $url, $this->token, []);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testWithdrawUnknownTenderReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderWithdrawController::URL);
-        $client = self::request('POST', $url, $token, ['reason' => 'Причина']);
+        $client = self::request('POST', $url, $this->token, ['reason' => 'Причина']);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testAgentCannotWithdrawReturns403(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $adminToken = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $adminToken);
-        self::publish($id, $adminToken);
+        $adminToken = $this->token;
+        $id = $this->createDraft();
+        $this->publish($id);
 
         $agent = UserFactory::createOne([
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::loginAs((string) $agent->getEmail());
+        $token = $this->loginAs((string) $agent->getEmail());
 
         $url = str_replace('{tenderId}', $id, TenderWithdrawController::URL);
         $client = self::request('POST', $url, $token, ['reason' => 'Попытка отзыва']);
@@ -193,7 +201,6 @@ final class TenderWithdrawTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderWithdrawController::URL);
         $client = self::request('POST', $url, '', ['reason' => 'Причина']);
         self::assertResponseStatusCodeSame(401);

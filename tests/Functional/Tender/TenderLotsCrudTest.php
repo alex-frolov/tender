@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Tender;
 
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
+use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Entity\Lot;
 use App\Tender\Entity\Tender;
 use App\Tests\Factory\LotFactory;
@@ -30,6 +32,23 @@ final class TenderLotsCrudTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private Company $company;
+    private Tender $tender;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->tender = $this->tenderWithLots(100000, 1);
+        $this->token = $this->login();
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -48,7 +67,7 @@ final class TenderLotsCrudTest extends WebTestCase
         return '13.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(string $email = VerifiedUserStory::EMAIL): string
+    private function login(string $email = VerifiedUserStory::EMAIL): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -85,12 +104,11 @@ final class TenderLotsCrudTest extends WebTestCase
         return $client;
     }
 
-    private static function tenderWithLots(int $nmckMinor, int $lotCount = 1): Tender
+    private function tenderWithLots(int $nmckMinor, int $lotCount = 1): Tender
     {
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
             'nmckMinor' => $nmckMinor,
         ]);
         for ($i = 1; $i <= $lotCount; ++$i) {
@@ -109,13 +127,9 @@ final class TenderLotsCrudTest extends WebTestCase
 
     public function testAddLot(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $token = self::login();
-
-        $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), '/api/v1/tenders/{tenderId}/lots');
         // добавляем лот с ценой 0 — сумма не меняется (100000 + 0)
-        $client = self::request('POST', $url, $token, [
+        $client = self::request('POST', $url, $this->token, [
             'title' => 'Новый лот',
             'price_net_minor' => 0,
         ]);
@@ -128,7 +142,7 @@ final class TenderLotsCrudTest extends WebTestCase
         // инвариант: сумма лотов = НМЦК
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $em->clear();
-        $fresh = $em->getRepository(Tender::class)->find($tender->getId());
+        $fresh = $em->getRepository(Tender::class)->find($this->tender->getId());
         self::assertInstanceOf(Tender::class, $fresh);
         self::assertSame(2, $fresh->lotCount());
         self::assertSame(100000, $fresh->lotsSumNetMinor());
@@ -141,12 +155,8 @@ final class TenderLotsCrudTest extends WebTestCase
      */
     public function testAddLotWithPriceRaisesNmck(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $token = self::login();
-
-        $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
-        $client = self::request('POST', $url, $token, [
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), '/api/v1/tenders/{tenderId}/lots');
+        $client = self::request('POST', $url, $this->token, [
             'title' => 'Лот с ценой',
             'price_net_minor' => 50000,
         ]);
@@ -154,7 +164,7 @@ final class TenderLotsCrudTest extends WebTestCase
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $em->clear();
-        $fresh = $em->getRepository(Tender::class)->find($tender->getId());
+        $fresh = $em->getRepository(Tender::class)->find($this->tender->getId());
         self::assertInstanceOf(Tender::class, $fresh);
         self::assertSame(2, $fresh->lotCount());
         self::assertSame(150000, $fresh->lotsSumNetMinor());
@@ -163,14 +173,11 @@ final class TenderLotsCrudTest extends WebTestCase
 
     public function testUpdateLot(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $lot = $tender->getLots()->first();
+        $lot = $this->tender->getLots()->first();
         self::assertInstanceOf(Lot::class, $lot);
-        $token = self::login();
 
-        $url = str_replace(['{tenderId}', '{lotId}'], [(string) $tender->getId(), (string) $lot->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
-        $client = self::request('PATCH', $url, $token, [
+        $url = str_replace(['{tenderId}', '{lotId}'], [(string) $this->tender->getId(), (string) $lot->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
+        $client = self::request('PATCH', $url, $this->token, [
             'title' => 'Изменённый лот',
             'price_net_minor' => 100000,
             'quantity' => 12.5,
@@ -193,21 +200,18 @@ final class TenderLotsCrudTest extends WebTestCase
      */
     public function testUpdateLotPriceRecalculatesNmck(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $lot = $tender->getLots()->first();
+        $lot = $this->tender->getLots()->first();
         self::assertInstanceOf(Lot::class, $lot);
-        $token = self::login();
 
-        $url = str_replace(['{tenderId}', '{lotId}'], [(string) $tender->getId(), (string) $lot->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
-        $client = self::request('PATCH', $url, $token, [
+        $url = str_replace(['{tenderId}', '{lotId}'], [(string) $this->tender->getId(), (string) $lot->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
+        $client = self::request('PATCH', $url, $this->token, [
             'price_net_minor' => 99999,
         ]);
         self::assertResponseStatusCodeSame(200);
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $em->clear();
-        $fresh = $em->getRepository(Tender::class)->find($tender->getId());
+        $fresh = $em->getRepository(Tender::class)->find($this->tender->getId());
         self::assertInstanceOf(Tender::class, $fresh);
         self::assertSame(99999, $fresh->getNmckMinor());
     }
@@ -218,13 +222,9 @@ final class TenderLotsCrudTest extends WebTestCase
      */
     public function testAddLotIgnoresClientNumber(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $token = self::login();
-
-        $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), '/api/v1/tenders/{tenderId}/lots');
         // number=1 уже занят первым лотом — сервер обязан назначить следующий
-        $client = self::request('POST', $url, $token, [
+        $client = self::request('POST', $url, $this->token, [
             'number' => 1,
             'title' => 'Лот с чужим номером',
             'price_net_minor' => 0,
@@ -237,12 +237,10 @@ final class TenderLotsCrudTest extends WebTestCase
 
     public function testDeleteLotRenumbers(): void
     {
-        self::client();
         // два лота, сумма = НМЦК (60000 + 40000 = 100000)
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
             'nmckMinor' => 100000,
         ]);
         $lotA = LotFactory::createOne([
@@ -259,10 +257,9 @@ final class TenderLotsCrudTest extends WebTestCase
         ]);
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $em->flush();
-        $token = self::login();
 
         $url = str_replace(['{tenderId}', '{lotId}'], [(string) $tender->getId(), (string) $lotA->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
-        $client = self::request('DELETE', $url, $token);
+        $client = self::request('DELETE', $url, $this->token);
         self::assertResponseStatusCodeSame(204);
 
         $em->clear();
@@ -277,26 +274,20 @@ final class TenderLotsCrudTest extends WebTestCase
 
     public function testDeleteLastLotReturns422(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $lot = $tender->getLots()->first();
+        $lot = $this->tender->getLots()->first();
         self::assertInstanceOf(Lot::class, $lot);
-        $token = self::login();
 
-        $url = str_replace(['{tenderId}', '{lotId}'], [(string) $tender->getId(), (string) $lot->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
-        $client = self::request('DELETE', $url, $token);
+        $url = str_replace(['{tenderId}', '{lotId}'], [(string) $this->tender->getId(), (string) $lot->getId()], '/api/v1/tenders/{tenderId}/lots/{lotId}');
+        $client = self::request('DELETE', $url, $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testLotCrudOfAnotherTenantReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
         $otherTender = TenderFactory::createOne(['customerId' => Uuid::v4(), 'createdBy' => Uuid::v4()]);
-        $token = self::login();
 
         $url = str_replace('{tenderId}', (string) $otherTender->getId(), '/api/v1/tenders/{tenderId}/lots');
-        $client = self::request('POST', $url, $token, [
+        $client = self::request('POST', $url, $this->token, [
             'title' => 'Чужой лот',
             'price_net_minor' => 0,
         ]);
@@ -305,10 +296,7 @@ final class TenderLotsCrudTest extends WebTestCase
 
     public function testLotCrudRequiresAuthentication(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-
-        $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), '/api/v1/tenders/{tenderId}/lots');
         $client = self::request('POST', $url, 'invalid-token', [
             'title' => 'Лот',
             'price_net_minor' => 0,
@@ -318,20 +306,17 @@ final class TenderLotsCrudTest extends WebTestCase
 
     public function testLotCrudForbiddenForAgent(): void
     {
-        self::client();
-        $tender = $this->tenderWithLots(100000, 1);
-        $company = VerifiedUserStory::company();
         $agent = UserFactory::createOne([
             'email' => 'agent-lots@test.loc',
-            'role' => \App\Iam\Entity\Enum\UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'companyId' => $this->company->getId(),
             'password' => UserFactory::PASSWORD,
         ]);
         self::assertNotNull($agent->getId());
 
-        $token = self::login('agent-lots@test.loc');
+        $token = $this->login('agent-lots@test.loc');
 
-        $url = str_replace('{tenderId}', (string) $tender->getId(), '/api/v1/tenders/{tenderId}/lots');
+        $url = str_replace('{tenderId}', (string) $this->tender->getId(), '/api/v1/tenders/{tenderId}/lots');
         $client = self::request('POST', $url, $token, [
             'title' => 'Лот агента',
             'price_net_minor' => 0,

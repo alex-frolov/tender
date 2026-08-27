@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Tender;
 
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderCancelController;
 use App\Tender\Controller\TenderCreateController;
@@ -30,6 +31,21 @@ final class TenderCancelTest extends WebTestCase
     private const string EMAIL = VerifiedUserStory::EMAIL;
     private static ?KernelBrowser $client = null;
 
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->token = $this->loginAs(self::EMAIL);
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -48,7 +64,7 @@ final class TenderCancelTest extends WebTestCase
         return '16.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -87,9 +103,9 @@ final class TenderCancelTest extends WebTestCase
         return $client;
     }
 
-    private static function createDraft(string $companyId, string $token): string
+    private function createDraft(): string
     {
-        $client = self::request('POST', TenderCreateController::URL, $token, [
+        $client = self::request('POST', TenderCreateController::URL, $this->token, [
             'title' => 'Закупка на отмену',
             'procedure_type' => 'auction',
             'law_type' => 'commercial',
@@ -98,7 +114,7 @@ final class TenderCancelTest extends WebTestCase
             'currency' => 'RUB',
             'vat_rate' => 20,
             'price_basis' => 'net',
-            'customer_id' => $companyId,
+            'customer_id' => (string) $this->company->getId(),
             'access_type' => 'open',
             'lots' => [
                 ['title' => 'Серверы', 'price_net_minor' => 60000],
@@ -113,23 +129,20 @@ final class TenderCancelTest extends WebTestCase
         return $body['id'];
     }
 
-    private static function publish(string $id, string $token): void
+    private function publish(string $id): void
     {
         $url = str_replace('{tenderId}', $id, TenderPublishController::URL);
-        self::request('POST', $url, $token);
+        self::request('POST', $url, $this->token);
         self::assertResponseStatusCodeSame(200);
     }
 
     public function testCancelWithReasonTransitionsToCancelled(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
-        self::publish($id, $token);
+        $id = $this->createDraft();
+        $this->publish($id);
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
-        $client = self::request('POST', $url, $token, ['cancellation_reason_code' => 'cancellation_needs']);
+        $client = self::request('POST', $url, $this->token, ['cancellation_reason_code' => 'cancellation_needs']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -139,13 +152,10 @@ final class TenderCancelTest extends WebTestCase
 
     public function testCancelDraftAlsoAllowed(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
-        $client = self::request('POST', $url, $token, ['cancellation_reason_code' => 'changing_order_conditions']);
+        $client = self::request('POST', $url, $this->token, ['cancellation_reason_code' => 'changing_order_conditions']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -155,37 +165,28 @@ final class TenderCancelTest extends WebTestCase
 
     public function testCancelWithoutCodeReturns422(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
-        $client = self::request('POST', $url, $token, []);
+        $client = self::request('POST', $url, $this->token, []);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testCancelOtherWithoutTextReturns422(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
-        $client = self::request('POST', $url, $token, ['cancellation_reason_code' => 'other']);
+        $client = self::request('POST', $url, $this->token, ['cancellation_reason_code' => 'other']);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testCancelOtherWithTextSucceeds(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
+        $id = $this->createDraft();
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
-        $client = self::request('POST', $url, $token, [
+        $client = self::request('POST', $url, $this->token, [
             'cancellation_reason_code' => 'other',
             'cancellation_reason_text' => 'Сняли с плана закупок',
         ]);
@@ -199,43 +200,33 @@ final class TenderCancelTest extends WebTestCase
 
     public function testCancelClosedReturns409(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $token);
-        self::publish($id, $token);
+        $id = $this->createDraft();
+        $this->publish($id);
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
-        self::request('POST', $url, $token, ['cancellation_reason_code' => 'carrier_refusal']);
+        self::request('POST', $url, $this->token, ['cancellation_reason_code' => 'carrier_refusal']);
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('POST', $url, $token, ['cancellation_reason_code' => 'carrier_refusal']);
+        $client = self::request('POST', $url, $this->token, ['cancellation_reason_code' => 'carrier_refusal']);
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testCancelUnknownTenderReturns404(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::loginAs(self::EMAIL);
-
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderCancelController::URL);
-        $client = self::request('POST', $url, $token, ['cancellation_reason_code' => 'cancellation_needs']);
+        $client = self::request('POST', $url, $this->token, ['cancellation_reason_code' => 'cancellation_needs']);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testAgentCannotCancelReturns403(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $adminToken = self::loginAs(self::EMAIL);
-        $id = self::createDraft((string) $company->getId(), $adminToken);
+        $id = $this->createDraft();
 
         $agent = UserFactory::createOne([
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $company->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::loginAs((string) $agent->getEmail());
+        $token = $this->loginAs((string) $agent->getEmail());
 
         $url = str_replace('{tenderId}', $id, TenderCancelController::URL);
         $client = self::request('POST', $url, $token, ['cancellation_reason_code' => 'cancellation_needs']);
@@ -244,7 +235,6 @@ final class TenderCancelTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $url = str_replace('{tenderId}', '00000000-0000-0000-0000-000000000000', TenderCancelController::URL);
         $client = self::request('POST', $url, '', ['cancellation_reason_code' => 'cancellation_needs']);
         self::assertResponseStatusCodeSame(401);

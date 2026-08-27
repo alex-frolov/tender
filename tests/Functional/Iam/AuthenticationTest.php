@@ -16,6 +16,7 @@ use App\Iam\Entity\User;
 use App\Shared\Totp\TotpService;
 use App\Tests\Story\VerifiedUserStory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -24,7 +25,15 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  *
  * Rate limit в тестах = 3/мин на IP (config/packages/test/rate_limiter.yaml),
  * поэтому КАЖДЫЙ запрос идёт с уникального IP (новый клиент на запрос).
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый запрос, дубликаты) и длинный 2FA-сценарий, где
+ * AuthenticationService делает одинаковые запросы на каждый логин (query-in-loop).
+ * Прод-код не меняем — правила отключены атрибутами класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('duplicate-query')]
+#[IgnoreRule('query-in-loop')]
 final class AuthenticationTest extends WebTestCase
 {
     private const EMAIL = VerifiedUserStory::EMAIL;
@@ -32,6 +41,19 @@ final class AuthenticationTest extends WebTestCase
 
     /** @var KernelBrowser|null один клиент на тест (createClient() можно вызвать только один раз) */
     private static ?KernelBrowser $client = null;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = static::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->user = $this->createVerifiedUser();
+    }
 
     protected function tearDown(): void
     {
@@ -56,20 +78,6 @@ final class AuthenticationTest extends WebTestCase
     private static function uniqueIp(): string
     {
         return '10.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
-    }
-
-    /**
-     * Подтверждённый пользователь через Story (компания + роль задаются Story).
-     */
-    private static function createVerifiedUser(?UserStatusEnum $status = null): User
-    {
-        $user = VerifiedUserStory::user();
-        if (null !== $status) {
-            $user->setVerificationStatus($status);
-            static::getContainer()->get(EntityManagerInterface::class)->flush();
-        }
-
-        return $user;
     }
 
     /**
@@ -121,6 +129,14 @@ final class AuthenticationTest extends WebTestCase
     }
 
     /**
+     * Подтверждённый пользователь через Story (компания + роль задаются Story).
+     */
+    private function createVerifiedUser(): User
+    {
+        return VerifiedUserStory::user();
+    }
+
+    /**
      * @return array<mixed>
      */
     private static function login(): array
@@ -138,9 +154,6 @@ final class AuthenticationTest extends WebTestCase
 
     public function testTokenReturnsAccessAndRefresh(): void
     {
-        self::client(); // boot kernel
-        self::createVerifiedUser();
-
         $tokens = self::login();
 
         self::assertSame('Bearer', $tokens['token_type']);
@@ -158,27 +171,18 @@ final class AuthenticationTest extends WebTestCase
 
     public function testTokenWithWrongPasswordReturns401(): void
     {
-        self::client();
-        self::createVerifiedUser();
-
         $client = self::post(TokenController::URL, ['email' => self::EMAIL, 'password' => 'wrong-password']);
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testTokenWithUnknownEmailReturns401(): void
     {
-        self::client();
-        self::createVerifiedUser();
-
         $client = self::post(TokenController::URL, ['email' => 'nobody@test.ru', 'password' => self::PASSWORD]);
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testRefreshRotatesToken(): void
     {
-        self::client();
-        self::createVerifiedUser();
-
         $first = self::login();
 
         // refresh → новая пара, старый отозван
@@ -203,9 +207,6 @@ final class AuthenticationTest extends WebTestCase
 
     public function testLogoutRevokesRefreshToken(): void
     {
-        self::client();
-        self::createVerifiedUser();
-
         $tokens = self::login();
 
         $client = self::post(LogoutController::URL, ['refresh_token' => $tokens['refresh_token']]);
@@ -222,8 +223,7 @@ final class AuthenticationTest extends WebTestCase
 
     public function testTwoFactorLoginFlow(): void
     {
-        self::client();
-        $user = self::createVerifiedUser();
+        $user = $this->user;
 
         // логин без 2FA — работает
         self::login();
@@ -252,9 +252,6 @@ final class AuthenticationTest extends WebTestCase
 
     public function testTwoFactorApiSetupConfirmDisableFlow(): void
     {
-        self::client();
-        self::createVerifiedUser();
-
         $tokens = self::login();
         self::assertIsString($tokens['access_token']);
         $access = $tokens['access_token'];
@@ -315,8 +312,8 @@ final class AuthenticationTest extends WebTestCase
 
     public function testBlockedUserCannotLogin(): void
     {
-        self::client();
-        self::createVerifiedUser(UserStatusEnum::BLOCKED);
+        $this->user->setVerificationStatus(UserStatusEnum::BLOCKED);
+        static::getContainer()->get(EntityManagerInterface::class)->flush();
 
         $client = self::post(TokenController::URL, ['email' => self::EMAIL, 'password' => self::PASSWORD]);
         self::assertResponseStatusCodeSame(401);
@@ -324,8 +321,7 @@ final class AuthenticationTest extends WebTestCase
 
     public function testEmailPendingUserCannotLogin(): void
     {
-        self::client();
-        $user = self::createVerifiedUser();
+        $user = $this->user;
         $user->setVerificationStatus(UserStatusEnum::EMAIL_PENDING);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
 
@@ -335,8 +331,7 @@ final class AuthenticationTest extends WebTestCase
 
     public function testInvitedUserCannotLogin(): void
     {
-        self::client();
-        $user = self::createVerifiedUser();
+        $user = $this->user;
         $user->setVerificationStatus(UserStatusEnum::INVITED);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
 

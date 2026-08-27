@@ -12,12 +12,14 @@ use App\Contract\Controller\ContractSignController;
 use App\Contract\Controller\ContractTypeCreateController;
 use App\Contract\Controller\ContractTypeListController;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\ContractTypeFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -35,10 +37,52 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * - Outbox-события contract.created/pending_signature/signed.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый запрос), AuditService:75 (append-only аудит с
+ * батчингом flush), visibility-подзапросы ContractRepository:188/BidRepository:152
+ * (дубликат на каждый запрос). Прод-код не меняем — правила отключены атрибутами
+ * класса, см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('query-in-loop')]
+#[IgnoreRule('duplicate-query')]
 final class ContractFlowTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private Company $customer;
+    private Company $supplier;
+    private string $customerToken;
+    private string $supplierToken;
+    private int $contractTypeId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $this->customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplier->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+        $this->contractTypeId = (int) ContractTypeFactory::createOne()->getId();
+    }
 
     protected function tearDown(): void
     {
@@ -77,49 +121,50 @@ final class ContractFlowTest extends WebTestCase
         return $client;
     }
 
-    /**
-     * @return array{customer: \App\Iam\Entity\Company, supplier: \App\Iam\Entity\Company, customerToken: string, supplierToken: string}
-     */
-    private static function parties(): array
+    private function loginAs(string $email): string
     {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
+        $client = self::client();
+        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
+        $client->request(
+            'POST',
+            TokenController::URL,
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json'],
+            json_encode(['email' => $email, 'password' => UserFactory::PASSWORD], \JSON_UNESCAPED_UNICODE) ?: '{}',
+        );
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsString($body['access_token']);
 
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return [
-            'customer' => $customer,
-            'supplier' => $supplier,
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-        ];
+        return $body['access_token'];
     }
 
     /**
-     * @param array<string, mixed> $data
+     * Создание договора заказчиком от лица своей компании.
+     *
+     * @return KernelBrowser клиент с ответом создания (201)
      */
-    private static function createContract(string $token, array $data): KernelBrowser
+    private function createContractByCustomer(): KernelBrowser
     {
-        return self::request('POST', ContractCreateController::URL, $token, $data);
+        return self::request('POST', ContractCreateController::URL, $this->customerToken, self::contractPayload(
+            $this->contractTypeId,
+            (string) $this->customer->getId(),
+            (string) $this->supplier->getId(),
+        ));
     }
 
     /**
-     * @return array{contractTypeId: int}
+     * id договора из JSON-ответа.
      */
-    private static function contractType(): array
+    private static function contractId(KernelBrowser $client): string
     {
-        $type = ContractTypeFactory::createOne();
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsString($body['id']);
 
-        return ['contractTypeId' => (int) $type->getId()];
+        return $body['id'];
     }
 
     /**
@@ -140,28 +185,9 @@ final class ContractFlowTest extends WebTestCase
         ];
     }
 
-    /**
-     * id договора из JSON-ответа.
-     */
-    private static function contractId(KernelBrowser $client): string
-    {
-        $body = json_decode((string) $client->getResponse()->getContent(), true);
-        self::assertIsArray($body);
-        self::assertIsString($body['id']);
-
-        return $body['id'];
-    }
-
     public function testCreateExternalContractAndSignBothParties(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-
-        $client = self::createContract(
-            $ctx['customerToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        );
+        $client = $this->createContractByCustomer();
         self::assertResponseStatusCodeSame(201);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -178,7 +204,7 @@ final class ContractFlowTest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
         );
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -189,7 +215,7 @@ final class ContractFlowTest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSignController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['party' => 'customer', 'signature' => 'sign-cust'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -201,7 +227,7 @@ final class ContractFlowTest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSignController::URL),
-            $ctx['supplierToken'],
+            $this->supplierToken,
             ['party' => 'supplier', 'signature' => 'sign-supp'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -224,16 +250,10 @@ final class ContractFlowTest extends WebTestCase
 
     public function testListAndGetVisibleToBothParties(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-        $contractId = self::contractId(self::createContract(
-            $ctx['customerToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        ));
+        $contractId = self::contractId($this->createContractByCustomer());
 
         // Список для заказчика и для исполнителя.
-        $client = self::request('GET', ContractListController::URL, $ctx['customerToken']);
+        $client = self::request('GET', ContractListController::URL, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $list = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($list);
@@ -241,7 +261,7 @@ final class ContractFlowTest extends WebTestCase
         $ids = array_column($list['items'], 'id');
         self::assertContains($contractId, $ids);
 
-        $client = self::request('GET', ContractListController::URL, $ctx['supplierToken']);
+        $client = self::request('GET', ContractListController::URL, $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
         $list = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($list);
@@ -250,7 +270,7 @@ final class ContractFlowTest extends WebTestCase
         self::assertContains($contractId, $ids);
 
         // Карточка доступна обеим сторонам.
-        $client = self::request('GET', str_replace('{contractId}', $contractId, ContractGetController::URL), $ctx['supplierToken']);
+        $client = self::request('GET', str_replace('{contractId}', $contractId, ContractGetController::URL), $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -259,13 +279,7 @@ final class ContractFlowTest extends WebTestCase
 
     public function testThirdPartyCannotViewContractReturns404(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-        $contractId = self::contractId(self::createContract(
-            $ctx['customerToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        ));
+        $contractId = self::contractId($this->createContractByCustomer());
 
         $outsider = CompanyFactory::new()->approved()->create();
         $outsiderUser = UserFactory::createOne([
@@ -273,7 +287,7 @@ final class ContractFlowTest extends WebTestCase
             'role' => UserRoleEnum::ADMIN,
             'email' => 'outsider-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $outsiderToken = self::loginAs((string) $outsiderUser->getEmail());
+        $outsiderToken = $this->loginAs((string) $outsiderUser->getEmail());
 
         $client = self::request('GET', str_replace('{contractId}', $contractId, ContractGetController::URL), $outsiderToken);
         self::assertResponseStatusCodeSame(404);
@@ -281,84 +295,68 @@ final class ContractFlowTest extends WebTestCase
 
     public function testCustomerIdMismatchReturns422(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-
         // Суперадмин-набор у admin не различает тип компании (IAM: admin = полный
         // набор прав), поэтому создание договора от чужого заказчика блокирует
         // сервис: customer_id обязан совпадать с компанией актора → 422.
-        $client = self::createContract(
-            $ctx['supplierToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        );
+        $client = self::request('POST', ContractCreateController::URL, $this->supplierToken, self::contractPayload(
+            $this->contractTypeId,
+            (string) $this->customer->getId(),
+            (string) $this->supplier->getId(),
+        ));
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testAgentCannotCreateContractReturns403(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
         $agent = UserFactory::createOne([
-            'companyId' => $ctx['customer']->getId(),
+            'companyId' => $this->customer->getId(),
             'role' => UserRoleEnum::AGENT,
             'email' => 'cust-agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $agentToken = self::loginAs((string) $agent->getEmail());
+        $agentToken = $this->loginAs((string) $agent->getEmail());
 
-        $client = self::createContract(
-            $agentToken,
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        );
+        $client = self::request('POST', ContractCreateController::URL, $agentToken, self::contractPayload(
+            $this->contractTypeId,
+            (string) $this->customer->getId(),
+            (string) $this->supplier->getId(),
+        ));
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testSourceTenderReturns422(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-        $payload = self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId());
+        $payload = self::contractPayload(
+            $this->contractTypeId,
+            (string) $this->customer->getId(),
+            (string) $this->supplier->getId(),
+        );
         $payload['source'] = 'tender';
 
-        $client = self::createContract($ctx['customerToken'], $payload);
+        $client = self::request('POST', ContractCreateController::URL, $this->customerToken, $payload);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testSupplierCannotSendForSignatureReturns409(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-        $contractId = self::contractId(self::createContract(
-            $ctx['customerToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        ));
+        $contractId = self::contractId($this->createContractByCustomer());
 
         // Исполнитель — сторона (voter пропускает), но отправить может только заказчик.
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL),
-            $ctx['supplierToken'],
+            $this->supplierToken,
         );
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testSignBeforeSendReturns409(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-        $contractId = self::contractId(self::createContract(
-            $ctx['customerToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        ));
+        $contractId = self::contractId($this->createContractByCustomer());
 
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSignController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['party' => 'customer'],
         );
         self::assertResponseStatusCodeSame(409);
@@ -366,19 +364,13 @@ final class ContractFlowTest extends WebTestCase
 
     public function testDoubleSignReturns409(): void
     {
-        self::client();
-        $ctx = self::parties();
-        $type = self::contractType();
-        $contractId = self::contractId(self::createContract(
-            $ctx['customerToken'],
-            self::contractPayload($type['contractTypeId'], (string) $ctx['customer']->getId(), (string) $ctx['supplier']->getId()),
-        ));
-        self::request('POST', str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL), $ctx['customerToken']);
+        $contractId = self::contractId($this->createContractByCustomer());
+        self::request('POST', str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL), $this->customerToken);
 
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSignController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['party' => 'customer'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -386,7 +378,7 @@ final class ContractFlowTest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{contractId}', $contractId, ContractSignController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['party' => 'customer'],
         );
         self::assertResponseStatusCodeSame(409);
@@ -394,19 +386,17 @@ final class ContractFlowTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('POST', ContractCreateController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testContractTypeListAndCreateByPlatformAdmin(): void
     {
-        self::client();
         $sa = UserFactory::createOne([
             'role' => UserRoleEnum::PLATFORM_ADMIN,
             'email' => 'sa-contract-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $saToken = self::loginAs((string) $sa->getEmail());
+        $saToken = $this->loginAs((string) $sa->getEmail());
 
         // Список типов (справочник для всех).
         $client = self::request('GET', ContractTypeListController::URL, $saToken);
@@ -430,25 +420,5 @@ final class ContractFlowTest extends WebTestCase
         self::assertFalse($body['is_single_use']);
         // id — bigint (справочник contract_types использует целочисленные id)
         self::assertIsNumeric($body['id']);
-    }
-
-    private static function loginAs(string $email): string
-    {
-        $client = self::client();
-        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
-        $client->request(
-            'POST',
-            TokenController::URL,
-            [],
-            [],
-            ['CONTENT_TYPE' => 'application/json'],
-            json_encode(['email' => $email, 'password' => UserFactory::PASSWORD], \JSON_UNESCAPED_UNICODE) ?: '{}',
-        );
-        self::assertResponseStatusCodeSame(200);
-        $body = json_decode((string) $client->getResponse()->getContent(), true);
-        self::assertIsArray($body);
-        self::assertIsString($body['access_token']);
-
-        return $body['access_token'];
     }
 }

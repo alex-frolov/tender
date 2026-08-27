@@ -10,8 +10,12 @@ use App\Auction\Entity\Enum\AuctionStatusTransition;
 use App\Auction\Entity\Enum\AuctionStepModeEnum;
 use App\Auction\Entity\Enum\AuctionTypeEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\User;
+use App\Tender\Entity\Lot;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
@@ -37,6 +41,64 @@ final class AuctionScheduleTest extends WebTestCase
     private const STEP_MINOR = 5_000_00;
 
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private User $customerUser;
+    private User $agentUser;
+    private Company $supplierCompany;
+    private User $supplierUser;
+    private Tender $tender;
+    private Lot $lot;
+    private Auction $auction;
+    private string $customerToken;
+    private string $agentToken;
+    private string $supplierToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $this->customerUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'sch-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->agentUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'sch-agent-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplierCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $this->supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplierCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'sch-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne([
+            'nmckMinor' => self::START_MINOR,
+            'customerId' => $this->customerCompany->getId(),
+        ]);
+        $this->lot = LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => self::START_MINOR]);
+        $this->auction = AuctionFactory::new()
+            ->forTender($this->tender, $this->lot)
+            ->with([
+                'type' => AuctionTypeEnum::REDUCTION,
+                'stepMode' => AuctionStepModeEnum::FIXED,
+                'bidStepMinor' => self::STEP_MINOR,
+                'stepDurationSec' => 600,
+            ])
+            ->create();
+
+        $this->customerToken = $this->loginAs((string) $this->customerUser->getEmail());
+        $this->agentToken = $this->loginAs((string) $this->agentUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $this->supplierUser->getEmail());
+    }
 
     protected function tearDown(): void
     {
@@ -75,7 +137,7 @@ final class AuctionScheduleTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -105,57 +167,6 @@ final class AuctionScheduleTest extends WebTestCase
         return (new \DateTimeImmutable('-1 day', new \DateTimeZone('UTC')))->format('Y-m-d\TH:i:s\Z');
     }
 
-    /**
-     * @return array{customerToken: string, agentToken: string,
-     *               supplierToken: string, auction: Auction}
-     */
-    private static function customerAuction(): array
-    {
-        self::client();
-        $container = self::getContainer();
-
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'sch-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $agent = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::AGENT,
-            'email' => 'sch-agent-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'sch-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne([
-            'nmckMinor' => self::START_MINOR,
-            'customerId' => $customer->getId(),
-        ]);
-        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
-        $auction = AuctionFactory::new()
-            ->forTender($tender, $lot)
-            ->with([
-                'type' => AuctionTypeEnum::REDUCTION,
-                'stepMode' => AuctionStepModeEnum::FIXED,
-                'bidStepMinor' => self::STEP_MINOR,
-                'stepDurationSec' => 600,
-            ])
-            ->create();
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'agentToken' => self::loginAs((string) $agent->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'auction' => $auction,
-        ];
-    }
-
     private static function scheduleUrl(string $auctionId): string
     {
         return str_replace('{auctionId}', $auctionId, AuctionScheduleController::URL);
@@ -163,9 +174,7 @@ final class AuctionScheduleTest extends WebTestCase
 
     public function testCustomerSchedulesAuction(): void
     {
-        $ctx = self::customerAuction();
-
-        $client = self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        $client = self::request('POST', self::scheduleUrl((string) $this->auction->getId()), $this->customerToken, [
             'scheduled_start_at' => self::futureDateTime(),
         ]);
         self::assertResponseStatusCodeSame(200);
@@ -178,9 +187,7 @@ final class AuctionScheduleTest extends WebTestCase
 
     public function testScheduleInPastReturns422(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('POST', self::scheduleUrl((string) $this->auction->getId()), $this->customerToken, [
             'scheduled_start_at' => self::pastDateTime(),
         ]);
         self::assertResponseStatusCodeSame(422);
@@ -188,27 +195,24 @@ final class AuctionScheduleTest extends WebTestCase
 
     public function testScheduleMissingDateReturns422(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], []);
+        self::request('POST', self::scheduleUrl((string) $this->auction->getId()), $this->customerToken, []);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testScheduleNonNewAuctionReturns409(): void
     {
-        $ctx = self::customerAuction();
         $container = self::getContainer();
         $em = $container->get(EntityManagerInterface::class);
         $workflow = $container->get('state_machine.auction');
         if (!$workflow instanceof WorkflowInterface) {
             throw new \LogicException('Auction workflow not resolvable');
         }
-        $auction = $em->getRepository(Auction::class)->find($ctx['auction']->getId());
+        $auction = $em->getRepository(Auction::class)->find($this->auction->getId());
         self::assertInstanceOf(Auction::class, $auction);
         $workflow->apply($auction, AuctionStatusTransition::SCHEDULE->value);
         $em->flush();
 
-        self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('POST', self::scheduleUrl((string) $this->auction->getId()), $this->customerToken, [
             'scheduled_start_at' => self::futureDateTime(),
         ]);
         self::assertResponseStatusCodeSame(409);
@@ -216,9 +220,7 @@ final class AuctionScheduleTest extends WebTestCase
 
     public function testAgentCannotSchedule(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), $ctx['agentToken'], [
+        self::request('POST', self::scheduleUrl((string) $this->auction->getId()), $this->agentToken, [
             'scheduled_start_at' => self::futureDateTime(),
         ]);
         self::assertResponseStatusCodeSame(403);
@@ -226,9 +228,7 @@ final class AuctionScheduleTest extends WebTestCase
 
     public function testForeignCompanyCannotSchedule(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), $ctx['supplierToken'], [
+        self::request('POST', self::scheduleUrl((string) $this->auction->getId()), $this->supplierToken, [
             'scheduled_start_at' => self::futureDateTime(),
         ]);
         self::assertResponseStatusCodeSame(404);
@@ -236,9 +236,7 @@ final class AuctionScheduleTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::scheduleUrl((string) $ctx['auction']->getId()), '', [
+        self::request('POST', self::scheduleUrl((string) $this->auction->getId()), '', [
             'scheduled_start_at' => self::futureDateTime(),
         ]);
         self::assertResponseStatusCodeSame(401);

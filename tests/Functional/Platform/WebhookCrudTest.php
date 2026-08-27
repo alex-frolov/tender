@@ -18,6 +18,7 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Factory\WebhookFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Uid\Uuid;
@@ -37,10 +38,29 @@ use Symfony\Component\Uid\Uuid;
  *   401 без токена; чужая подписка — 404.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя, дублирующийся на каждый запрос CRUD-цепочки).
+ * Прод-код не меняем — правило отключено атрибутом класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('duplicate-query')]
 final class WebhookCrudTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private string $adminToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->adminToken = $this->adminToken();
+    }
 
     protected function tearDown(): void
     {
@@ -79,7 +99,7 @@ final class WebhookCrudTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -99,7 +119,7 @@ final class WebhookCrudTest extends WebTestCase
         return $body['access_token'];
     }
 
-    private static function adminToken(): string
+    private function adminToken(): string
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $user = UserFactory::createOne([
@@ -108,13 +128,12 @@ final class WebhookCrudTest extends WebTestCase
             'email' => 'wh-admin-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return self::loginAs((string) $user->getEmail());
+        return $this->loginAs((string) $user->getEmail());
     }
 
     public function testFullLifecycleCreateListUpdateRotateDeliveriesDelete(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         // Создание: секрет отдаётся один раз.
         $client = self::request('POST', WebhookCreateController::URL, $token, [
@@ -187,8 +206,7 @@ final class WebhookCrudTest extends WebTestCase
      */
     public function testUpdateKeepsFieldsMissingFromBodyAndDeduplicatesEvents(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('POST', WebhookCreateController::URL, $token, [
             'url' => 'https://example.com/hooks/partial',
@@ -214,8 +232,7 @@ final class WebhookCrudTest extends WebTestCase
 
     public function testUpdateValidatesUrlAndEvents(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('POST', WebhookCreateController::URL, $token, [
             'url' => 'https://example.com/hooks/validate',
@@ -243,8 +260,7 @@ final class WebhookCrudTest extends WebTestCase
 
     public function testCreateValidatesEvents(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('POST', WebhookCreateController::URL, $token, [
             'url' => 'https://example.com/hooks/2',
@@ -261,8 +277,7 @@ final class WebhookCrudTest extends WebTestCase
 
     public function testSecretGeneratedWhenNotProvided(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('POST', WebhookCreateController::URL, $token, [
             'url' => 'https://example.com/hooks/3',
@@ -277,7 +292,6 @@ final class WebhookCrudTest extends WebTestCase
 
     public function testManagerAndAgentCannotManageWebhooksReturns403(): void
     {
-        self::client();
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
 
         $manager = UserFactory::createOne([
@@ -290,8 +304,8 @@ final class WebhookCrudTest extends WebTestCase
             'role' => UserRoleEnum::AGENT,
             'email' => 'wh-agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $managerToken = self::loginAs((string) $manager->getEmail());
-        $agentToken = self::loginAs((string) $agent->getEmail());
+        $managerToken = $this->loginAs((string) $manager->getEmail());
+        $agentToken = $this->loginAs((string) $agent->getEmail());
 
         // manager и agent — webhooks.manage отключено по умолчанию (FR-1.5.10).
         $client = self::request('POST', WebhookCreateController::URL, $managerToken, [
@@ -306,16 +320,14 @@ final class WebhookCrudTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('GET', WebhookListController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testForeignWebhookReturns404(): void
     {
-        self::client();
         $other = WebhookFactory::createOne();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('PATCH', str_replace('{webhookId}', (string) $other->getId(), WebhookUpdateController::URL), $token, [
             'status' => 'paused',
@@ -328,14 +340,13 @@ final class WebhookCrudTest extends WebTestCase
 
     public function testDeliveriesListShowsRecords(): void
     {
-        self::client();
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $user = UserFactory::createOne([
             'companyId' => $company->getId(),
             'role' => UserRoleEnum::ADMIN,
             'email' => 'wh-del-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $token = self::loginAs((string) $user->getEmail());
+        $token = $this->loginAs((string) $user->getEmail());
 
         $webhook = WebhookFactory::createOne(['tenantId' => $company->getId(), 'events' => ['tender.published']]);
         $delivery = new WebhookDelivery(

@@ -14,6 +14,7 @@ use App\Notification\Controller\NotificationSubscriptionToggleController;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\NotificationSubscriptionFactory;
 use App\Tests\Factory\UserFactory;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -29,10 +30,29 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  *   (в т.ч. agent); 401 без токена; чужая подписка → 404.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя, дублирующийся на каждый запрос CRUD-цепочки).
+ * Прод-код не меняем — правило отключено атрибутом класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('duplicate-query')]
 final class NotificationSubscriptionCrudTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private string $adminToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->adminToken = $this->actor(UserRoleEnum::ADMIN)['token'];
+    }
 
     protected function tearDown(): void
     {
@@ -71,7 +91,7 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -94,7 +114,7 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
     /**
      * @return array{token: string, user: object, company: object}
      */
-    private static function actor(UserRoleEnum $role): array
+    private function actor(UserRoleEnum $role): array
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $user = UserFactory::createOne([
@@ -108,9 +128,7 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
 
     public function testFullLifecycleCreateListToggleDelete(): void
     {
-        self::client();
-        $ctx = self::actor(UserRoleEnum::ADMIN);
-        $token = $ctx['token'];
+        $token = $this->adminToken;
 
         // Создание.
         $client = self::request('POST', NotificationSubscriptionCreateController::URL, $token, [
@@ -168,8 +186,7 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
 
     public function testCreateValidatesChannelEventsAndFilters(): void
     {
-        self::client();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         // Неверный канал.
         $client = self::request('POST', NotificationSubscriptionCreateController::URL, $token, [
@@ -196,8 +213,7 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
     public function testAgentCanManageOwnSubscriptions(): void
     {
         // notifications.subscribe — common, включён всем ролям по умолчанию (FR-1.6.3).
-        self::client();
-        $token = self::actor(UserRoleEnum::AGENT)['token'];
+        $token = $this->actor(UserRoleEnum::AGENT)['token'];
 
         $client = self::request('POST', NotificationSubscriptionCreateController::URL, $token, [
             'channel' => 'email',
@@ -211,16 +227,14 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('GET', NotificationSubscriptionListController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testForeignSubscriptionReturns404(): void
     {
-        self::client();
         $other = NotificationSubscriptionFactory::createOne();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         $client = self::request('POST', str_replace('{subscriptionId}', (string) $other->getId(), NotificationSubscriptionToggleController::URL), $token);
         self::assertResponseStatusCodeSame(404);
@@ -231,9 +245,8 @@ final class NotificationSubscriptionCrudTest extends WebTestCase
 
     public function testDeleteForeignSubscriptionReturns404(): void
     {
-        self::client();
         $other = NotificationSubscriptionFactory::createOne();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         $client = self::request('DELETE', NotificationSubscriptionDeleteController::URL.'?subscriptionId='.(string) $other->getId(), $token);
         self::assertResponseStatusCodeSame(404);

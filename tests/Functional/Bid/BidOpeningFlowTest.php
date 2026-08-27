@@ -19,6 +19,8 @@ use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Workflow\WorkflowInterface;
@@ -35,12 +37,63 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * - событие tender.opened уходит в outbox.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: `n-plus-one`, `duplicate-query` — AuthMiddleware:84 (SELECT
+ * пользователя на каждый HTTP-запрос); `AllowQueries(45)` — сценарий вскрытия
+ * целиком в одном тесте (38 запросов); см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('duplicate-query')]
 final class BidOpeningFlowTest extends WebTestCase
 {
     use TenderLotTrait;
 
+    private const START_MINOR = 10000;
+
     private static ?KernelBrowser $client = null;
+
+    private Tender $tender;
+    private string $customerToken;
+    private string $supplier1Token;
+    private string $supplier1Id;
+    private string $supplier2Token;
+    private string $supplier2Id;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'customer-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne(['nmckMinor' => self::START_MINOR, 'customerId' => $customer->getId()]);
+        LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => self::START_MINOR]);
+
+        $container = static::getContainer();
+        $workflow = $container->get('state_machine.tender');
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $workflow->apply($this->tender, TenderStatusTransition::PUBLISH->value);
+        $workflow->apply($this->tender, TenderStatusTransition::START_BID_ACCEPTANCE->value);
+        $container->get(EntityManagerInterface::class)->flush();
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+
+        $s1 = $this->supplier('opening-supp1-');
+        $this->supplier1Token = $s1['token'];
+        $this->supplier1Id = $s1['supplierId'];
+
+        $s2 = $this->supplier('opening-supp2-');
+        $this->supplier2Token = $s2['token'];
+        $this->supplier2Id = $s2['supplierId'];
+    }
 
     protected function tearDown(): void
     {
@@ -60,7 +113,7 @@ final class BidOpeningFlowTest extends WebTestCase
         return '18.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -81,6 +134,25 @@ final class BidOpeningFlowTest extends WebTestCase
     }
 
     /**
+     * Подтверждённая компания-исполнитель + admin-пользователь + токен.
+     *
+     * @param string $emailPrefix уникальный префикс email
+     *
+     * @return array{token: string, supplierId: string}
+     */
+    private function supplier(string $emailPrefix): array
+    {
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => $emailPrefix.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        return ['token' => $this->loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
+    }
+
+    /**
      * @param array<mixed>|null $data
      */
     private static function request(string $method, string $url, string $token, ?array $data = null): KernelBrowser
@@ -97,45 +169,6 @@ final class BidOpeningFlowTest extends WebTestCase
         );
 
         return $client;
-    }
-
-    /**
-     * Тендер заказчика в accepting_bids + токен admin-пользователя заказчика.
-     *
-     * @return array{tender: Tender, customerToken: string}
-     */
-    private static function customerTender(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'customer-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne(['nmckMinor' => 10000, 'customerId' => $customer->getId()]);
-        LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
-
-        $container = static::getContainer();
-        $workflow = $container->get('state_machine.tender');
-        self::assertInstanceOf(WorkflowInterface::class, $workflow);
-        $workflow->apply($tender, TenderStatusTransition::PUBLISH->value);
-        $workflow->apply($tender, TenderStatusTransition::START_BID_ACCEPTANCE->value);
-        $container->get(EntityManagerInterface::class)->flush();
-
-        return ['tender' => $tender, 'customerToken' => self::loginAs((string) $customerUser->getEmail())];
-    }
-
-    /**
-     * @return array{token: string, supplierId: string, email: string}
-     */
-    private static function supplier(): array
-    {
-        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $email = 'supplier-'.random_int(1000, 999999).'@test.ru';
-        $user = UserFactory::createOne(['companyId' => $company->getId(), 'role' => UserRoleEnum::ADMIN, 'email' => $email]);
-
-        return ['token' => self::loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId(), 'email' => (string) $email];
     }
 
     private static function submitUrl(string $tenderId): string
@@ -164,25 +197,20 @@ final class BidOpeningFlowTest extends WebTestCase
         ];
     }
 
+    #[AllowQueries(45)]
     public function testBidsVisibleAfterOpeningByRole(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $customerToken = $ctx['customerToken'];
-
-        $s1 = self::supplier();
-        $s2 = self::supplier();
+        $tender = $this->tender;
         $url = self::submitUrl((string) $tender->getId());
 
-        self::request('POST', $url, $s1['token'], self::bidPayload($s1['supplierId'], self::firstLotId($tender), 'MARK-A', 900000));
+        self::request('POST', $url, $this->supplier1Token, self::bidPayload($this->supplier1Id, self::firstLotId($tender), 'MARK-A', 900000));
         self::assertResponseStatusCodeSame(201);
-        self::request('POST', $url, $s2['token'], self::bidPayload($s2['supplierId'], self::firstLotId($tender), 'MARK-B', 850000));
+        self::request('POST', $url, $this->supplier2Token, self::bidPayload($this->supplier2Id, self::firstLotId($tender), 'MARK-B', 850000));
         self::assertResponseStatusCodeSame(201);
 
         // --- до вскрытия: только метаданные (FR-1.2.2) ---
         $listUrl = self::listUrl((string) $tender->getId());
-        $client = self::request('GET', $listUrl, $customerToken);
+        $client = self::request('GET', $listUrl, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $before = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($before);
@@ -211,7 +239,7 @@ final class BidOpeningFlowTest extends WebTestCase
         self::assertSame(1, (int) $outbox);
 
         // --- заказчик видит полный состав после вскрытия (FR-1.2.3) ---
-        $client = self::request('GET', $listUrl, $customerToken);
+        $client = self::request('GET', $listUrl, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $customerView = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($customerView);
@@ -235,7 +263,7 @@ final class BidOpeningFlowTest extends WebTestCase
         self::assertSame(['MARK-A', 'MARK-B'], $markers);
 
         // --- участник видит (в части) только part1 всех поданных заявок ---
-        $client = self::request('GET', $listUrl, $s1['token']);
+        $client = self::request('GET', $listUrl, $this->supplier1Token);
         self::assertResponseStatusCodeSame(200);
         $supplierView = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($supplierView);
@@ -254,22 +282,22 @@ final class BidOpeningFlowTest extends WebTestCase
         // Раньше выдача участника сводилась к submitted целиком, и допущенная
         // заявка исчезала из своего же списка: автор терял и решение
         // заказчика, и раздел документов части 2.
-        $ownBefore = self::firstOwnBid($supplierItems, $s1['supplierId']);
+        $ownBefore = self::firstOwnBid($supplierItems, $this->supplier1Id);
         self::request(
             'POST',
             str_replace('{bidId}', $ownBefore, BidQualifyController::URL),
-            $customerToken,
+            $this->customerToken,
             ['decision' => 'admit', 'reason' => 'Соответствует требованиям'],
         );
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('GET', $listUrl, $s1['token']);
+        $client = self::request('GET', $listUrl, $this->supplier1Token);
         self::assertResponseStatusCodeSame(200);
         $afterQualify = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($afterQualify);
         $afterItems = $afterQualify['items'];
         self::assertIsArray($afterItems);
-        self::assertSame($ownBefore, self::firstOwnBid($afterItems, $s1['supplierId']));
+        self::assertSame($ownBefore, self::firstOwnBid($afterItems, $this->supplier1Id));
         self::assertCount(2, $afterItems, 'own admitted bid + foreign submitted one');
     }
 
