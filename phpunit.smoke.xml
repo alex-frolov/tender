@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- https://phpunit.readthedocs.io/en/latest/configuration.html -->
+<!-- Конфиг smoke/load-прогона (composer test:smoke): тот же phpunit.dist.xml,
+     но без QueryGuard Extension — нагрузочные замеры (p95, bids/sec, сотни
+     INSERT/UPDATE через SkipDatabaseRollback) не подлежат query-правилам.
+     DAMA и Foundry оставлены: изоляция транзакций и фабрики обязательны. -->
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
          colors="true"
@@ -43,9 +46,5 @@
     <extensions>
         <bootstrap class="DAMA\DoctrineTestBundle\PHPUnit\PHPUnitExtension" />
         <bootstrap class="Zenstruck\Foundry\PHPUnit\FoundryExtension" />
-        <bootstrap class="QueryGuard\Extension">
-            <parameter name="mode" value="report"/>
-            <parameter name="max-queries" value="35"/>
-        </bootstrap>
     </extensions>
 </phpunit>

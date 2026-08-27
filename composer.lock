@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "5aa2277c332042504246e502db4654db",
+    "content-hash": "e3b18b6edff106d1f0a6e37d62026a1e",
     "packages": [
         {
             "name": "alex-frolov/scalar-symfony",
@@ -7684,6 +7684,84 @@
         }
     ],
     "packages-dev": [
+        {
+            "name": "alex-frolov/query-guard",
+            "version": "v0.1.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/alex-frolov/query-guard.git",
+                "reference": "42defbb632752760e2131909b68e32a2c4332269"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/alex-frolov/query-guard/zipball/42defbb632752760e2131909b68e32a2c4332269",
+                "reference": "42defbb632752760e2131909b68e32a2c4332269",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.2",
+                "phpunit/phpunit": "^10.5 || ^11.0 || ^12.0 || ^13.0"
+            },
+            "require-dev": {
+                "doctrine/dbal": "^3.9 || ^4.0",
+                "doctrine/orm": "^2.20 || ^3.0",
+                "friendsofphp/php-cs-fixer": "^3.64",
+                "illuminate/database": "^11.0 || ^12.0 || ^13.0",
+                "illuminate/events": "^11.0 || ^12.0 || ^13.0",
+                "phpstan/phpstan": "^2.1",
+                "symfony/cache": "^6.4 || ^7.0 || ^8.0",
+                "symfony/var-exporter": "^6.4 || ^7.0 || ^8.0"
+            },
+            "suggest": {
+                "doctrine/dbal": "Doctrine adapter: query interception via a DBAL middleware (^3.0 || ^4.0)",
+                "illuminate/database": "Eloquent adapter: query interception via DB::listen"
+            },
+            "type": "library",
+            "extra": {
+                "laravel": {
+                    "providers": [
+                        "QueryGuard\\Adapter\\Eloquent\\QueryGuardServiceProvider"
+                    ]
+                },
+                "branch-alias": {
+                    "dev-main": "0.1.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "QueryGuard\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Aleksander Frolov",
+                    "email": "aleksander@frolov.guru",
+                    "homepage": "https://frolov.guru"
+                }
+            ],
+            "description": "Detects N+1, duplicate and otherwise problematic SQL queries during a regular PHPUnit run",
+            "homepage": "https://github.com/alex-frolov/query-guard",
+            "keywords": [
+                "doctrine",
+                "eloquent",
+                "explain",
+                "n-plus-one",
+                "performance",
+                "phpunit",
+                "query",
+                "sql",
+                "testing"
+            ],
+            "support": {
+                "issues": "https://github.com/alex-frolov/query-guard/issues",
+                "source": "https://github.com/alex-frolov/query-guard"
+            },
+            "time": "2026-08-27T12:15:31+00:00"
+        },
         {
             "name": "brianium/paratest",
             "version": "v7.24.0",

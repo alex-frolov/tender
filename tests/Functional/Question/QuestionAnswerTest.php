@@ -33,6 +33,56 @@ final class QuestionAnswerTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private string $customerToken;
+    private string $supplierToken;
+    private string $tenderId;
+    private string $questionId;
+    private string $customerId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'qa-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $supplier->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'qa-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $tender = TenderFactory::createOne([
+            'customerId' => $customer->getId(),
+            'createdBy' => $customer->getId(),
+            'status' => TenderStatusEnum::ACCEPTING_BIDS,
+        ]);
+        $this->tenderId = (string) $tender->getId();
+        $this->customerId = (string) $customer->getId();
+
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+        $client = self::request(
+            'POST',
+            str_replace('{tenderId}', $this->tenderId, QuestionCreateController::URL),
+            $this->supplierToken,
+            ['text' => 'Какие требования к сроку поставки?'],
+        );
+        self::assertResponseStatusCodeSame(201);
+        $question = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($question);
+        self::assertIsString($question['id']);
+        $this->questionId = $question['id'];
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -70,7 +120,7 @@ final class QuestionAnswerTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -99,62 +149,12 @@ final class QuestionAnswerTest extends WebTestCase
         );
     }
 
-    /**
-     * Контекст: тендер заказчика в стадии приёма заявок, вопрос от участника
-     * и токены обеих сторон.
-     *
-     * @return array{customerToken: string, supplierToken: string, tenderId: string, questionId: string, customerId: string}
-     */
-    private static function context(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'qa-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::AGENT,
-            'email' => 'qa-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $tender = TenderFactory::createOne([
-            'customerId' => $customer->getId(),
-            'createdBy' => $customer->getId(),
-            'status' => TenderStatusEnum::ACCEPTING_BIDS,
-        ]);
-
-        $supplierToken = self::loginAs((string) $supplierUser->getEmail());
-        $client = self::request(
-            'POST',
-            str_replace('{tenderId}', (string) $tender->getId(), QuestionCreateController::URL),
-            $supplierToken,
-            ['text' => 'Какие требования к сроку поставки?'],
-        );
-        self::assertResponseStatusCodeSame(201);
-        $question = json_decode((string) $client->getResponse()->getContent(), true);
-        self::assertIsArray($question);
-        self::assertIsString($question['id']);
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => $supplierToken,
-            'tenderId' => (string) $tender->getId(),
-            'questionId' => $question['id'],
-            'customerId' => (string) $customer->getId(),
-        ];
-    }
-
     public function testCustomerPublishesAnswer(): void
     {
-        self::client();
-        $ctx = self::context();
-
         $client = self::request(
             'POST',
-            self::answerUrl($ctx['tenderId'], $ctx['questionId']),
-            $ctx['customerToken'],
+            self::answerUrl($this->tenderId, $this->questionId),
+            $this->customerToken,
             ['answer' => 'Срок поставки — 30 дней с даты договора.'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -167,14 +167,12 @@ final class QuestionAnswerTest extends WebTestCase
 
     public function testAnswerCanBeCorrected(): void
     {
-        self::client();
-        $ctx = self::context();
-        $url = self::answerUrl($ctx['tenderId'], $ctx['questionId']);
+        $url = self::answerUrl($this->tenderId, $this->questionId);
 
-        self::request('POST', $url, $ctx['customerToken'], ['answer' => 'Первый вариант']);
+        self::request('POST', $url, $this->customerToken, ['answer' => 'Первый вариант']);
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('POST', $url, $ctx['customerToken'], ['answer' => 'Уточнённый ответ']);
+        $client = self::request('POST', $url, $this->customerToken, ['answer' => 'Уточнённый ответ']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -183,15 +181,12 @@ final class QuestionAnswerTest extends WebTestCase
 
     public function testParticipantCannotAnswer(): void
     {
-        self::client();
-        $ctx = self::context();
-
         // Право tenders.qa у участника есть (он задал вопрос), но сторона не та:
         // 404, а не 403 — иначе по коду ответа читался бы факт существования.
         self::request(
             'POST',
-            self::answerUrl($ctx['tenderId'], $ctx['questionId']),
-            $ctx['supplierToken'],
+            self::answerUrl($this->tenderId, $this->questionId),
+            $this->supplierToken,
             ['answer' => 'Отвечаю за заказчика'],
         );
         self::assertResponseStatusCodeSame(404);
@@ -199,18 +194,16 @@ final class QuestionAnswerTest extends WebTestCase
 
     public function testQuestionFromAnotherTenderIsNotFound(): void
     {
-        self::client();
-        $ctx = self::context();
         $otherTender = TenderFactory::createOne([
-            'customerId' => Uuid::fromString($ctx['customerId']),
-            'createdBy' => Uuid::fromString($ctx['customerId']),
+            'customerId' => Uuid::fromString($this->customerId),
+            'createdBy' => Uuid::fromString($this->customerId),
             'status' => TenderStatusEnum::ACCEPTING_BIDS,
         ]);
 
         self::request(
             'POST',
-            self::answerUrl((string) $otherTender->getId(), $ctx['questionId']),
-            $ctx['customerToken'],
+            self::answerUrl((string) $otherTender->getId(), $this->questionId),
+            $this->customerToken,
             ['answer' => 'Ответ не в тот тендер'],
         );
         self::assertResponseStatusCodeSame(404);
@@ -218,13 +211,10 @@ final class QuestionAnswerTest extends WebTestCase
 
     public function testEmptyAnswerIsRejected(): void
     {
-        self::client();
-        $ctx = self::context();
-
         self::request(
             'POST',
-            self::answerUrl($ctx['tenderId'], $ctx['questionId']),
-            $ctx['customerToken'],
+            self::answerUrl($this->tenderId, $this->questionId),
+            $this->customerToken,
             ['answer' => ''],
         );
         self::assertResponseStatusCodeSame(422);

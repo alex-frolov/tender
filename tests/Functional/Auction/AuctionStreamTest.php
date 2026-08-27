@@ -5,18 +5,24 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Auction;
 
 use App\Auction\Controller\AuctionStreamController;
+use App\Auction\Entity\Auction;
 use App\Auction\Entity\Enum\AuctionStatusEnum;
 use App\Auction\Entity\Enum\AuctionStepModeEnum;
 use App\Auction\Entity\Enum\AuctionTypeEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\User;
+use App\Tender\Entity\Lot;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\BidFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Uid\Uuid;
@@ -38,6 +44,60 @@ use Symfony\Component\Uid\Uuid;
 final class AuctionStreamTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private User $customerUser;
+    private Company $supplierCompany;
+    private User $supplierUser;
+    private Tender $tender;
+    private Lot $lot;
+    private Auction $auction;
+    private string $customerToken;
+    private string $supplierToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $this->customerUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplierCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $this->supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplierCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne([
+            'nmckMinor' => 1000000,
+            'customerId' => $this->customerCompany->getId(),
+        ]);
+        $this->lot = LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => 1000000]);
+        $this->auction = AuctionFactory::new()
+            ->forTender($this->tender, $this->lot)
+            ->with([
+                'type' => AuctionTypeEnum::REDUCTION,
+                'stepMode' => AuctionStepModeEnum::FIXED,
+                'bidStepMinor' => 50000,
+                'stepDurationSec' => 600,
+                'status' => AuctionStatusEnum::NEW,
+            ])
+            ->create();
+
+        // Допущенный участник (bids.status = admitted, FR-1.2.4).
+        BidFactory::new()->forAuction($this->auction, $this->supplierCompany->getId())->admitted()->create();
+
+        $this->customerToken = $this->loginAs((string) $this->customerUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $this->supplierUser->getEmail());
+    }
 
     protected function tearDown(): void
     {
@@ -76,7 +136,7 @@ final class AuctionStreamTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -103,16 +163,13 @@ final class AuctionStreamTest extends WebTestCase
 
     public function testCustomerCanGetStreamDiscovery(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties();
-
-        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $ctx['customerToken']);
+        $client = self::request('GET', self::streamUrl((string) $this->auction->getId()), $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertIsString($body['hub']);
         self::assertStringContainsString('.well-known/mercure', $body['hub']);
-        self::assertSame('auction:'.$ctx['auction']->getId(), $body['topic']);
+        self::assertSame('auction:'.$this->auction->getId(), $body['topic']);
         self::assertIsString($body['token']);
         self::assertNotSame('', $body['token']);
         self::assertIsInt($body['expires_in']);
@@ -121,10 +178,13 @@ final class AuctionStreamTest extends WebTestCase
 
     public function testAdmittedParticipantCanGetStreamDiscoveryDuringTrade(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties(AuctionStatusEnum::TRADE);
+        $em = self::getContainer()->get(EntityManagerInterface::class);
+        $auction = $em->getRepository(Auction::class)->find($this->auction->getId());
+        self::assertInstanceOf(Auction::class, $auction);
+        $auction->setStatus(AuctionStatusEnum::TRADE);
+        $em->flush();
 
-        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $ctx['supplierToken']);
+        $client = self::request('GET', self::streamUrl((string) $this->auction->getId()), $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
     }
 
@@ -134,104 +194,45 @@ final class AuctionStreamTest extends WebTestCase
      */
     public function testAdmittedParticipantIsForbiddenBeforeTrade(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties();
-
-        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $ctx['supplierToken']);
+        $client = self::request('GET', self::streamUrl((string) $this->auction->getId()), $this->supplierToken);
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testPlatformAdminObserverCanGetStreamDiscovery(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties();
         $sa = UserFactory::createOne([
             'role' => UserRoleEnum::PLATFORM_ADMIN,
             'email' => 'sa-stream-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $saToken = self::loginAs((string) $sa->getEmail());
+        $saToken = $this->loginAs((string) $sa->getEmail());
 
-        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $saToken);
+        $client = self::request('GET', self::streamUrl((string) $this->auction->getId()), $saToken);
         self::assertResponseStatusCodeSame(200);
     }
 
     public function testForeignCompanyIsForbidden(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties();
-
         $foreign = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $foreignUser = UserFactory::createOne([
             'companyId' => $foreign->getId(),
             'role' => UserRoleEnum::ADMIN,
             'email' => 'foreign-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $foreignToken = self::loginAs((string) $foreignUser->getEmail());
+        $foreignToken = $this->loginAs((string) $foreignUser->getEmail());
 
-        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), $foreignToken);
+        $client = self::request('GET', self::streamUrl((string) $this->auction->getId()), $foreignToken);
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties();
-
-        $client = self::request('GET', self::streamUrl((string) $ctx['auction']->getId()), '');
+        $client = self::request('GET', self::streamUrl((string) $this->auction->getId()), '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testUnknownAuctionReturns404(): void
     {
-        self::client();
-        $ctx = self::auctionWithParties();
-
-        $client = self::request('GET', self::streamUrl((string) Uuid::v4()), $ctx['customerToken']);
+        $client = self::request('GET', self::streamUrl((string) Uuid::v4()), $this->customerToken);
         self::assertResponseStatusCodeSame(404);
-    }
-
-    /**
-     * @return array{customerToken: string, supplierToken: string, auction: \App\Auction\Entity\Auction}
-     */
-    private static function auctionWithParties(AuctionStatusEnum $status = AuctionStatusEnum::NEW): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne([
-            'nmckMinor' => 1000000,
-            'customerId' => $customer->getId(),
-        ]);
-        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 1000000]);
-        $auction = AuctionFactory::new()
-            ->forTender($tender, $lot)
-            ->with([
-                'type' => AuctionTypeEnum::REDUCTION,
-                'stepMode' => AuctionStepModeEnum::FIXED,
-                'bidStepMinor' => 50000,
-                'stepDurationSec' => 600,
-                'status' => $status,
-            ])
-            ->create();
-
-        // Допущенный участник (bids.status = admitted, FR-1.2.4).
-        BidFactory::new()->forAuction($auction, $supplier->getId())->admitted()->create();
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'auction' => $auction,
-        ];
     }
 }

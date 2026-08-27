@@ -15,6 +15,8 @@ use App\Iam\Controller\Auth\TokenController;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderRateController;
+use App\Tender\Entity\Enum\LotStatusEnum;
+use App\Tender\Entity\Lot;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\BidFactory;
 use App\Tests\Factory\CompanyFactory;
@@ -44,72 +46,18 @@ final class TenderRateTest extends WebTestCase
 
     private static ?KernelBrowser $client = null;
 
-    protected function tearDown(): void
+    private Auction $auction;
+    private string $customerToken;
+    private string $agentToken;
+
+    protected function setUp(): void
     {
-        self::$client = null;
-        parent::tearDown();
-    }
+        parent::setUp();
 
-    private static function client(): KernelBrowser
-    {
-        self::$client ??= self::createClient();
+        self::$client = self::createClient();
 
-        return self::$client;
-    }
-
-    private static function uniqueIp(): string
-    {
-        return '35.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
-    }
-
-    private static function loginAs(string $email): string
-    {
-        $client = self::client();
-        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
-        $client->request(
-            'POST',
-            TokenController::URL,
-            [],
-            [],
-            ['CONTENT_TYPE' => 'application/json'],
-            json_encode(['email' => $email, 'password' => UserFactory::PASSWORD], \JSON_UNESCAPED_UNICODE) ?: '{}',
-        );
-        self::assertResponseStatusCodeSame(200);
-        $body = json_decode((string) $client->getResponse()->getContent(), true);
-        self::assertIsArray($body);
-        self::assertIsString($body['access_token']);
-
-        return $body['access_token'];
-    }
-
-    /**
-     * @param array<string, mixed>|null $data
-     */
-    private static function request(string $method, string $url, string $token, ?array $data = null): KernelBrowser
-    {
-        $client = self::client();
-        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
-        $client->request(
-            $method,
-            $url,
-            [],
-            [],
-            ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer '.$token],
-            null === $data ? '' : (json_encode($data, \JSON_UNESCAPED_UNICODE) ?: ''),
-        );
-
-        return $client;
-    }
-
-    /**
-     * Тендер с завершённым аукционом (победитель выбран) и закрытым лотом.
-     *
-     * @return array{customer: \App\Iam\Entity\Company, customerToken: string,
-     *               agentToken: string, auction: Auction}
-     */
-    private static function closedTenderContext(): array
-    {
-        self::client();
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
         $container = self::getContainer();
 
         $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
@@ -165,16 +113,70 @@ final class TenderRateTest extends WebTestCase
 
         // Закрываем лот (имитация DONE: execution закрывает лот).
         $em = $container->get(EntityManagerInterface::class);
-        $closedLot = $em->getRepository(\App\Tender\Entity\Lot::class)->find($auction->getLotId());
-        $closedLot?->setStatus(\App\Tender\Entity\Enum\LotStatusEnum::CLOSED);
+        $closedLot = $em->getRepository(Lot::class)->find($auction->getLotId());
+        $closedLot?->setStatus(LotStatusEnum::CLOSED);
         $em->flush();
 
-        return [
-            'customer' => $customer,
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'agentToken' => self::loginAs((string) $agent->getEmail()),
-            'auction' => $auction,
-        ];
+        $this->auction = $auction;
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->agentToken = $this->loginAs((string) $agent->getEmail());
+    }
+
+    protected function tearDown(): void
+    {
+        self::$client = null;
+        parent::tearDown();
+    }
+
+    private static function client(): KernelBrowser
+    {
+        self::$client ??= self::createClient();
+
+        return self::$client;
+    }
+
+    private static function uniqueIp(): string
+    {
+        return '35.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
+    }
+
+    private function loginAs(string $email): string
+    {
+        $client = self::client();
+        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
+        $client->request(
+            'POST',
+            TokenController::URL,
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json'],
+            json_encode(['email' => $email, 'password' => UserFactory::PASSWORD], \JSON_UNESCAPED_UNICODE) ?: '{}',
+        );
+        self::assertResponseStatusCodeSame(200);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        self::assertIsString($body['access_token']);
+
+        return $body['access_token'];
+    }
+
+    /**
+     * @param array<string, mixed>|null $data
+     */
+    private static function request(string $method, string $url, string $token, ?array $data = null): KernelBrowser
+    {
+        $client = self::client();
+        $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
+        $client->request(
+            $method,
+            $url,
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json', 'HTTP_AUTHORIZATION' => 'Bearer '.$token],
+            null === $data ? '' : (json_encode($data, \JSON_UNESCAPED_UNICODE) ?: ''),
+        );
+
+        return $client;
     }
 
     private static function rateUrl(string $tenderId): string
@@ -184,10 +186,9 @@ final class TenderRateTest extends WebTestCase
 
     public function testRateAfterExecutionDone(): void
     {
-        $ctx = self::closedTenderContext();
-        $tenderId = (string) $ctx['auction']->getTenderId();
+        $tenderId = (string) $this->auction->getTenderId();
 
-        $client = self::request('POST', self::rateUrl($tenderId), $ctx['customerToken'], ['execution_rating' => 9]);
+        $client = self::request('POST', self::rateUrl($tenderId), $this->customerToken, ['execution_rating' => 9]);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -196,18 +197,16 @@ final class TenderRateTest extends WebTestCase
 
     public function testRateBeforeDoneReturns409(): void
     {
-        $ctx = self::closedTenderContext();
-        $auction = $ctx['auction'];
-        $tender = $auction->getTenderId();
+        $tenderId = (string) $this->auction->getTenderId();
 
         // Открываем лот обратно (тендер не завершён) → rating_not_allowed.
         $em = static::getContainer()->get(EntityManagerInterface::class);
-        $freshLot = $em->getRepository(\App\Tender\Entity\Lot::class)->find($auction->getLotId());
-        $freshLot?->setStatus(\App\Tender\Entity\Enum\LotStatusEnum::BIDDING);
+        $freshLot = $em->getRepository(Lot::class)->find($this->auction->getLotId());
+        $freshLot?->setStatus(LotStatusEnum::BIDDING);
         $em->flush();
         $em->clear();
 
-        $client = self::request('POST', self::rateUrl((string) $tender), $ctx['customerToken'], ['execution_rating' => 8]);
+        $client = self::request('POST', self::rateUrl($tenderId), $this->customerToken, ['execution_rating' => 8]);
         self::assertResponseStatusCodeSame(409);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -216,26 +215,23 @@ final class TenderRateTest extends WebTestCase
 
     public function testRateOutOfRangeReturns422(): void
     {
-        $ctx = self::closedTenderContext();
-        $tenderId = (string) $ctx['auction']->getTenderId();
+        $tenderId = (string) $this->auction->getTenderId();
 
-        $client = self::request('POST', self::rateUrl($tenderId), $ctx['customerToken'], ['execution_rating' => 11]);
+        $client = self::request('POST', self::rateUrl($tenderId), $this->customerToken, ['execution_rating' => 11]);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testAgentCannotRateReturns403(): void
     {
-        $ctx = self::closedTenderContext();
-        $tenderId = (string) $ctx['auction']->getTenderId();
+        $tenderId = (string) $this->auction->getTenderId();
 
-        self::request('POST', self::rateUrl($tenderId), $ctx['agentToken'], ['execution_rating' => 9]);
+        self::request('POST', self::rateUrl($tenderId), $this->agentToken, ['execution_rating' => 9]);
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        $ctx = self::closedTenderContext();
-        $tenderId = (string) $ctx['auction']->getTenderId();
+        $tenderId = (string) $this->auction->getTenderId();
 
         self::request('POST', self::rateUrl($tenderId), '', ['execution_rating' => 9]);
         self::assertResponseStatusCodeSame(401);

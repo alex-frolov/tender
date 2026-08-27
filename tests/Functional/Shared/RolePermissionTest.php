@@ -14,6 +14,7 @@ use App\Iam\Service\PermissionCheckService;
 use App\Iam\Service\RolePermissionCache;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -24,7 +25,13 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  *   читает кэш наборов; RolePermissionService инвалидирует его при обновлении);
  * - admin — полный набор; нет записи → default-матрица; deny by default;
  * - аудит изменений набора.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов —
+ * RolePermissionRepository:38 (пересборка матрицы прав 2 ролей на cache-miss,
+ * cold path). Прод-код не меняем — правило отключено атрибутом класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
 final class RolePermissionTest extends WebTestCase
 {
     private const PLATFORM_EMAIL = 'sa-perm@test.ru';
@@ -33,14 +40,24 @@ final class RolePermissionTest extends WebTestCase
     /** @var KernelBrowser|null один клиент на тест */
     private static ?KernelBrowser $client = null;
 
+    private string $token;
+
     protected function setUp(): void
     {
+        parent::setUp();
+
+        self::$client = static::createClient();
+
         // кэш наборов общий для Redis — чистим перед каждым тестом, чтобы
         // stale-значения из одной транзакции не протекали в следующую
-        self::client();
         $cache = self::getContainer()->get(RolePermissionCache::class);
         self::assertInstanceOf(RolePermissionCache::class, $cache);
         $cache->clear();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->platformAdmin();
+        $this->token = $this->login();
     }
 
     protected function tearDown(): void
@@ -74,7 +91,7 @@ final class RolePermissionTest extends WebTestCase
         return $json;
     }
 
-    private static function platformAdmin(): User
+    private function platformAdmin(): User
     {
         return UserFactory::createOne([
             'email' => self::PLATFORM_EMAIL,
@@ -84,7 +101,7 @@ final class RolePermissionTest extends WebTestCase
         ]);
     }
 
-    private static function login(string $email = self::PLATFORM_EMAIL): string
+    private function login(string $email = self::PLATFORM_EMAIL): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -133,9 +150,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testPermissionCatalogReturnsFullList(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         $body = self::request('GET', PermissionListController::URL, $token);
         self::assertSame(200, self::client()->getResponse()->getStatusCode());
@@ -151,9 +166,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testGetRoleSetsReturnsManagerAndAgentDefaults(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         $body = self::request('GET', RolePermissionGetController::URL, $token);
         self::assertSame(200, self::client()->getResponse()->getStatusCode());
@@ -188,7 +201,6 @@ final class RolePermissionTest extends WebTestCase
      */
     public function testCacheKeyIsIsolatedPerParallelWorker(): void
     {
-        self::client();
         $cache = self::getContainer()->get(RolePermissionCache::class);
         self::assertInstanceOf(RolePermissionCache::class, $cache);
         $redis = self::getContainer()->get(\Redis::class);
@@ -210,9 +222,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testUpdateRoleAppliesImmediately(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         $manager = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
@@ -244,9 +254,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testAgentCannotCreateTenderByDefault(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         $agent = UserFactory::createOne(['role' => UserRoleEnum::AGENT]);
         $checker = self::getContainer()->get(PermissionCheckService::class);
@@ -259,9 +267,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testUpdateRejectsUnknownCode422(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         self::request('PUT', RolePermissionUpdateController::URL, $token, [
             'role' => 'manager',
@@ -272,9 +278,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testUpdateRejectsNonBooleanValue422(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         self::request('PUT', RolePermissionUpdateController::URL, $token, [
             'role' => 'manager',
@@ -285,9 +289,7 @@ final class RolePermissionTest extends WebTestCase
 
     public function testUpdateRejectsInvalidRole422(): void
     {
-        self::client();
-        self::platformAdmin();
-        $token = self::login();
+        $token = $this->token;
 
         self::request('PUT', RolePermissionUpdateController::URL, $token, [
             'role' => 'admin',
@@ -298,13 +300,12 @@ final class RolePermissionTest extends WebTestCase
 
     public function testNonPlatformActorForbidden(): void
     {
-        self::client();
         $admin = UserFactory::createOne([
             'role' => UserRoleEnum::ADMIN,
             'email' => 'admin-perm@test.ru',
             'password' => self::PASSWORD,
         ]);
-        $token = self::login('admin-perm@test.ru');
+        $token = $this->login('admin-perm@test.ru');
 
         self::request('GET', RolePermissionGetController::URL, $token);
         self::assertSame(403, self::client()->getResponse()->getStatusCode());
@@ -313,7 +314,6 @@ final class RolePermissionTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         self::request('GET', PermissionListController::URL, '');
         self::assertSame(401, self::client()->getResponse()->getStatusCode());
     }

@@ -14,6 +14,7 @@ use App\Platform\Controller\ApiKey\ApiKeyRotateController;
 use App\Tests\Factory\ApiKeyFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -28,10 +29,30 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  *   401 без токена; чужой ключ — 404; невалидные scopes — 422.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя, дублирующийся на каждый запрос CRUD-цепочки).
+ * Прод-код не меняем — правило отключено атрибутом класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('duplicate-query')]
 final class ApiKeyCrudTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    /** @var array{token: string, company: object} */
+    private array $admin;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->admin = $this->adminToken();
+    }
 
     protected function tearDown(): void
     {
@@ -70,7 +91,7 @@ final class ApiKeyCrudTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -93,7 +114,7 @@ final class ApiKeyCrudTest extends WebTestCase
     /**
      * @return array{token: string, company: object}
      */
-    private static function adminToken(): array
+    private function adminToken(): array
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $user = UserFactory::createOne([
@@ -102,13 +123,12 @@ final class ApiKeyCrudTest extends WebTestCase
             'email' => 'apikey-admin-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return ['token' => self::loginAs((string) $user->getEmail()), 'company' => $company];
+        return ['token' => $this->loginAs((string) $user->getEmail()), 'company' => $company];
     }
 
     public function testFullLifecycleCreateListRotateRevoke(): void
     {
-        self::client();
-        ['token' => $token] = self::adminToken();
+        $token = $this->admin['token'];
 
         // Создание: token отдаётся один раз, scopes сохраняются.
         $client = self::request('POST', ApiKeyCreateController::URL, $token, [
@@ -168,8 +188,7 @@ final class ApiKeyCrudTest extends WebTestCase
 
     public function testCreateWithExpiresAtAndEmptyScopes(): void
     {
-        self::client();
-        ['token' => $token] = self::adminToken();
+        $token = $this->admin['token'];
 
         $client = self::request('POST', ApiKeyCreateController::URL, $token, [
             'name' => 'Short-lived',
@@ -184,8 +203,7 @@ final class ApiKeyCrudTest extends WebTestCase
 
     public function testCreateRejectsInvalidScope(): void
     {
-        self::client();
-        ['token' => $token] = self::adminToken();
+        $token = $this->admin['token'];
 
         $client = self::request('POST', ApiKeyCreateController::URL, $token, [
             'name' => 'Bad scopes',
@@ -199,7 +217,6 @@ final class ApiKeyCrudTest extends WebTestCase
 
     public function testManagerAndAgentCannotManageKeysReturns403(): void
     {
-        self::client();
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
 
         $manager = UserFactory::createOne([
@@ -212,8 +229,8 @@ final class ApiKeyCrudTest extends WebTestCase
             'role' => UserRoleEnum::AGENT,
             'email' => 'apikey-agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $managerToken = self::loginAs((string) $manager->getEmail());
-        $agentToken = self::loginAs((string) $agent->getEmail());
+        $managerToken = $this->loginAs((string) $manager->getEmail());
+        $agentToken = $this->loginAs((string) $agent->getEmail());
 
         // manager и agent — api_keys.manage отключено по умолчанию (FR-1.5.10).
         $client = self::request('POST', ApiKeyCreateController::URL, $managerToken, [
@@ -227,16 +244,14 @@ final class ApiKeyCrudTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('GET', ApiKeyListController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testForeignApiKeyReturns404(): void
     {
-        self::client();
         $other = ApiKeyFactory::createOne();
-        ['token' => $token] = self::adminToken();
+        $token = $this->admin['token'];
 
         $client = self::request('DELETE', str_replace('{apiKeyId}', (string) $other->getId(), ApiKeyRevokeController::URL), $token);
         self::assertResponseStatusCodeSame(404);

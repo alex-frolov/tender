@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Tests\Functional\Tender;
 
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Tender\Controller\TenderListController;
 use App\Tender\Entity\Enum\AccessTypeEnum;
 use App\Tender\Entity\Enum\LawTypeEnum;
@@ -14,6 +15,8 @@ use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Story\VerifiedUserStory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -23,10 +26,34 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * status, валидация (422 на невалидные status/limit/cursor).
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — 8 list-запросов
+ * в одном тесте дают дубликаты AuthMiddleware:84 (SELECT пользователя на каждый
+ * запрос), ContractRepository:188 / BidRepository:152 (visibility-подзапросы),
+ * а n-plus-one — группировка каталога TenderRepository:306. Прод-код менять
+ * не нужно, см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('query-in-loop')]
+#[IgnoreRule('duplicate-query')]
 final class TenderListPaginationTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        $this->company = VerifiedUserStory::company();
+        $this->token = $this->login();
+    }
 
     protected function tearDown(): void
     {
@@ -46,7 +73,7 @@ final class TenderListPaginationTest extends WebTestCase
         return '12.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(): string
+    private function login(): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -94,13 +121,11 @@ final class TenderListPaginationTest extends WebTestCase
 
     public function testCursorPaginationReturnsAllTendersInDescOrder(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $tenders = [];
         foreach (['P1', 'P2', 'P3', 'P4', 'P5'] as $title) {
             $tenders[$title] = TenderFactory::createOne([
-                'customerId' => $company->getId(),
-                'createdBy' => $company->getId(),
+                'customerId' => $this->company->getId(),
+                'createdBy' => $this->company->getId(),
                 'title' => $title,
             ]);
         }
@@ -109,7 +134,6 @@ final class TenderListPaginationTest extends WebTestCase
         $this->setCreatedAt($tenders['P3'], '2026-06-01T00:00:03+00:00');
         $this->setCreatedAt($tenders['P4'], '2026-06-01T00:00:04+00:00');
         $this->setCreatedAt($tenders['P5'], '2026-06-01T00:00:05+00:00');
-        $token = self::login();
 
         $seen = [];
         $titles = [];
@@ -119,7 +143,7 @@ final class TenderListPaginationTest extends WebTestCase
             if (null !== $cursor) {
                 $url .= '&cursor='.rawurlencode($cursor);
             }
-            $client = self::request('GET', $url, $token);
+            $client = self::request('GET', $url, $this->token);
             self::assertResponseStatusCodeSame(200);
             $body = self::body($client);
             self::assertIsArray($body['items']);
@@ -143,16 +167,13 @@ final class TenderListPaginationTest extends WebTestCase
 
     public function testStatusFilter(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId(), 'title' => 'Draft']);
-        $published = TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId(), 'title' => 'Published']);
+        TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId(), 'title' => 'Draft']);
+        $published = TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId(), 'title' => 'Published']);
         $published->setStatus(TenderStatusEnum::PUBLISHED);
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $em->flush();
-        $token = self::login();
 
-        $client = self::request('GET', TenderListController::URL.'?status=published', $token);
+        $client = self::request('GET', TenderListController::URL.'?status=published', $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
@@ -165,22 +186,19 @@ final class TenderListPaginationTest extends WebTestCase
 
     public function testDefaultLimitAndClampToMax(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         foreach (['A', 'B', 'C'] as $title) {
-            TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId(), 'title' => $title]);
+            TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId(), 'title' => $title]);
         }
-        $token = self::login();
 
         // limit вне диапазона 1..100 клампется (не 422): 500 → 100, но данных меньше
-        $client = self::request('GET', TenderListController::URL.'?limit=500', $token);
+        $client = self::request('GET', TenderListController::URL.'?limit=500', $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
         self::assertCount(3, $body['items']);
 
         // дефолтный лимит 20 (openapi): без параметра — все 3 в одной странице
-        $client = self::request('GET', TenderListController::URL, $token);
+        $client = self::request('GET', TenderListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = self::body($client);
         self::assertIsArray($body['items']);
@@ -189,40 +207,28 @@ final class TenderListPaginationTest extends WebTestCase
 
     public function testInvalidStatusReturns422(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('GET', TenderListController::URL.'?status=bogus', $token);
+        $client = self::request('GET', TenderListController::URL.'?status=bogus', $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testInvalidLimitReturns422(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('GET', TenderListController::URL.'?limit=abc', $token);
+        $client = self::request('GET', TenderListController::URL.'?limit=abc', $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testInvalidCursorReturns422(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        TenderFactory::createOne(['customerId' => $company->getId(), 'createdBy' => $company->getId()]);
-        $token = self::login();
+        TenderFactory::createOne(['customerId' => $this->company->getId(), 'createdBy' => $this->company->getId()]);
 
-        $client = self::request('GET', TenderListController::URL.'?limit=2&cursor=!!!bad', $token);
+        $client = self::request('GET', TenderListController::URL.'?limit=2&cursor=!!!bad', $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 
+    #[AllowQueries(55)]
     public function testFiltersCombined(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-        $cid = $company->getId();
+        $cid = $this->company->getId();
 
         // Матрица тендеров для проверки всех фильтров.
         TenderFactory::createOne([
@@ -243,38 +249,37 @@ final class TenderListPaginationTest extends WebTestCase
             'lawType' => LawTypeEnum::FZ223, 'accessType' => AccessTypeEnum::OPEN,
             'region' => 'Москва', 'nmckMinor' => 200000,
         ]);
-        $token = self::login();
 
         // q — поиск по номеру
-        $body = self::body(self::request('GET', TenderListController::URL.'?q=T-FILTER-2', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?q=T-FILTER-2', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(1, $body['items']);
         self::assertIsArray($body['items'][0]);
         self::assertSame('Ноутбуки', $body['items'][0]['title']);
 
         // q — поиск по названию
-        $body = self::body(self::request('GET', TenderListController::URL.'?q=сервер', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?q=сервер', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(1, $body['items']);
         self::assertIsArray($body['items'][0]);
         self::assertSame('Серверы 4U', $body['items'][0]['title']);
 
         // law_type
-        $body = self::body(self::request('GET', TenderListController::URL.'?law_type=commercial', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?law_type=commercial', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(1, $body['items']);
         self::assertIsArray($body['items'][0]);
         self::assertSame('Ноутбуки', $body['items'][0]['title']);
 
         // access_type
-        $body = self::body(self::request('GET', TenderListController::URL.'?access_type=contract_holders', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?access_type=contract_holders', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(1, $body['items']);
         self::assertIsArray($body['items'][0]);
         self::assertSame('Ноутбуки', $body['items'][0]['title']);
 
         // region — подстрока
-        $body = self::body(self::request('GET', TenderListController::URL.'?region=Москва', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?region=Москва', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(2, $body['items']);
         $titles = array_map(
@@ -285,17 +290,17 @@ final class TenderListPaginationTest extends WebTestCase
         self::assertContains('Москва стройка', $titles);
 
         // price_min / price_max (minor units)
-        $body = self::body(self::request('GET', TenderListController::URL.'?price_min=100000', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?price_min=100000', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(2, $body['items']);
-        $body = self::body(self::request('GET', TenderListController::URL.'?price_max=50000', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?price_max=50000', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(1, $body['items']);
         self::assertIsArray($body['items'][0]);
         self::assertSame('Ноутбуки', $body['items'][0]['title']);
 
         // комбинация
-        $body = self::body(self::request('GET', TenderListController::URL.'?region=Москва&price_min=200000', $token));
+        $body = self::body(self::request('GET', TenderListController::URL.'?region=Москва&price_min=200000', $this->token));
         self::assertIsArray($body['items']);
         self::assertCount(1, $body['items']);
         self::assertIsArray($body['items'][0]);
@@ -304,21 +309,13 @@ final class TenderListPaginationTest extends WebTestCase
 
     public function testInvalidLawTypeReturns422(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('GET', TenderListController::URL.'?law_type=bogus', $token);
+        $client = self::request('GET', TenderListController::URL.'?law_type=bogus', $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testInvalidPriceReturns422(): void
     {
-        self::client();
-        VerifiedUserStory::company();
-        $token = self::login();
-
-        $client = self::request('GET', TenderListController::URL.'?price_min=abc', $token);
+        $client = self::request('GET', TenderListController::URL.'?price_min=abc', $this->token);
         self::assertResponseStatusCodeSame(422);
     }
 

@@ -17,6 +17,7 @@ use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Mailer\Messenger\SendEmailMessage;
@@ -34,12 +35,55 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * - событие bid.qualified уходит в outbox.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: `n-plus-one` — AuthMiddleware:84 (SELECT пользователя на каждый
+ * HTTP-запрос сценария); см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
 final class BidQualifyTest extends WebTestCase
 {
     use TenderLotTrait;
 
+    private const START_MINOR = 10000;
+
     private static ?KernelBrowser $client = null;
+
+    private Tender $tender;
+    private string $customerToken;
+    private string $supplierToken;
+    private string $supplierId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'customer-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne(['nmckMinor' => self::START_MINOR, 'customerId' => $customer->getId()]);
+        LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => self::START_MINOR]);
+
+        $container = static::getContainer();
+        $workflow = $container->get('state_machine.tender');
+        self::assertInstanceOf(WorkflowInterface::class, $workflow);
+        $workflow->apply($this->tender, TenderStatusTransition::PUBLISH->value);
+        $workflow->apply($this->tender, TenderStatusTransition::START_BID_ACCEPTANCE->value);
+        $container->get(EntityManagerInterface::class)->flush();
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+
+        $supplier = $this->supplier();
+        $this->supplierToken = $supplier['token'];
+        $this->supplierId = $supplier['supplierId'];
+    }
 
     protected function tearDown(): void
     {
@@ -59,7 +103,7 @@ final class BidQualifyTest extends WebTestCase
         return '19.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -80,6 +124,38 @@ final class BidQualifyTest extends WebTestCase
     }
 
     /**
+     * Подтверждённая компания-исполнитель + admin-пользователь + токен.
+     *
+     * @return array{token: string, supplierId: string}
+     */
+    private function supplier(): array
+    {
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'supplier-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        return ['token' => $this->loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
+    }
+
+    /**
+     * Токен другого заказчика (для проверки tenant-изоляции).
+     */
+    private function otherCustomerToken(): string
+    {
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'customer-other-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        return $this->loginAs((string) $user->getEmail());
+    }
+
+    /**
      * @param array<mixed>|null $data
      */
     private static function request(string $method, string $url, string $token, ?array $data = null): KernelBrowser
@@ -96,48 +172,6 @@ final class BidQualifyTest extends WebTestCase
         );
 
         return $client;
-    }
-
-    /**
-     * Тендер в accepting_bids (через workflow), принадлежащий заказчику.
-     *
-     * @return array{tender: Tender, customerToken: string}
-     */
-    private static function customerTender(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'customer-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne(['nmckMinor' => 10000, 'customerId' => $customer->getId()]);
-        LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => 10000]);
-
-        $container = static::getContainer();
-        $workflow = $container->get('state_machine.tender');
-        self::assertInstanceOf(WorkflowInterface::class, $workflow);
-        $workflow->apply($tender, TenderStatusTransition::PUBLISH->value);
-        $workflow->apply($tender, TenderStatusTransition::START_BID_ACCEPTANCE->value);
-        $container->get(EntityManagerInterface::class)->flush();
-
-        return ['tender' => $tender, 'customerToken' => self::loginAs((string) $customerUser->getEmail())];
-    }
-
-    /**
-     * @return array{token: string, supplierId: string}
-     */
-    private static function supplier(): array
-    {
-        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $user = UserFactory::createOne([
-            'companyId' => $company->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'supplier-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return ['token' => self::loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
     }
 
     /**
@@ -169,13 +203,13 @@ final class BidQualifyTest extends WebTestCase
     /**
      * Подача заявки и возврат её id.
      */
-    private static function submitBid(Tender $tender, string $supplierToken, string $supplierId): string
+    private function submitBid(): string
     {
         $client = self::request(
             'POST',
-            self::submitUrl((string) $tender->getId()),
-            $supplierToken,
-            self::bidPayload($supplierId, self::firstLotId($tender)),
+            self::submitUrl((string) $this->tender->getId()),
+            $this->supplierToken,
+            self::bidPayload($this->supplierId, self::firstLotId($this->tender)),
         );
         self::assertResponseStatusCodeSame(201);
         $bid = json_decode((string) $client->getResponse()->getContent(), true);
@@ -187,16 +221,12 @@ final class BidQualifyTest extends WebTestCase
 
     public function testAdmitBidWithReason(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         $client = self::request(
             'POST',
             self::qualifyUrl($bidId),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['decision' => 'admit', 'reason' => 'Документы в порядке'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -220,16 +250,12 @@ final class BidQualifyTest extends WebTestCase
 
     public function testRejectBidSendsNotificationToParticipant(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         $client = self::request(
             'POST',
             self::qualifyUrl($bidId),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['decision' => 'reject', 'reason' => 'Не соответствует требованиям'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -249,16 +275,12 @@ final class BidQualifyTest extends WebTestCase
 
     public function testRejectWithoutReasonReturns422(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         $client = self::request(
             'POST',
             self::qualifyUrl($bidId),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['decision' => 'reject'],
         );
         self::assertResponseStatusCodeSame(422);
@@ -266,16 +288,12 @@ final class BidQualifyTest extends WebTestCase
 
     public function testInvalidDecisionReturns422(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         $client = self::request(
             'POST',
             self::qualifyUrl($bidId),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['decision' => 'maybe', 'reason' => 'причина'],
         );
         self::assertResponseStatusCodeSame(422);
@@ -283,18 +301,14 @@ final class BidQualifyTest extends WebTestCase
 
     public function testQualifyBidFromAnotherTenderReturns404(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         // другой заказчик пытается рассмотреть чужую заявку → 404 (tenant-изоляция)
-        $other = self::customerTender();
+        $otherToken = $this->otherCustomerToken();
         $client = self::request(
             'POST',
             self::qualifyUrl($bidId),
-            $other['customerToken'],
+            $otherToken,
             ['decision' => 'admit', 'reason' => 'Попытка чужого рассмотрения'],
         );
         self::assertResponseStatusCodeSame(404);
@@ -302,17 +316,13 @@ final class BidQualifyTest extends WebTestCase
 
     public function testQualifyWithdrawnBidReturns409(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         // отзыв заявки поставщиком → submitted → withdrawn; рассмотрение уже невозможно
         $client = self::request(
             'POST',
             str_replace('{bidId}', $bidId, '/api/v1/bids/{bidId}/withdraw'),
-            $supplier['token'],
+            $this->supplierToken,
             ['reason' => 'Сняли заявку'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -320,7 +330,7 @@ final class BidQualifyTest extends WebTestCase
         $client = self::request(
             'POST',
             self::qualifyUrl($bidId),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['decision' => 'reject', 'reason' => 'Поздно'],
         );
         self::assertResponseStatusCodeSame(409);
@@ -328,11 +338,7 @@ final class BidQualifyTest extends WebTestCase
 
     public function testAgentCannotQualifyReturns403(): void
     {
-        self::client();
-        $ctx = self::customerTender();
-        $tender = $ctx['tender'];
-        $supplier = self::supplier();
-        $bidId = self::submitBid($tender, $supplier['token'], $supplier['supplierId']);
+        $bidId = $this->submitBid();
 
         $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $agent = UserFactory::createOne([
@@ -340,7 +346,7 @@ final class BidQualifyTest extends WebTestCase
             'role' => UserRoleEnum::AGENT,
             'email' => 'customer-agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $agentToken = self::loginAs((string) $agent->getEmail());
+        $agentToken = $this->loginAs((string) $agent->getEmail());
 
         $client = self::request(
             'POST',
@@ -353,7 +359,6 @@ final class BidQualifyTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request(
             'POST',
             self::qualifyUrl('00000000-0000-0000-0000-000000000000'),

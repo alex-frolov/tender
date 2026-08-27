@@ -13,14 +13,20 @@ use App\Auction\Entity\Auction;
 use App\Auction\Entity\Enum\AuctionStepModeEnum;
 use App\Auction\Entity\Enum\AuctionTypeEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\User;
+use App\Tender\Entity\Lot;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\BidFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Uid\Uuid;
@@ -40,13 +46,87 @@ use Symfony\Component\Workflow\WorkflowInterface;
  * - agent заказчика — 403 (auction.choose_winner: agent ❌);
  * - чужая компания (admin с правом, не тенант) — 404 (tenant-изоляция).
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: `query-in-loop` — транзакция ставки/победителя (BidTransaction:178,
+ * WinnerTransaction:68) и выбор победителя в AuctionWinnerService в одной
+ * транзакции; см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('query-in-loop')]
 final class AuctionWinnerAccessTest extends WebTestCase
 {
     private const START_MINOR = 100_000_000;
     private const STEP_MINOR = 5_000_00;
 
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private User $customerUser;
+    private User $agentUser;
+    private Company $supplierCompany;
+    private User $supplierUser;
+    private Tender $tender;
+    private Lot $lot;
+    private Auction $auction;
+    private string $customerToken;
+    private string $agentToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $this->customerUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'win-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->agentUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'win-agent-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplierCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $this->supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplierCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'win-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne([
+            'nmckMinor' => self::START_MINOR,
+            'customerId' => $this->customerCompany->getId(),
+        ]);
+        $this->lot = LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => self::START_MINOR]);
+        $this->auction = AuctionFactory::new()
+            ->forTender($this->tender, $this->lot)
+            ->with([
+                'type' => AuctionTypeEnum::REDUCTION,
+                'stepMode' => AuctionStepModeEnum::FIXED,
+                'bidStepMinor' => self::STEP_MINOR,
+                'stepDurationSec' => 600,
+            ])
+            ->create();
+
+        $container = self::getContainer();
+        $workflow = $container->get('state_machine.auction');
+        if (!$workflow instanceof WorkflowInterface) {
+            throw new \LogicException('Auction workflow not resolvable');
+        }
+        $auctionService = $container->get(AuctionService::class);
+        if (!$auctionService instanceof AuctionService) {
+            throw new \LogicException('AuctionService not resolvable');
+        }
+        $workflow->apply($this->auction, \App\Auction\Entity\Enum\AuctionStatusTransition::SCHEDULE->value);
+        $auctionService->startTrading($this->auction);
+
+        $this->customerToken = $this->loginAs((string) $this->customerUser->getEmail());
+        $this->agentToken = $this->loginAs((string) $this->agentUser->getEmail());
+        $this->loginAs((string) $this->supplierUser->getEmail());
+    }
 
     protected function tearDown(): void
     {
@@ -85,7 +165,7 @@ final class AuctionWinnerAccessTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -105,70 +185,6 @@ final class AuctionWinnerAccessTest extends WebTestCase
         return $body['access_token'];
     }
 
-    /**
-     * @return array{customer: \App\Iam\Entity\Company, customerToken: string,
-     *               agentToken: string, supplierToken: string,
-     *               auction: Auction}
-     */
-    private static function customerAuction(): array
-    {
-        self::client();
-        $container = self::getContainer();
-
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'win-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $agent = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::AGENT,
-            'email' => 'win-agent-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'win-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne([
-            'nmckMinor' => self::START_MINOR,
-            'customerId' => $customer->getId(),
-        ]);
-        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
-        $auction = AuctionFactory::new()
-            ->forTender($tender, $lot)
-            ->with([
-                'type' => AuctionTypeEnum::REDUCTION,
-                'stepMode' => AuctionStepModeEnum::FIXED,
-                'bidStepMinor' => self::STEP_MINOR,
-                'stepDurationSec' => 600,
-            ])
-            ->create();
-
-        $workflow = $container->get('state_machine.auction');
-        if (!$workflow instanceof WorkflowInterface) {
-            throw new \LogicException('Auction workflow not resolvable');
-        }
-        $auctionService = $container->get(AuctionService::class);
-        if (!$auctionService instanceof AuctionService) {
-            throw new \LogicException('AuctionService not resolvable');
-        }
-        $workflow->apply($auction, \App\Auction\Entity\Enum\AuctionStatusTransition::SCHEDULE->value);
-        $auctionService->startTrading($auction);
-
-        return [
-            'customer' => $customer,
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'agentToken' => self::loginAs((string) $agent->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'auction' => $auction,
-        ];
-    }
-
     private static function finishUrl(string $auctionId): string
     {
         return str_replace('{auctionId}', $auctionId, AuctionFinishController::URL);
@@ -181,11 +197,10 @@ final class AuctionWinnerAccessTest extends WebTestCase
 
     public function testCustomerCanFinishTrading(): void
     {
-        $ctx = self::customerAuction();
-        $auction = $ctx['auction'];
+        $auction = $this->auction;
         self::assertSame(\App\Auction\Entity\Enum\AuctionStatusEnum::TRADE, $auction->getStatus());
 
-        $client = self::request('POST', self::finishUrl((string) $auction->getId()), $ctx['customerToken']);
+        $client = self::request('POST', self::finishUrl((string) $auction->getId()), $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -195,16 +210,12 @@ final class AuctionWinnerAccessTest extends WebTestCase
 
     public function testAgentCannotFinish(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::finishUrl((string) $ctx['auction']->getId()), $ctx['agentToken']);
+        self::request('POST', self::finishUrl((string) $this->auction->getId()), $this->agentToken);
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testSupplierCannotFinish(): void
     {
-        $ctx = self::customerAuction();
-
         // Агент поставщика: права auction.control нет (agent ❌) → 403.
         $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $supplierAgent = UserFactory::createOne([
@@ -212,24 +223,22 @@ final class AuctionWinnerAccessTest extends WebTestCase
             'role' => UserRoleEnum::AGENT,
             'email' => 'win-supp-agent-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $supplierToken = self::loginAs((string) $supplierAgent->getEmail());
+        $supplierToken = $this->loginAs((string) $supplierAgent->getEmail());
 
-        self::request('POST', self::finishUrl((string) $ctx['auction']->getId()), $supplierToken);
+        self::request('POST', self::finishUrl((string) $this->auction->getId()), $supplierToken);
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::finishUrl((string) $ctx['auction']->getId()), '');
+        self::request('POST', self::finishUrl((string) $this->auction->getId()), '');
         self::assertResponseStatusCodeSame(401);
     }
 
+    #[AllowQueries(60)]
     public function testCustomerAutomaticWinnerForReduction(): void
     {
-        $ctx = self::customerAuction();
-        $auction = $ctx['auction'];
+        $auction = $this->auction;
 
         $container = self::getContainer();
         $bidService = $container->get(AuctionBidService::class);
@@ -241,7 +250,7 @@ final class AuctionWinnerAccessTest extends WebTestCase
         $bidService->placeReductionFixedBid($auction, $supplierId, self::START_MINOR - self::STEP_MINOR);
 
         // Авто-выбор: без bid_id → REDUCTION, минимальная цена.
-        $client = self::request('POST', self::winnerUrl((string) $auction->getId()), $ctx['customerToken']);
+        $client = self::request('POST', self::winnerUrl((string) $auction->getId()), $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -250,13 +259,13 @@ final class AuctionWinnerAccessTest extends WebTestCase
         self::assertNotSame('', $body['winner_bid_id']);
     }
 
+    #[AllowQueries(60)]
     public function testCustomerManualWinnerForFreePrice(): void
     {
-        $ctx = self::customerAuction();
         $container = self::getContainer();
 
         // Свободная цена в границах → ручной выбор заказчика (UC-13a).
-        $auction = $ctx['auction'];
+        $auction = $this->auction;
         $bidService = $container->get(AuctionBidService::class);
         if (!$bidService instanceof AuctionBidService) {
             throw new \LogicException('AuctionBidService not resolvable');
@@ -275,7 +284,7 @@ final class AuctionWinnerAccessTest extends WebTestCase
         $client = self::request(
             'POST',
             self::winnerUrl((string) $auction->getId()),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['bid_id' => (string) $bid->getId()],
         );
         self::assertResponseStatusCodeSame(200);
@@ -287,15 +296,12 @@ final class AuctionWinnerAccessTest extends WebTestCase
 
     public function testAgentCannotChooseWinner(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::winnerUrl((string) $ctx['auction']->getId()), $ctx['agentToken']);
+        self::request('POST', self::winnerUrl((string) $this->auction->getId()), $this->agentToken);
         self::assertResponseStatusCodeSame(403);
     }
 
     public function testForeignCompanyGets404(): void
     {
-        $ctx = self::customerAuction();
         $container = self::getContainer();
 
         $foreign = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
@@ -304,9 +310,9 @@ final class AuctionWinnerAccessTest extends WebTestCase
             'role' => UserRoleEnum::ADMIN,
             'email' => 'win-foreign-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $foreignToken = self::loginAs((string) $foreignUser->getEmail());
+        $foreignToken = $this->loginAs((string) $foreignUser->getEmail());
 
-        $auction = $ctx['auction'];
+        $auction = $this->auction;
         $bidService = $container->get(AuctionBidService::class);
         if (!$bidService instanceof AuctionBidService) {
             throw new \LogicException('AuctionBidService not resolvable');
@@ -323,9 +329,7 @@ final class AuctionWinnerAccessTest extends WebTestCase
 
     public function testUnknownAuctionReturns404(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('POST', self::finishUrl((string) Uuid::v4()), $ctx['customerToken']);
+        self::request('POST', self::finishUrl((string) Uuid::v4()), $this->customerToken);
         self::assertResponseStatusCodeSame(404);
     }
 }

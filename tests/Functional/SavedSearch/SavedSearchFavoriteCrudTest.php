@@ -38,6 +38,19 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private string $adminToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->adminToken = $this->actor(UserRoleEnum::ADMIN)['token'];
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -75,7 +88,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -98,7 +111,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
     /**
      * @return array{token: string, user: object, company: object}
      */
-    private static function actor(UserRoleEnum $role): array
+    private function actor(UserRoleEnum $role): array
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $user = UserFactory::createOne([
@@ -112,8 +125,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testSavedSearchLifecycleCreateListDelete(): void
     {
-        self::client();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         // Создание.
         $client = self::request('POST', SavedSearchCreateController::URL, $token, [
@@ -154,8 +166,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testSavedSearchCreateValidatesNameFiltersDigestPeriod(): void
     {
-        self::client();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         // Пустое имя.
         $client = self::request('POST', SavedSearchCreateController::URL, $token, [
@@ -182,8 +193,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testFavoriteLifecycleAddListDelete(): void
     {
-        self::client();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
         $tenderId = Uuid::v4();
 
         // Добавление с заметкой.
@@ -224,8 +234,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testFavoriteDuplicateReturns409(): void
     {
-        self::client();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
         $tenderId = Uuid::v4();
 
         $data = ['entity_type' => 'tender', 'entity_id' => (string) $tenderId];
@@ -242,8 +251,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testFavoriteCreateValidatesEntityTypeAndId(): void
     {
-        self::client();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         // Неверный entity_type.
         $client = self::request('POST', FavoriteCreateController::URL, $token, [
@@ -263,8 +271,7 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
     public function testAgentCanManageOwnSearchesAndFavorites(): void
     {
         // search.save/favorites.manage — common, включены всем ролям по умолчанию.
-        self::client();
-        $token = self::actor(UserRoleEnum::AGENT)['token'];
+        $token = $this->actor(UserRoleEnum::AGENT)['token'];
 
         $client = self::request('POST', SavedSearchCreateController::URL, $token, [
             'name' => 'Мой поиск',
@@ -286,7 +293,6 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('GET', SavedSearchListController::URL, '');
         self::assertResponseStatusCodeSame(401);
         $client = self::request('GET', FavoriteListController::URL, '');
@@ -295,9 +301,8 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testForeignSearchReturns404(): void
     {
-        self::client();
         $other = SavedSearchFactory::createOne();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         $client = self::request('DELETE', SavedSearchDeleteController::URL.'?savedSearchId='.(string) $other->getId(), $token);
         self::assertResponseStatusCodeSame(404);
@@ -305,9 +310,8 @@ final class SavedSearchFavoriteCrudTest extends WebTestCase
 
     public function testForeignFavoriteReturns404(): void
     {
-        self::client();
         $other = FavoriteFactory::createOne();
-        $token = self::actor(UserRoleEnum::ADMIN)['token'];
+        $token = $this->adminToken;
 
         $client = self::request('DELETE', FavoriteDeleteController::URL.'?favoriteId='.(string) $other->getId(), $token);
         self::assertResponseStatusCodeSame(404);

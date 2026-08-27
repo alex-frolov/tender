@@ -15,6 +15,7 @@ use App\Iam\Entity\RefreshToken;
 use App\Iam\Entity\User;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Mailer\EventListener\MessageLoggerListener;
@@ -34,6 +35,13 @@ final class PasswordResetTest extends WebTestCase
 
     /** @var KernelBrowser|null один клиент на тест (createClient() можно вызвать только один раз) */
     private static ?KernelBrowser $client = null;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = static::createClient();
+    }
 
     protected function tearDown(): void
     {
@@ -187,6 +195,10 @@ final class PasswordResetTest extends WebTestCase
         self::assertCount(0, self::sentEmails(), 'письмо не уходит для неизвестного email (не раскрываем наличие)');
     }
 
+    // QueryGuard: duplicate-query порождает прод-логика Redis-rate-limit cooldown —
+    // forgot в цикле проверки окна делает 6 одинаковых запросов (см.
+    // docs/guard-test/refactor-report.md); прод-код не меняем.
+    #[IgnoreRule('duplicate-query')]
     public function testForgotCooldownReturns429(): void
     {
         self::client();

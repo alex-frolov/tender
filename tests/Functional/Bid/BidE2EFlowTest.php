@@ -21,6 +21,8 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Support\TenderLotTrait;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -37,12 +39,51 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * как в проде.
  *
  * Rate limit api_global в тестах = 3/мин на IP → каждый запрос с нового IP.
+ *
+ * QueryGuard: `n-plus-one`, `duplicate-query` — AuthMiddleware:84 (SELECT
+ * пользователя на каждый HTTP-запрос сценария); `AllowQueries(80)` — весь
+ * жизненный цикл заявки в одном тесте (68 запросов); см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('duplicate-query')]
 final class BidE2EFlowTest extends WebTestCase
 {
     use TenderLotTrait;
 
     private static ?KernelBrowser $client = null;
+
+    private string $customerCompanyId;
+    private string $customerToken;
+    private string $supplier1Token;
+    private string $supplier1Id;
+    private string $supplier2Token;
+    private string $supplier2Id;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'customer-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->customerCompanyId = (string) $customer->getId();
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+
+        $s1 = $this->supplier('e2e-supp1-');
+        $this->supplier1Token = $s1['token'];
+        $this->supplier1Id = $s1['supplierId'];
+
+        $s2 = $this->supplier('e2e-supp2-');
+        $this->supplier2Token = $s2['token'];
+        $this->supplier2Id = $s2['supplierId'];
+    }
 
     protected function tearDown(): void
     {
@@ -62,7 +103,7 @@ final class BidE2EFlowTest extends WebTestCase
         return '17.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -83,6 +124,25 @@ final class BidE2EFlowTest extends WebTestCase
     }
 
     /**
+     * Подтверждённая компания-исполнитель + admin-пользователь + токен.
+     *
+     * @param string $emailPrefix уникальный префикс email (участвует в нескольких заявках)
+     *
+     * @return array{token: string, supplierId: string}
+     */
+    private function supplier(string $emailPrefix): array
+    {
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => $emailPrefix.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        return ['token' => $this->loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
+    }
+
+    /**
      * @param array<mixed>|null $data
      */
     private static function request(string $method, string $url, string $token, ?array $data = null): KernelBrowser
@@ -99,40 +159,6 @@ final class BidE2EFlowTest extends WebTestCase
         );
 
         return $client;
-    }
-
-    /**
-     * Подтверждённая компания-заказчик + admin-пользователь + токен.
-     *
-     * @return array{companyId: string, token: string}
-     */
-    private static function customer(): array
-    {
-        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $user = UserFactory::createOne([
-            'companyId' => $company->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'customer-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return ['companyId' => (string) $company->getId(), 'token' => self::loginAs((string) $user->getEmail())];
-    }
-
-    /**
-     * Подтверждённая компания-исполнитель + admin-пользователь + токен.
-     *
-     * @return array{token: string, supplierId: string}
-     */
-    private static function supplier(): array
-    {
-        $company = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $user = UserFactory::createOne([
-            'companyId' => $company->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'supplier-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return ['token' => self::loginAs((string) $user->getEmail()), 'supplierId' => (string) $company->getId()];
     }
 
     /**
@@ -230,14 +256,12 @@ final class BidE2EFlowTest extends WebTestCase
         ];
     }
 
+    #[AllowQueries(80)]
     public function testFullBidLifecycleFlow(): void
     {
-        self::client();
-
         // 1. заказчик создаёт и публикует тендер (FR-1.1.4)
-        $customer = self::customer();
-        $tenderId = self::createTender($customer['companyId'], $customer['token']);
-        self::publishTender($tenderId, $customer['token']);
+        $tenderId = self::createTender($this->customerCompanyId, $this->customerToken);
+        self::publishTender($tenderId, $this->customerToken);
 
         // 2. авто-переход published → accepting_bids по таймлайну (FR-1.1.4)
         self::processTimeline($tenderId, TenderTimelineAction::START_BID_ACCEPTANCE->value);
@@ -248,11 +272,9 @@ final class BidE2EFlowTest extends WebTestCase
         self::assertSame('accepting_bids', $tender->getStatus()->value);
 
         // 3. два участника подают заявки через API (FR-1.2.1)
-        $s1 = self::supplier();
-        $s2 = self::supplier();
         $url = self::submitUrl($tenderId);
 
-        $client = self::request('POST', $url, $s1['token'], self::bidPayload($s1['supplierId'], self::firstLotIdOf($tenderId), 'MARK-A', 900000));
+        $client = self::request('POST', $url, $this->supplier1Token, self::bidPayload($this->supplier1Id, self::firstLotIdOf($tenderId), 'MARK-A', 900000));
         self::assertResponseStatusCodeSame(201);
         $bid1 = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid1);
@@ -262,7 +284,7 @@ final class BidE2EFlowTest extends WebTestCase
         self::assertIsString($bid1['id']);
         $bid1Id = $bid1['id'];
 
-        $client = self::request('POST', $url, $s2['token'], self::bidPayload($s2['supplierId'], self::firstLotIdOf($tenderId), 'MARK-B', 850000));
+        $client = self::request('POST', $url, $this->supplier2Token, self::bidPayload($this->supplier2Id, self::firstLotIdOf($tenderId), 'MARK-B', 850000));
         self::assertResponseStatusCodeSame(201);
         $bid2 = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($bid2);
@@ -271,7 +293,7 @@ final class BidE2EFlowTest extends WebTestCase
         $bid2Id = $bid2['id'];
 
         // 4. до вскрытия заказчик видит только метаданные (FR-1.2.2)
-        $client = self::request('GET', self::listUrl($tenderId), $customer['token']);
+        $client = self::request('GET', self::listUrl($tenderId), $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $before = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($before);
@@ -301,7 +323,7 @@ final class BidE2EFlowTest extends WebTestCase
         self::assertSame(1, (int) $openedEvents, 'событие tender.opened ушло в outbox ровно один раз');
 
         // 6. после вскрытия заказчик видит полный состав заявок (FR-1.2.3)
-        $client = self::request('GET', self::listUrl($tenderId), $customer['token']);
+        $client = self::request('GET', self::listUrl($tenderId), $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $customerView = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($customerView);
@@ -323,7 +345,7 @@ final class BidE2EFlowTest extends WebTestCase
         self::assertSame(['MARK-A', 'MARK-B'], $markers);
 
         // 7. участник после вскрытия видит (в части) только part1 (FR-1.2.3)
-        $client = self::request('GET', self::listUrl($tenderId), $s1['token']);
+        $client = self::request('GET', self::listUrl($tenderId), $this->supplier1Token);
         self::assertResponseStatusCodeSame(200);
         $supplierView = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($supplierView);
@@ -339,7 +361,7 @@ final class BidE2EFlowTest extends WebTestCase
         }
 
         // 8. допуск/отклонение с причиной (FR-1.2.4)
-        $client = self::request('POST', self::qualifyUrl($bid1Id), $customer['token'], [
+        $client = self::request('POST', self::qualifyUrl($bid1Id), $this->customerToken, [
             'decision' => 'admit',
             'reason' => 'Документы в порядке',
         ]);
@@ -350,7 +372,7 @@ final class BidE2EFlowTest extends WebTestCase
         self::assertSame('Документы в порядке', $admitted['decision_reason']);
         self::assertNotNull($admitted['evaluated_at']);
 
-        $client = self::request('POST', self::qualifyUrl($bid2Id), $customer['token'], [
+        $client = self::request('POST', self::qualifyUrl($bid2Id), $this->customerToken, [
             'decision' => 'reject',
             'reason' => 'Не соответствует требованиям',
         ]);

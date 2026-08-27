@@ -32,6 +32,26 @@ final class TenderOrgPendingTest extends WebTestCase
     private const string EMAIL = 'pending-company@test.ru';
     private static ?KernelBrowser $client = null;
 
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:9)
+        // Без ->approved(): компания остаётся в дефолтном статусе pending.
+        $this->company = CompanyFactory::createOne(['legalName' => 'ООО Непроверенная']);
+        UserFactory::createOne([
+            'email' => self::EMAIL,
+            'companyId' => $this->company->getId(),
+        ]);
+        $this->token = $this->login(self::EMAIL);
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -89,27 +109,9 @@ final class TenderOrgPendingTest extends WebTestCase
         return $client;
     }
 
-    /**
-     * @return array{0: string, 1: Company} токен админа и его компания (статус pending)
-     */
-    private static function pendingCompanyAdmin(): array
-    {
-        // Без ->approved(): компания остаётся в дефолтном статусе pending.
-        $company = CompanyFactory::createOne(['legalName' => 'ООО Непроверенная']);
-        UserFactory::createOne([
-            'email' => self::EMAIL,
-            'companyId' => $company->getId(),
-        ]);
-
-        return [self::login(self::EMAIL), $company];
-    }
-
     public function testPendingCompanyCannotCreateTender(): void
     {
-        self::client();
-        [$token, $company] = self::pendingCompanyAdmin();
-
-        $client = self::request('POST', TenderCreateController::URL, $token, [
+        $client = self::request('POST', TenderCreateController::URL, $this->token, [
             'title' => 'Закупка от неподтверждённой компании',
             'procedure_type' => 'auction',
             'law_type' => 'commercial',
@@ -117,7 +119,7 @@ final class TenderOrgPendingTest extends WebTestCase
             'currency' => 'RUB',
             'vat_rate' => 20,
             'price_basis' => 'net',
-            'customer_id' => (string) $company->getId(),
+            'customer_id' => (string) $this->company->getId(),
             'lots' => [['title' => 'Лот', 'price_net_minor' => 100000]],
         ]);
 
@@ -129,13 +131,10 @@ final class TenderOrgPendingTest extends WebTestCase
 
     public function testPendingCompanyCannotPublishTender(): void
     {
-        self::client();
-        [$token, $company] = self::pendingCompanyAdmin();
-
         // Черновик заведён в обход API (создание тоже под запретом).
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
             'nmckMinor' => 100000,
         ]);
         LotFactory::createOne([
@@ -147,7 +146,7 @@ final class TenderOrgPendingTest extends WebTestCase
         static::getContainer()->get(EntityManagerInterface::class)->flush();
 
         $url = str_replace('{tenderId}', (string) $tender->getId(), TenderPublishController::URL);
-        $client = self::request('POST', $url, $token, null);
+        $client = self::request('POST', $url, $this->token, null);
 
         self::assertResponseStatusCodeSame(403);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -157,10 +156,7 @@ final class TenderOrgPendingTest extends WebTestCase
 
     public function testPendingCompanyStillSeesTenderBoard(): void
     {
-        self::client();
-        [$token] = self::pendingCompanyAdmin();
-
-        self::request('GET', TenderListController::URL, $token, null);
+        self::request('GET', TenderListController::URL, $this->token, null);
         self::assertResponseStatusCodeSame(200);
     }
 }

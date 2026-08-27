@@ -34,6 +34,40 @@ final class SecurityListTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private string $customerToken;
+    private string $supplierToken;
+    private Security $bid;
+    private Security $contract;
+    private Security $foreign;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'sec-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $supplier->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'sec-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+        $this->bid = self::security($customer->getId(), $supplier->getId(), SecurityKindEnum::BID);
+        $this->contract = self::security($customer->getId(), $supplier->getId(), SecurityKindEnum::CONTRACT);
+        $this->foreign = self::security(Uuid::v4(), Uuid::v4(), SecurityKindEnum::BID);
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -69,7 +103,7 @@ final class SecurityListTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -109,39 +143,9 @@ final class SecurityListTest extends WebTestCase
         return $security;
     }
 
-    /**
-     * @return array{customerToken: string, supplierToken: string, bid: Security, contract: Security, foreign: Security}
-     */
-    private static function context(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'sec-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'sec-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'bid' => self::security($customer->getId(), $supplier->getId(), SecurityKindEnum::BID),
-            'contract' => self::security($customer->getId(), $supplier->getId(), SecurityKindEnum::CONTRACT),
-            'foreign' => self::security(Uuid::v4(), Uuid::v4(), SecurityKindEnum::BID),
-        ];
-    }
-
     public function testCustomerSeesSecuritiesOfOwnProcedures(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request(SecurityListController::URL, $ctx['customerToken']);
+        $client = self::request(SecurityListController::URL, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -149,9 +153,9 @@ final class SecurityListTest extends WebTestCase
         self::assertArrayHasKey('next_cursor', $body);
 
         $ids = array_column($body['items'], 'id');
-        self::assertContains((string) $ctx['bid']->getId(), $ids);
-        self::assertContains((string) $ctx['contract']->getId(), $ids);
-        self::assertNotContains((string) $ctx['foreign']->getId(), $ids);
+        self::assertContains((string) $this->bid->getId(), $ids);
+        self::assertContains((string) $this->contract->getId(), $ids);
+        self::assertNotContains((string) $this->foreign->getId(), $ids);
 
         $item = $body['items'][0];
         self::assertIsArray($item);
@@ -163,46 +167,36 @@ final class SecurityListTest extends WebTestCase
 
     public function testPerformerSeesOwnDeposits(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request(SecurityListController::URL, $ctx['supplierToken']);
+        $client = self::request(SecurityListController::URL, $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertIsArray($body['items']);
         $ids = array_column($body['items'], 'id');
-        self::assertContains((string) $ctx['bid']->getId(), $ids);
-        self::assertNotContains((string) $ctx['foreign']->getId(), $ids);
+        self::assertContains((string) $this->bid->getId(), $ids);
+        self::assertNotContains((string) $this->foreign->getId(), $ids);
     }
 
     public function testFilterByKindNarrowsList(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request(SecurityListController::URL.'?kind=contract', $ctx['customerToken']);
+        $client = self::request(SecurityListController::URL.'?kind=contract', $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertIsArray($body['items']);
         $ids = array_column($body['items'], 'id');
-        self::assertContains((string) $ctx['contract']->getId(), $ids);
-        self::assertNotContains((string) $ctx['bid']->getId(), $ids);
+        self::assertContains((string) $this->contract->getId(), $ids);
+        self::assertNotContains((string) $this->bid->getId(), $ids);
     }
 
     public function testUnknownKindIsRejected(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        self::request(SecurityListController::URL.'?kind=deposit', $ctx['customerToken']);
+        self::request(SecurityListController::URL.'?kind=deposit', $this->customerToken);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testUnauthorized(): void
     {
-        self::client();
         self::request(SecurityListController::URL, null);
         self::assertResponseStatusCodeSame(401);
     }

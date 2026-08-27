@@ -23,6 +23,8 @@ use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\Attributes\Group;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Messenger\Transport\InMemory\InMemoryTransport;
@@ -43,8 +45,13 @@ use Symfony\Component\Uid\Uuid;
  * бы счётчики соседних тестов) — выполняется строго последовательно
  * (--exclude-group=smoke в параллели). Ассерты скоупированы на уникальный
  * tenant теста.
+ *
+ * QueryGuard: `n-plus-one` — AuthMiddleware:84 (SELECT пользователя на каждый
+ * HTTP-запрос сценария); `AllowQueries(95)` — весь E2E-пайплайн аналитики
+ * в одном тесте (79 запросов); см. docs/guard-test/refactor-report.md.
  */
 #[Group('smoke')]
+#[IgnoreRule('n-plus-one')]
 final class AnalyticsE2ETest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
@@ -52,9 +59,18 @@ final class AnalyticsE2ETest extends WebTestCase
     /** @var list<string> тенанты теста — чистка Redis-счётчиков в tearDown */
     private array $tenantIds = [];
 
+    /** @var array{companyId: string, token: string} заказчик + его токен (фикстура setUp) */
+    private array $customer;
+
     protected function setUp(): void
     {
-        self::$client = null;
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->customer = $this->customer();
     }
 
     protected function tearDown(): void
@@ -244,12 +260,11 @@ final class AnalyticsE2ETest extends WebTestCase
         $this->tenantIds = [];
     }
 
+    #[AllowQueries(95)]
     public function testAnalyticsCountersEndToEnd(): void
     {
-        self::client();
-        $customer = $this->customer();
-        $tenantId = Uuid::fromString($customer['companyId']);
-        $token = $customer['token'];
+        $tenantId = Uuid::fromString($this->customer['companyId']);
+        $token = $this->customer['token'];
 
         // 1. два тендера через API + публикация + авто-вскрытие (tender.opened).
         foreach ([1, 2] as $i) {

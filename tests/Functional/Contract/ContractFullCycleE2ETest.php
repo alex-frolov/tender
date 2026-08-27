@@ -19,10 +19,10 @@ use App\Contract\Controller\ClaimResolveController;
 use App\Contract\Controller\ContractCreateController;
 use App\Contract\Controller\ContractSendForSignatureController;
 use App\Contract\Controller\ContractSignController;
-use App\Contract\Entity\Claim;
 use App\Contract\Entity\Contract;
 use App\Contract\Entity\Enum\ContractTenderStatusEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Tender\Controller\TenderRateController;
@@ -36,6 +36,8 @@ use App\Tests\Factory\LotFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\AllowQueries;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 use Symfony\Component\Uid\Uuid;
@@ -53,13 +55,67 @@ use Symfony\Component\Uid\Uuid;
  * - отдельный сценарий: претензия (FR-1.4.5) из IN_WORK → CLAIM → resolve → IN_WORK.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый из десятков запросов), visibility-подзапросы
+ * ContractRepository:188/BidRepository:152 (дубликат на каждый запрос),
+ * query-in-loop — BidTransaction:178/WinnerTransaction:68/AuditService:75 и
+ * лот-переходы; общий callsite — хелпер $client->request(). Отдельные E2E-тесты
+ * превышают базовый бюджет 35 запросов — им задан свой #[AllowQueries(n)].
+ * Прод-код не меняем — см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
+#[IgnoreRule('query-in-loop')]
+#[IgnoreRule('duplicate-query')]
 final class ContractFullCycleE2ETest extends WebTestCase
 {
     private const START_MINOR = 100_000_000;
     private const STEP_MINOR = 5_000_00;
 
     private static ?KernelBrowser $client = null;
+
+    private Company $customer;
+    private Company $supplier;
+    private string $customerToken;
+    private string $supplierToken;
+    private Uuid $supplierId;
+    private string $lotId;
+    private int $contractTypeId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $customerUser = UserFactory::createOne([
+            'companyId' => $this->customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'e2e-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplier->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'e2e-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->supplierId = $this->supplier->getId();
+
+        $tender = TenderFactory::createOne([
+            'nmckMinor' => self::START_MINOR,
+            'customerId' => $this->customer->getId(),
+        ]);
+        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
+        $this->lotId = (string) $lot->getId();
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+        $this->contractTypeId = (int) ContractTypeFactory::createOne()->getId();
+    }
 
     protected function tearDown(): void
     {
@@ -103,7 +159,7 @@ final class ContractFullCycleE2ETest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -124,42 +180,59 @@ final class ContractFullCycleE2ETest extends WebTestCase
     }
 
     /**
-     * @return array{customer: \App\Iam\Entity\Company, supplier: \App\Iam\Entity\Company,
-     *               customerToken: string, supplierToken: string, auction: Auction,
-     *               supplierId: Uuid}
+     * Договор по итогам тендера (source=tender, FR-1.4.3): supplier/price
+     * выводятся из победителя аукциона; contract_tenders привязка.
+     *
+     * @return string id созданного договора
      */
-    private static function approvedAuctionContext(): array
+    private function createTenderContract(Auction $auction): string
     {
-        self::client();
-        $container = self::getContainer();
+        $client = self::request(
+            'POST',
+            ContractCreateController::URL,
+            $this->customerToken,
+            [
+                'contract_type_id' => (string) $this->contractTypeId,
+                'source' => 'tender',
+                'tender_id' => (string) $auction->getTenderId(),
+                'scope' => 'multi_use',
+                'customer_id' => (string) $this->customer->getId(),
+            ],
+        );
+        self::assertResponseStatusCodeSame(201);
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($body);
+        $contractId = $body['id'];
+        self::assertIsString($contractId);
 
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'e2e-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
+        return $contractId;
+    }
 
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'e2e-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $supplierId = $supplier->getId();
+    /**
+     * Подписание договора обеими сторонами через API → signed.
+     */
+    private function signContract(string $contractId): void
+    {
+        self::request('POST', str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL), $this->customerToken);
+        self::assertResponseStatusCodeSame(200);
+        self::request('POST', str_replace('{contractId}', $contractId, ContractSignController::URL), $this->customerToken, ['party' => 'customer', 'signature' => 'sig-cust']);
+        self::assertResponseStatusCodeSame(200);
+        $client = self::request('POST', str_replace('{contractId}', $contractId, ContractSignController::URL), $this->supplierToken, ['party' => 'supplier', 'signature' => 'sig-supp']);
+        self::assertResponseStatusCodeSame(200);
+    }
 
-        $tender = TenderFactory::createOne([
-            'nmckMinor' => self::START_MINOR,
-            'customerId' => $customer->getId(),
-        ]);
-        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
-
-        $customerToken = self::loginAs((string) $customerUser->getEmail());
-        $supplierToken = self::loginAs((string) $supplierUser->getEmail());
-
+    /**
+     * Аукцион доводится до APPROVE (победитель выбран) — предусловие
+     * для договора/исполнения.
+     *
+     * Создание и планирование аукциона идут через API (FR-1.3, T10);
+     * старт торгов, ставка и выбор победителя — через доменные сервисы.
+     */
+    private function approvedAuction(): Auction
+    {
         // Создание аукциона через API (POST /auctions, FR-1.3).
-        $client = self::request('POST', AuctionCreateController::URL, $customerToken, [
-            'lot_id' => (string) $lot->getId(),
+        $client = self::request('POST', AuctionCreateController::URL, $this->customerToken, [
+            'lot_id' => $this->lotId,
             'type' => 'reduction',
             'step_mode' => 'fixed',
             'bid_step_minor' => self::STEP_MINOR,
@@ -173,7 +246,7 @@ final class ContractFullCycleE2ETest extends WebTestCase
 
         // Планирование старта через API (POST /auctions/{id}/schedule, T10).
         $scheduleUrl = str_replace('{auctionId}', $auctionId, AuctionScheduleController::URL);
-        $client = self::request('POST', $scheduleUrl, $customerToken, [
+        self::request('POST', $scheduleUrl, $this->customerToken, [
             'scheduled_start_at' => self::futureDateTime(),
         ]);
         self::assertResponseStatusCodeSame(200);
@@ -181,7 +254,7 @@ final class ContractFullCycleE2ETest extends WebTestCase
         // Старт торгов (система, T13) + допущенный участник + ставка + авто-выбор
         // победителя → APPROVE (предусловие для договора/исполнения).
         // EM и сервисы — из ОДНОГО текущего контейнера (ядро перезагружается
-        // перед каждым запросом; $container из начала хелпера устарел).
+        // перед каждым запросом; контейнер из начала хелпера устарел).
         $container = self::getContainer();
         $em = $container->get(EntityManagerInterface::class);
         $em->clear();
@@ -202,55 +275,28 @@ final class ContractFullCycleE2ETest extends WebTestCase
         }
 
         $auctionService->startTrading($auction);
-        BidFactory::new()->forAuction($auction, $supplierId)->admitted()->create();
-        $bidService->placeReductionFixedBid($auction, $supplierId, self::START_MINOR - self::STEP_MINOR);
+        BidFactory::new()->forAuction($auction, $this->supplierId)->admitted()->create();
+        $bidService->placeReductionFixedBid($auction, $this->supplierId, self::START_MINOR - self::STEP_MINOR);
         $winnerService->selectWinnerAutomatic($auction);
 
-        return [
-            'customer' => $customer,
-            'supplier' => $supplier,
-            'customerToken' => $customerToken,
-            'supplierToken' => $supplierToken,
-            'auction' => $auction,
-            'supplierId' => $supplierId,
-        ];
+        return $auction;
     }
 
-    private static function contractTypeId(): int
-    {
-        $type = ContractTypeFactory::createOne();
-
-        return (int) $type->getId();
-    }
-
+    #[AllowQueries(180)]
     public function testFullCycleApproveContractExecutionDoneAndRating(): void
     {
-        $ctx = self::approvedAuctionContext();
-        $auction = $ctx['auction'];
+        $auction = $this->approvedAuction();
         $tender = $auction->getTenderId();
         self::assertSame(AuctionStatusEnum::APPROVE, $auction->getStatus());
 
         // 1. Договор по итогам тендера (source=tender, FR-1.4.3): supplier/price
         //    выводятся из победителя аукциона; contract_tenders привязка.
-        $client = self::request(
-            'POST',
-            ContractCreateController::URL,
-            $ctx['customerToken'],
-            [
-                'contract_type_id' => (string) self::contractTypeId(),
-                'source' => 'tender',
-                'tender_id' => (string) $tender,
-                'scope' => 'multi_use',
-                'customer_id' => (string) $ctx['customer']->getId(),
-            ],
-        );
-        self::assertResponseStatusCodeSame(201);
+        $contractId = $this->createTenderContract($auction);
+        $client = self::client();
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
-        $contractId = $body['id'];
-        self::assertIsString($contractId);
         self::assertSame('tender', $body['source']);
-        self::assertSame((string) $ctx['supplier']->getId(), $body['supplier_id']);
+        self::assertSame((string) $this->supplier->getId(), $body['supplier_id']);
         $boundTenders = $body['tenders'];
         self::assertIsArray($boundTenders);
         self::assertCount(1, $boundTenders);
@@ -259,23 +305,19 @@ final class ContractFullCycleE2ETest extends WebTestCase
         self::assertSame((string) $tender, $bound['tender_id']);
 
         // 2. Подписание обеих сторон → signed (FR-1.4.3).
-        self::request('POST', str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL), $ctx['customerToken']);
-        self::assertResponseStatusCodeSame(200);
-        self::request('POST', str_replace('{contractId}', $contractId, ContractSignController::URL), $ctx['customerToken'], ['party' => 'customer', 'signature' => 'sig-cust']);
-        self::assertResponseStatusCodeSame(200);
-        $client = self::request('POST', str_replace('{contractId}', $contractId, ContractSignController::URL), $ctx['supplierToken'], ['party' => 'supplier', 'signature' => 'sig-supp']);
-        self::assertResponseStatusCodeSame(200);
+        $this->signContract($contractId);
+        $client = self::client();
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertSame('signed', $body['status']);
 
         // 3. Исполнение: start-work (IN_WORK) → mark-done (DONE_BY_PERFORMER) →
         //    confirm-done (DONE, B2 — договор signed).
-        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $ctx['supplierToken']);
+        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
-        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionMarkDoneController::URL), $ctx['supplierToken']);
+        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionMarkDoneController::URL), $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
-        $client = self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionConfirmDoneController::URL), $ctx['customerToken']);
+        $client = self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionConfirmDoneController::URL), $this->customerToken);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -317,7 +359,7 @@ final class ContractFullCycleE2ETest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{tenderId}', (string) $tender, TenderRateController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['execution_rating' => 9],
         );
         self::assertResponseStatusCodeSame(200);
@@ -326,16 +368,16 @@ final class ContractFullCycleE2ETest extends WebTestCase
         self::assertSame(9, $body['execution_rating']);
     }
 
+    #[AllowQueries(100)]
     public function testConfirmDoneWithoutContractIsRejectedB2(): void
     {
-        $ctx = self::approvedAuctionContext();
-        $auction = $ctx['auction'];
+        $auction = $this->approvedAuction();
 
         // Победитель приступил, но договора нет — confirm-done отклоняется (B2, contract_required).
-        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $ctx['supplierToken']);
+        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionConfirmDoneController::URL), $ctx['customerToken']);
+        $client = self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionConfirmDoneController::URL), $this->customerToken);
         self::assertResponseStatusCodeSame(409);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -348,41 +390,22 @@ final class ContractFullCycleE2ETest extends WebTestCase
         self::assertSame(AuctionStatusEnum::IN_WORK, $freshAuction->getStatus());
     }
 
+    #[AllowQueries(170)]
     public function testClaimLifecycleFromInWork(): void
     {
-        $ctx = self::approvedAuctionContext();
-        $auction = $ctx['auction'];
+        $auction = $this->approvedAuction();
 
         // Договор и подписание (нужен для исполнения + B2).
-        $client = self::request(
-            'POST',
-            ContractCreateController::URL,
-            $ctx['customerToken'],
-            [
-                'contract_type_id' => (string) self::contractTypeId(),
-                'source' => 'tender',
-                'tender_id' => (string) $auction->getTenderId(),
-                'scope' => 'multi_use',
-                'customer_id' => (string) $ctx['customer']->getId(),
-            ],
-        );
-        self::assertResponseStatusCodeSame(201);
-        $body = json_decode((string) $client->getResponse()->getContent(), true);
-        self::assertIsArray($body);
-        $contractId = $body['id'];
-        self::assertIsString($contractId);
-
-        self::request('POST', str_replace('{contractId}', $contractId, ContractSendForSignatureController::URL), $ctx['customerToken']);
-        self::request('POST', str_replace('{contractId}', $contractId, ContractSignController::URL), $ctx['customerToken'], ['party' => 'customer', 'signature' => 'c']);
-        self::request('POST', str_replace('{contractId}', $contractId, ContractSignController::URL), $ctx['supplierToken'], ['party' => 'supplier', 'signature' => 's']);
-        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $ctx['supplierToken']);
+        $contractId = $this->createTenderContract($auction);
+        $this->signContract($contractId);
+        self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
 
         // 1. Претензия из IN_WORK (stage=in_work) → CLAIM.
         $client = self::request(
             'POST',
             ClaimCreateController::URL,
-            $ctx['customerToken'],
+            $this->customerToken,
             ['contract_id' => $contractId, 'stage' => 'in_work', 'reason' => 'Несоответствие объёму', 'amount_minor' => 50000],
         );
         self::assertResponseStatusCodeSame(201);
@@ -406,7 +429,7 @@ final class ContractFullCycleE2ETest extends WebTestCase
         $client = self::request(
             'POST',
             str_replace('{claimId}', $claimId, ClaimResolveController::URL),
-            $ctx['customerToken'],
+            $this->customerToken,
             ['outcome' => 'rejected', 'resolution' => 'документы предоставлены'],
         );
         self::assertResponseStatusCodeSame(200);
@@ -424,21 +447,21 @@ final class ContractFullCycleE2ETest extends WebTestCase
         self::assertSame(ContractTenderStatusEnum::IN_WORK, $first->getStatus());
     }
 
+    #[AllowQueries(90)]
     public function testContractCreatedByTenderHasTenderBound(): void
     {
-        $ctx = self::approvedAuctionContext();
-        $auction = $ctx['auction'];
+        $auction = $this->approvedAuction();
 
         $client = self::request(
             'POST',
             ContractCreateController::URL,
-            $ctx['customerToken'],
+            $this->customerToken,
             [
-                'contract_type_id' => (string) self::contractTypeId(),
+                'contract_type_id' => (string) $this->contractTypeId,
                 'source' => 'tender',
                 'tender_id' => (string) $auction->getTenderId(),
                 'scope' => 'multi_use',
-                'customer_id' => (string) $ctx['customer']->getId(),
+                'customer_id' => (string) $this->customer->getId(),
             ],
         );
         self::assertResponseStatusCodeSame(201);
@@ -461,10 +484,10 @@ final class ContractFullCycleE2ETest extends WebTestCase
         self::assertSame('pending', $first->getStatus()->value);
     }
 
+    #[AllowQueries(90)]
     public function testThirdPartyCannotConfirmExecution(): void
     {
-        $ctx = self::approvedAuctionContext();
-        $auction = $ctx['auction'];
+        $auction = $this->approvedAuction();
 
         $outsider = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
         $outsiderUser = UserFactory::createOne([
@@ -472,7 +495,7 @@ final class ContractFullCycleE2ETest extends WebTestCase
             'role' => UserRoleEnum::ADMIN,
             'email' => 'e2e-out-'.random_int(1000, 999999).'@test.ru',
         ]);
-        $outsiderToken = self::loginAs((string) $outsiderUser->getEmail());
+        $outsiderToken = $this->loginAs((string) $outsiderUser->getEmail());
 
         // Чужой исполнитель не может начать работы (не победитель) → 409.
         $client = self::request('POST', str_replace('{auctionId}', (string) $auction->getId(), AuctionStartWorkController::URL), $outsiderToken);

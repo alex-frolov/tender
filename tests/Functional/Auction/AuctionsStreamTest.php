@@ -7,6 +7,7 @@ namespace App\Tests\Functional\Auction;
 use App\Auction\Controller\AuctionsStreamController;
 use App\Auction\Entity\Enum\AuctionStatusEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
@@ -28,6 +29,42 @@ final class AuctionsStreamTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private Company $company;
+    private string $token;
+    private \App\Tender\Entity\Tender $liveTender;
+    private \App\Tender\Entity\Tender $doneTender;
+    private \App\Auction\Entity\Auction $liveAuction;
+    private \App\Auction\Entity\Auction $doneAuction;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        $this->company = VerifiedUserStory::company();
+        VerifiedUserStory::user();
+        $this->token = $this->login();
+
+        $this->liveTender = TenderFactory::createOne([
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
+        ]);
+        $this->doneTender = TenderFactory::createOne([
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
+        ]);
+        $this->liveAuction = AuctionFactory::new()
+            ->forTender($this->liveTender)
+            ->with(['status' => AuctionStatusEnum::TRADE])
+            ->create();
+        $this->doneAuction = AuctionFactory::new()
+            ->forTender($this->doneTender)
+            ->with(['status' => AuctionStatusEnum::DONE])
+            ->create();
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -46,7 +83,7 @@ final class AuctionsStreamTest extends WebTestCase
         return '27.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(): string
+    private function login(): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -83,28 +120,7 @@ final class AuctionsStreamTest extends WebTestCase
 
     public function testDiscoveryListsOnlyLiveAuctionTopics(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
-
-        $liveTender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
-        ]);
-        $doneTender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
-        ]);
-        $live = AuctionFactory::new()
-            ->forTender($liveTender)
-            ->with(['status' => AuctionStatusEnum::TRADE])
-            ->create();
-        $done = AuctionFactory::new()
-            ->forTender($doneTender)
-            ->with(['status' => AuctionStatusEnum::DONE])
-            ->create();
-
-        $token = self::login();
-        $client = self::request(AuctionsStreamController::URL, $token);
+        $client = self::request(AuctionsStreamController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
 
         $body = json_decode((string) $client->getResponse()->getContent(), true);
@@ -115,13 +131,12 @@ final class AuctionsStreamTest extends WebTestCase
         self::assertNotSame('', $body['token']);
         self::assertIsInt($body['expires_in']);
         self::assertIsArray($body['topics']);
-        self::assertContains('auction:'.$live->getId(), $body['topics']);
-        self::assertNotContains('auction:'.$done->getId(), $body['topics']);
+        self::assertContains('auction:'.$this->liveAuction->getId(), $body['topics']);
+        self::assertNotContains('auction:'.$this->doneAuction->getId(), $body['topics']);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request(AuctionsStreamController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }

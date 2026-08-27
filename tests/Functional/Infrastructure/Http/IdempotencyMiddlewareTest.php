@@ -39,6 +39,22 @@ final class IdempotencyMiddlewareTest extends WebTestCase
 
     private static ?KernelBrowser $client = null;
 
+    private Tender $tender;
+    /** @var array{token: string, supplierId: string} */
+    private array $supplier;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->tender = self::acceptingBidsTender();
+        $this->supplier = self::supplier();
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -163,22 +179,19 @@ final class IdempotencyMiddlewareTest extends WebTestCase
 
     public function testRepeatedKeyWithSamePayloadReplaysResponseWithoutDuplicates(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-        $url = self::submitUrl((string) $tender->getId());
-        $payload = self::bidPayload($supplier['supplierId'], self::firstLotId($tender));
+        $url = self::submitUrl((string) $this->tender->getId());
+        $payload = self::bidPayload($this->supplier['supplierId'], self::firstLotId($this->tender));
         $key = 'key-'.random_int(1000, 999999);
 
         // 1. первый запрос — создаёт заявку (201)
-        $client = self::request('POST', $url, $supplier['token'], $payload, $key);
+        $client = self::request('POST', $url, $this->supplier['token'], $payload, $key);
         self::assertResponseStatusCodeSame(201);
         $first = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($first);
         $firstId = $first['id'];
 
         // 2. повторный запрос с тем же ключом и тем же payload → тот же ответ (replay), без дублей
-        $client = self::request('POST', $url, $supplier['token'], $payload, $key);
+        $client = self::request('POST', $url, $this->supplier['token'], $payload, $key);
         self::assertResponseStatusCodeSame(201);
         $replay = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($replay);
@@ -188,25 +201,22 @@ final class IdempotencyMiddlewareTest extends WebTestCase
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $count = (int) $em->createQuery(
             'SELECT COUNT(b.id) FROM App\Bid\Entity\Bid b WHERE b.tenderId = :tenderId AND b.supplierId = :supplier',
-        )->setParameter('tenderId', $tender->getId())
-            ->setParameter('supplier', \Symfony\Component\Uid\Uuid::fromString($supplier['supplierId']))
+        )->setParameter('tenderId', $this->tender->getId())
+            ->setParameter('supplier', \Symfony\Component\Uid\Uuid::fromString($this->supplier['supplierId']))
             ->getSingleScalarResult();
         self::assertSame(1, $count);
     }
 
     public function testSameKeyWithDifferentPayloadReturns409Conflict(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-        $url = self::submitUrl((string) $tender->getId());
+        $url = self::submitUrl((string) $this->tender->getId());
         $key = 'key-conflict-'.random_int(1000, 999999);
 
-        self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender), 900000), $key);
+        self::request('POST', $url, $this->supplier['token'], self::bidPayload($this->supplier['supplierId'], self::firstLotId($this->tender), 900000), $key);
         self::assertResponseStatusCodeSame(201);
 
         // тот же ключ, другой payload (цена) → 409 idempotency_conflict
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender), 850000), $key);
+        $client = self::request('POST', $url, $this->supplier['token'], self::bidPayload($this->supplier['supplierId'], self::firstLotId($this->tender), 850000), $key);
         self::assertResponseStatusCodeSame(409);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -216,17 +226,14 @@ final class IdempotencyMiddlewareTest extends WebTestCase
 
     public function testExpiredKeyIsReusedAsNew(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-        $url = self::submitUrl((string) $tender->getId());
+        $url = self::submitUrl((string) $this->tender->getId());
         $key = 'key-ttl-'.random_int(1000, 999999);
         $em = static::getContainer()->get(EntityManagerInterface::class);
         $now = static::getContainer()->get(ClockInterface::class)->now();
 
         // истёкший ключ в БД (retention: expires_at в прошлом)
         $em->persist(new IdempotencyKey(
-            tenantId: $supplier['supplierId'],
+            tenantId: $this->supplier['supplierId'],
             key: $key,
             method: 'POST',
             path: $url,
@@ -237,23 +244,20 @@ final class IdempotencyMiddlewareTest extends WebTestCase
         $em->flush();
 
         // запрос с этим ключом → выполняется как новый (201, без replay/конфликта)
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)), $key);
+        $client = self::request('POST', $url, $this->supplier['token'], self::bidPayload($this->supplier['supplierId'], self::firstLotId($this->tender)), $key);
         self::assertResponseStatusCodeSame(201);
 
         // истёкшая запись удалена, создана новая
-        $record = static::getContainer()->get(\App\Shared\Repository\IdempotencyKeyRepository::class)->findByTenantAndKey($supplier['supplierId'], $key);
+        $record = static::getContainer()->get(\App\Shared\Repository\IdempotencyKeyRepository::class)->findByTenantAndKey($this->supplier['supplierId'], $key);
         self::assertNotNull($record);
         self::assertFalse($record->isExpired($now));
     }
 
     public function testNoHeaderProceedsNormally(): void
     {
-        self::client();
-        $tender = self::acceptingBidsTender();
-        $supplier = self::supplier();
-        $url = self::submitUrl((string) $tender->getId());
+        $url = self::submitUrl((string) $this->tender->getId());
 
-        $client = self::request('POST', $url, $supplier['token'], self::bidPayload($supplier['supplierId'], self::firstLotId($tender)));
+        $client = self::request('POST', $url, $this->supplier['token'], self::bidPayload($this->supplier['supplierId'], self::firstLotId($this->tender)));
         self::assertResponseStatusCodeSame(201);
     }
 }

@@ -7,6 +7,7 @@ namespace App\Tests\Functional\Auction;
 use App\Auction\Controller\AuctionListController;
 use App\Auction\Entity\Enum\AuctionStatusEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Tests\Factory\AuctionBidFactory;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\LotFactory;
@@ -14,6 +15,7 @@ use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
 use App\Tests\Story\VerifiedUserStory;
 use Doctrine\ORM\EntityManagerInterface;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -25,10 +27,29 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * - 401 без токена.
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: `query-in-loop` — Foundry персистит 2-3 сценарные сущности
+ * в телах тестов (прод-код не виноват), см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('query-in-loop')]
 final class AuctionListTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        $this->company = VerifiedUserStory::company();
+        VerifiedUserStory::user();
+        $this->token = $this->login();
+    }
 
     protected function tearDown(): void
     {
@@ -48,7 +69,7 @@ final class AuctionListTest extends WebTestCase
         return '15.'.random_int(0, 255).'.'.random_int(0, 255).'.'.random_int(1, 254);
     }
 
-    private static function login(): string
+    private function login(): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -85,16 +106,14 @@ final class AuctionListTest extends WebTestCase
 
     public function testListMyAuctions(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         // два разных тендера своей компании + по аукциону на каждый
         $tender1 = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
         ]);
         $tender2 = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
         ]);
         $auction1 = AuctionFactory::new()
             ->forTender($tender1)
@@ -107,8 +126,7 @@ final class AuctionListTest extends WebTestCase
         self::assertNotNull($auction1->getId());
         self::assertNotNull($auction2->getId());
 
-        $token = self::login();
-        $client = self::request('GET', AuctionListController::URL, $token);
+        $client = self::request('GET', AuctionListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -135,11 +153,9 @@ final class AuctionListTest extends WebTestCase
      */
     public function testListItemCarriesTenderAndLotLabelsWithDates(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
             'number' => 'T-7788',
             'title' => 'Поставка спецтехники',
         ]);
@@ -157,8 +173,7 @@ final class AuctionListTest extends WebTestCase
             ])
             ->create();
 
-        $token = self::login();
-        $client = self::request('GET', AuctionListController::URL, $token);
+        $client = self::request('GET', AuctionListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -188,11 +203,9 @@ final class AuctionListTest extends WebTestCase
      */
     public function testListItemCarriesLastAcceptedBid(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
         ]);
         $auction = AuctionFactory::new()
             ->forTender($tender)
@@ -226,8 +239,7 @@ final class AuctionListTest extends WebTestCase
         $em->persist($rejected);
         $em->flush();
 
-        $token = self::login();
-        $client = self::request('GET', AuctionListController::URL, $token);
+        $client = self::request('GET', AuctionListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -251,19 +263,16 @@ final class AuctionListTest extends WebTestCase
      */
     public function testListItemWithoutBidsHasNullLastBid(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $tender = TenderFactory::createOne([
-            'customerId' => $company->getId(),
-            'createdBy' => $company->getId(),
+            'customerId' => $this->company->getId(),
+            'createdBy' => $this->company->getId(),
         ]);
         $auction = AuctionFactory::new()
             ->forTender($tender)
             ->with(['status' => AuctionStatusEnum::NEW])
             ->create();
 
-        $token = self::login();
-        $client = self::request('GET', AuctionListController::URL, $token);
+        $client = self::request('GET', AuctionListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -285,14 +294,11 @@ final class AuctionListTest extends WebTestCase
 
     public function testOtherTenantAuctionsNotVisible(): void
     {
-        self::client();
-        $company = VerifiedUserStory::company();
         $otherTender = TenderFactory::createOne(['customerId' => \Symfony\Component\Uid\Uuid::v4(), 'createdBy' => \Symfony\Component\Uid\Uuid::v4()]);
         $otherAuction = AuctionFactory::new()->forTender($otherTender)->create();
         self::assertNotNull($otherAuction->getId());
 
-        $token = self::login();
-        $client = self::request('GET', AuctionListController::URL, $token);
+        $client = self::request('GET', AuctionListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -303,7 +309,6 @@ final class AuctionListTest extends WebTestCase
 
     public function testRequiresAuthentication(): void
     {
-        self::client();
         $client = self::request('GET', AuctionListController::URL, 'invalid-token');
         self::assertResponseStatusCodeSame(401);
     }

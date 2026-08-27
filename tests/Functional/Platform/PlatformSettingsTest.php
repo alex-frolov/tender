@@ -13,6 +13,7 @@ use App\Platform\Controller\Platform\RateLimitsController;
 use App\Platform\Controller\Platform\UsageController;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\UserFactory;
+use QueryGuard\Attribute\IgnoreRule;
 use Symfony\Bundle\FrameworkBundle\KernelBrowser;
 use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
 
@@ -27,10 +28,31 @@ use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
  * - GET /rate-limits: любой сотрудник компании (peek-значения лимитов).
  *
  * Rate limit в тестах = 3/мин на IP → каждый запрос с уникального IP.
+ *
+ * QueryGuard: findings порождает прод-код внутри HTTP-запросов — AuthMiddleware:84
+ * (SELECT пользователя на каждый запрос) и AuditService:75 (append-only аудит с
+ * батчингом flush). Прод-код не меняем — правило отключено атрибутом класса,
+ * см. docs/guard-test/refactor-report.md.
  */
+#[IgnoreRule('n-plus-one')]
 final class PlatformSettingsTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
+
+    private string $adminToken;
+    private string $superToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $this->adminToken = $this->adminToken();
+        $this->superToken = $this->platformAdminToken();
+    }
 
     protected function tearDown(): void
     {
@@ -69,7 +91,7 @@ final class PlatformSettingsTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -89,7 +111,7 @@ final class PlatformSettingsTest extends WebTestCase
         return $body['access_token'];
     }
 
-    private static function adminToken(): string
+    private function adminToken(): string
     {
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
         $user = UserFactory::createOne([
@@ -98,10 +120,10 @@ final class PlatformSettingsTest extends WebTestCase
             'email' => 'pf-admin-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return self::loginAs((string) $user->getEmail());
+        return $this->loginAs((string) $user->getEmail());
     }
 
-    private static function platformAdminToken(): string
+    private function platformAdminToken(): string
     {
         $user = UserFactory::createOne([
             'role' => UserRoleEnum::PLATFORM_ADMIN,
@@ -109,13 +131,12 @@ final class PlatformSettingsTest extends WebTestCase
             'email' => 'pf-super-'.random_int(1000, 999999).'@test.ru',
         ]);
 
-        return self::loginAs((string) $user->getEmail());
+        return $this->loginAs((string) $user->getEmail());
     }
 
     public function testGetTimezoneDefaultsToDomainTimezone(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('GET', PlatformTimezoneGetController::URL, $token);
         self::assertResponseStatusCodeSame(200);
@@ -126,15 +147,14 @@ final class PlatformSettingsTest extends WebTestCase
 
     public function testPutTimezoneRequiresPlatformAdmin(): void
     {
-        self::client();
-        $admin = self::adminToken();
+        $admin = $this->adminToken;
 
         $client = self::request('PUT', PlatformTimezoneUpdateController::URL, $admin, [
             'timezone_default' => 'Asia/Yekaterinburg',
         ]);
         self::assertResponseStatusCodeSame(403);
 
-        $super = self::platformAdminToken();
+        $super = $this->superToken;
         $client = self::request('PUT', PlatformTimezoneUpdateController::URL, $super, [
             'timezone_default' => 'Asia/Yekaterinburg',
         ]);
@@ -152,8 +172,7 @@ final class PlatformSettingsTest extends WebTestCase
 
     public function testPutTimezoneRejectsInvalidIana(): void
     {
-        self::client();
-        $super = self::platformAdminToken();
+        $super = $this->superToken;
 
         $client = self::request('PUT', PlatformTimezoneUpdateController::URL, $super, [
             'timezone_default' => 'Not/AZone',
@@ -163,8 +182,7 @@ final class PlatformSettingsTest extends WebTestCase
 
     public function testUsageReturnsCounters(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('GET', UsageController::URL.'?period=day', $token);
         self::assertResponseStatusCodeSame(200);
@@ -177,8 +195,7 @@ final class PlatformSettingsTest extends WebTestCase
 
     public function testRateLimitsReturnsGlobalAndPerTender(): void
     {
-        self::client();
-        $token = self::adminToken();
+        $token = $this->adminToken;
 
         $client = self::request('GET', RateLimitsController::URL, $token);
         self::assertResponseStatusCodeSame(200);

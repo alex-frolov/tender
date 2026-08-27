@@ -103,7 +103,7 @@
         ],
         "test": "composer test:prepare && php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/phpunit",
         "test:parallel": "bash scripts/test-parallel-prepare.sh",
-        "test:smoke": "composer test:prepare && php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/phpunit --group=smoke",
+        "test:smoke": "composer test:prepare && php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/phpunit --configuration phpunit.smoke.xml --group=smoke",
         "test:coverage": "bash scripts/test-coverage.sh",
         "test:parallel:full": [
             "@test:parallel",
@@ -129,6 +129,7 @@
         }
     },
     "require-dev": {
+        "alex-frolov/query-guard": "^0.1.0",
         "brianium/paratest": "^7.24",
         "dama/doctrine-test-bundle": "^8.6",
         "doctrine/doctrine-fixtures-bundle": "^4.3",

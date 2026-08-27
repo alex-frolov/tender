@@ -9,6 +9,7 @@ use App\Iam\Controller\User\UserDeleteController;
 use App\Iam\Controller\User\UserInviteController;
 use App\Iam\Controller\User\UserListController;
 use App\Iam\Controller\User\UserUpdateController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\User;
@@ -33,6 +34,22 @@ final class UserManagementTest extends WebTestCase
 
     /** @var KernelBrowser|null один клиент на тест */
     private static ?KernelBrowser $client = null;
+
+    private Company $company;
+    private string $token;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = static::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        UserManagementStory::admin();
+        $this->company = UserManagementStory::company();
+        $this->token = $this->login();
+    }
 
     protected function tearDown(): void
     {
@@ -65,20 +82,12 @@ final class UserManagementTest extends WebTestCase
         return $json;
     }
 
-    /**
-     * @return array{user: User, company: \App\Iam\Entity\Company} admin-владелец + его компания (Story)
-     */
-    private static function adminActor(): array
-    {
-        return ['user' => UserManagementStory::admin(), 'company' => UserManagementStory::company()];
-    }
-
-    private static function login(): string
+    private function login(): string
     {
         return self::loginAs(self::ADMIN_EMAIL);
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -119,11 +128,7 @@ final class UserManagementTest extends WebTestCase
 
     public function testAdminInvitesUserWithInvitedStatus(): void
     {
-        self::client();
-        self::adminActor();
-        $token = self::login();
-
-        $client = self::request('POST', UserInviteController::URL, $token, [
+        $client = self::request('POST', UserInviteController::URL, $this->token, [
             'email' => 'invited@test.ru',
             'name' => 'Новый сотрудник',
             'role' => 'manager',
@@ -139,11 +144,7 @@ final class UserManagementTest extends WebTestCase
 
     public function testInviteDefaultsToAgentRole(): void
     {
-        self::client();
-        self::adminActor();
-        $token = self::login();
-
-        $client = self::request('POST', UserInviteController::URL, $token, [
+        $client = self::request('POST', UserInviteController::URL, $this->token, [
             'email' => 'new-agent@test.ru',
             'name' => 'Агент',
         ]);
@@ -155,12 +156,9 @@ final class UserManagementTest extends WebTestCase
 
     public function testInviteDuplicateEmailReturns409(): void
     {
-        self::client();
-        self::adminActor();
         UserFactory::createOne(['email' => 'dup@test.ru', 'companyId' => null]);
-        $token = self::login();
 
-        $client = self::request('POST', UserInviteController::URL, $token, [
+        $client = self::request('POST', UserInviteController::URL, $this->token, [
             'email' => 'dup@test.ru',
             'name' => 'Дубль',
         ]);
@@ -169,22 +167,17 @@ final class UserManagementTest extends WebTestCase
 
     public function testInviteMissingFieldsReturns422(): void
     {
-        self::client();
-        self::adminActor();
-        $token = self::login();
-
-        $client = self::request('POST', UserInviteController::URL, $token, ['email' => '', 'name' => '']);
+        $client = self::request('POST', UserInviteController::URL, $this->token, ['email' => '', 'name' => '']);
         self::assertResponseStatusCodeSame(422);
 
-        $client = self::request('POST', UserInviteController::URL, $token, ['email' => 'not-an-email', 'name' => 'x']);
+        $client = self::request('POST', UserInviteController::URL, $this->token, ['email' => 'not-an-email', 'name' => 'x']);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testNonAdminCannotInvite(): void
     {
-        self::client();
         UserManagementStory::manager();
-        $token = self::loginAs(UserManagementStory::MANAGER_EMAIL);
+        $token = $this->loginAs(UserManagementStory::MANAGER_EMAIL);
 
         $client = self::request('POST', UserInviteController::URL, $token, ['email' => 'x@test.ru', 'name' => 'X']);
         self::assertResponseStatusCodeSame(403);
@@ -199,16 +192,12 @@ final class UserManagementTest extends WebTestCase
 
     public function testAdminChangesUserRole(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['role' => 'agent']);
+        $client = self::request('PATCH', $url, $this->token, ['role' => 'agent']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -217,17 +206,13 @@ final class UserManagementTest extends WebTestCase
 
     public function testAdminChangesUserName(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
             'name' => 'Старое имя',
         ]);
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['name' => 'Новое имя']);
+        $client = self::request('PATCH', $url, $this->token, ['name' => 'Новое имя']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -236,27 +221,19 @@ final class UserManagementTest extends WebTestCase
 
     public function testCannotDemoteLastActiveAdmin(): void
     {
-        self::client();
-        self::adminActor(); // единственный активный admin компании
-        $token = self::login();
-
         $url = str_replace('{userId}', self::currentUserId(), UserUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['role' => 'manager']);
+        $client = self::request('PATCH', $url, $this->token, ['role' => 'manager']);
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testAdminBlocksUser(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['status' => 'blocked']);
+        $client = self::request('PATCH', $url, $this->token, ['status' => 'blocked']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -276,18 +253,14 @@ final class UserManagementTest extends WebTestCase
      */
     public function testAdminActivatesInvitedUser(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
         ]);
         $target->setVerificationStatus(UserStatusEnum::INVITED);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['status' => 'active']);
+        $client = self::request('PATCH', $url, $this->token, ['status' => 'active']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -300,18 +273,14 @@ final class UserManagementTest extends WebTestCase
      */
     public function testSettingSameStatusIsNoop(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
         ]);
         $target->setVerificationStatus(UserStatusEnum::BLOCKED);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserUpdateController::URL);
-        $client = self::request('PATCH', $url, $token, ['status' => 'blocked']);
+        $client = self::request('PATCH', $url, $this->token, ['status' => 'blocked']);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -320,17 +289,13 @@ final class UserManagementTest extends WebTestCase
 
     public function testSoftDeleteMasksEmail(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'email' => 'victim@test.ru',
             'role' => UserRoleEnum::MANAGER,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserDeleteController::URL);
-        $client = self::request('DELETE', $url, $token, null);
+        $client = self::request('DELETE', $url, $this->token, null);
         self::assertResponseStatusCodeSame(204);
 
         $em = static::getContainer()->get(EntityManagerInterface::class);
@@ -343,29 +308,21 @@ final class UserManagementTest extends WebTestCase
         self::assertStringEndsWith('@deleted.local', $reloaded->getEmail());
 
         // повторное удаление невозможно (переход delete из deleted отсутствует)
-        $client = self::request('DELETE', $url, $token, null);
+        $client = self::request('DELETE', $url, $this->token, null);
         self::assertResponseStatusCodeSame(404);
     }
 
     public function testCannotDeleteLastActiveAdmin(): void
     {
-        self::client();
-        self::adminActor(); // единственный активный admin
-        $token = self::login();
-
         $url = str_replace('{userId}', self::currentUserId(), UserDeleteController::URL);
-        $client = self::request('DELETE', $url, $token, null);
+        $client = self::request('DELETE', $url, $this->token, null);
         self::assertResponseStatusCodeSame(409);
     }
 
     public function testAdminListsUsers(): void
     {
-        self::client();
-        $ctx = self::adminActor();
-        UserFactory::createOne(['role' => UserRoleEnum::AGENT, 'companyId' => $ctx['company']->getId()]);
-        $token = self::login();
-
-        $client = self::request('GET', UserListController::URL, $token);
+        UserFactory::createOne(['role' => UserRoleEnum::AGENT, 'companyId' => $this->company->getId()]);
+        $client = self::request('GET', UserListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
@@ -375,21 +332,17 @@ final class UserManagementTest extends WebTestCase
 
     public function testDeletedUserNotListed(): void
     {
-        self::client();
-        $ctx = self::adminActor();
         $target = UserFactory::createOne([
             'email' => 'ghost@test.ru',
             'role' => UserRoleEnum::AGENT,
-            'companyId' => $ctx['company']->getId(),
+            'companyId' => $this->company->getId(),
         ]);
-        $token = self::login();
-
         $url = str_replace('{userId}', (string) $target->getId(), UserDeleteController::URL);
-        $client = self::request('DELETE', $url, $token, null);
+        $client = self::request('DELETE', $url, $this->token, null);
         self::assertResponseStatusCodeSame(204);
 
         // после удаления юзер исчезает из GET /users (статус deleted, фильтр <> deleted)
-        $client = self::request('GET', UserListController::URL, $token);
+        $client = self::request('GET', UserListController::URL, $this->token);
         self::assertResponseStatusCodeSame(200);
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);

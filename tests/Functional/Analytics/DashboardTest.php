@@ -11,6 +11,7 @@ use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Service\RolePermissionCache;
 use App\Tender\Entity\Enum\TenderStatusEnum;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\TenderFactory;
 use App\Tests\Factory\UserFactory;
@@ -33,9 +34,37 @@ final class DashboardTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private string $adminToken;
+    private Tender $nearDeadline;
+    private Tender $farDeadline;
+
     protected function setUp(): void
     {
-        self::$client = null;
+        parent::setUp();
+
+        self::$client = self::createClient();
+        // Кэш наборов прав очищается при создании клиента: Redis общий с dev,
+        // кэш мог быть собран до добавления dashboard.view (миграция 20260812120000).
+        static::getContainer()->get(RolePermissionCache::class)->clear();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $user = UserFactory::createOne([
+            'companyId' => $company->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'dash-admin-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->adminToken = $this->loginAs((string) $user->getEmail());
+
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $this->nearDeadline = TenderFactory::createOne(['customerId' => $company->getId()]);
+        $this->nearDeadline->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $this->nearDeadline->setTimeline(['bids_end' => $now->modify('+2 hours')->format('Y-m-d\TH:i:s\Z')]);
+        $this->farDeadline = TenderFactory::createOne(['customerId' => $company->getId()]);
+        $this->farDeadline->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
+        $this->farDeadline->setTimeline(['bids_end' => $now->modify('+60 days')->format('Y-m-d\TH:i:s\Z')]);
+        static::getContainer()->get(EntityManagerInterface::class)->flush();
     }
 
     protected function tearDown(): void
@@ -46,13 +75,7 @@ final class DashboardTest extends WebTestCase
 
     private static function client(): KernelBrowser
     {
-        if (null === self::$client) {
-            self::$client = self::createClient();
-            // Кэш наборов прав очищается при (пере)создании клиента: Redis общий
-            // с dev, кэш мог быть собран до добавления dashboard.view
-            // (миграция 20260812120000) — тест должен видеть свежую матрицу.
-            static::getContainer()->get(RolePermissionCache::class)->clear();
-        }
+        self::$client ??= self::createClient();
 
         return self::$client;
     }
@@ -81,7 +104,7 @@ final class DashboardTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -113,10 +136,7 @@ final class DashboardTest extends WebTestCase
 
     public function testDashboardReturnsCountersAndDeadlines(): void
     {
-        self::client();
-        $token = self::adminToken();
-
-        $client = self::request('GET', DashboardController::URL, $token);
+        $client = self::request('GET', DashboardController::URL, $this->adminToken);
         self::assertResponseStatusCodeSame(200);
 
         $body = self::json($client);
@@ -129,59 +149,35 @@ final class DashboardTest extends WebTestCase
 
     public function testDashboardRejectsInvalidPeriod(): void
     {
-        self::client();
-        $token = self::adminToken();
-
-        $client = self::request('GET', DashboardController::URL, $token, ['period' => 'year']);
+        $client = self::request('GET', DashboardController::URL, $this->adminToken, ['period' => 'year']);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testDashboardPeriodFiltersDeadlines(): void
     {
-        self::client();
-        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $user = UserFactory::createOne([
-            'companyId' => $company->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'dash-period-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $token = self::loginAs((string) $user->getEmail());
-
-        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
-        $near = TenderFactory::createOne(['customerId' => $company->getId()]);
-        $near->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
-        $near->setTimeline(['bids_end' => $now->modify('+2 hours')->format('Y-m-d\TH:i:s\Z')]);
-        $far = TenderFactory::createOne(['customerId' => $company->getId()]);
-        $far->setStatus(TenderStatusEnum::ACCEPTING_BIDS);
-        $far->setTimeline(['bids_end' => $now->modify('+60 days')->format('Y-m-d\TH:i:s\Z')]);
-        static::getContainer()->get(EntityManagerInterface::class)->flush();
-
         // period=day: ближайший дедлайн (через 2 часа) есть, дальний (60 дней) — нет.
-        $client = self::request('GET', DashboardController::URL, $token, ['period' => 'day']);
+        $client = self::request('GET', DashboardController::URL, $this->adminToken, ['period' => 'day']);
         self::assertResponseStatusCodeSame(200);
         $body = self::json($client);
         /** @var list<array{entity_id: string}> $deadlines */
         $deadlines = $body['upcoming_deadlines'];
         $ids = array_column($deadlines, 'entity_id');
-        self::assertContains((string) $near->getId(), $ids);
-        self::assertNotContains((string) $far->getId(), $ids);
+        self::assertContains((string) $this->nearDeadline->getId(), $ids);
+        self::assertNotContains((string) $this->farDeadline->getId(), $ids);
 
         // Без period горизонт не ограничен — оба дедлайна в ответе.
-        $client = self::request('GET', DashboardController::URL, $token);
+        $client = self::request('GET', DashboardController::URL, $this->adminToken);
         self::assertResponseStatusCodeSame(200);
         $body = self::json($client);
         /** @var list<array{entity_id: string}> $deadlines */
         $deadlines = $body['upcoming_deadlines'];
         $ids = array_column($deadlines, 'entity_id');
-        self::assertContains((string) $far->getId(), $ids);
+        self::assertContains((string) $this->farDeadline->getId(), $ids);
     }
 
     public function testTenderStatsByRegion(): void
     {
-        self::client();
-        $token = self::adminToken();
-
-        $client = self::request('GET', TenderStatsController::URL, $token, ['dimension' => 'region']);
+        $client = self::request('GET', TenderStatsController::URL, $this->adminToken, ['dimension' => 'region']);
         self::assertResponseStatusCodeSame(200);
 
         $body = self::json($client);
@@ -191,23 +187,18 @@ final class DashboardTest extends WebTestCase
 
     public function testTenderStatsRejectsInvalidDimension(): void
     {
-        self::client();
-        $token = self::adminToken();
-
-        $client = self::request('GET', TenderStatsController::URL, $token, ['dimension' => 'bogus']);
+        $client = self::request('GET', TenderStatsController::URL, $this->adminToken, ['dimension' => 'bogus']);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testUnauthenticatedReturns401(): void
     {
-        self::client();
         $client = self::request('GET', DashboardController::URL, '');
         self::assertResponseStatusCodeSame(401);
     }
 
     public function testManagerAndAgentCanViewDashboard(): void
     {
-        self::client();
         $company = CompanyFactory::new(['type' => CompanyTypeEnum::BOTH])->approved()->create();
 
         $manager = UserFactory::createOne([
@@ -229,17 +220,5 @@ final class DashboardTest extends WebTestCase
         self::assertResponseStatusCodeSame(200);
         $client = self::request('GET', TenderStatsController::URL, $agentToken, ['dimension' => 'period']);
         self::assertResponseStatusCodeSame(200);
-    }
-
-    private static function adminToken(): string
-    {
-        $company = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $user = UserFactory::createOne([
-            'companyId' => $company->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'dash-admin-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        return self::loginAs((string) $user->getEmail());
     }
 }

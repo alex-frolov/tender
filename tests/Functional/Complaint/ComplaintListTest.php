@@ -31,6 +31,64 @@ final class ComplaintListTest extends WebTestCase
 {
     private static ?KernelBrowser $client = null;
 
+    private string $customerToken;
+    private string $supplierToken;
+    private string $outsiderToken;
+    private string $complaintId;
+    private string $tenderId;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        // (PreparedSubscriber открывает трассу после setUp, см. docs/guard-test/analysis.md:1)
+        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $outsider = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+
+        $customerUser = UserFactory::createOne([
+            'companyId' => $customer->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cmp-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $supplierUser = UserFactory::createOne([
+            'companyId' => $supplier->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cmp-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $outsiderUser = UserFactory::createOne([
+            'companyId' => $outsider->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'cmp-out-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $tender = TenderFactory::createOne([
+            'customerId' => $customer->getId(),
+            'createdBy' => $customer->getId(),
+            'status' => TenderStatusEnum::ACCEPTING_BIDS,
+        ]);
+        $this->tenderId = (string) $tender->getId();
+
+        $this->supplierToken = $this->loginAs((string) $supplierUser->getEmail());
+        $client = self::request(
+            'POST',
+            str_replace('{tenderId}', $this->tenderId, ComplaintCreateController::URL),
+            $this->supplierToken,
+            ['text' => 'Документация ограничивает конкуренцию', 'ground' => 'Нарушение п. 1 ст. 33'],
+        );
+        self::assertResponseStatusCodeSame(201);
+        $complaint = json_decode((string) $client->getResponse()->getContent(), true);
+        self::assertIsArray($complaint);
+        self::assertIsString($complaint['id']);
+        $this->complaintId = $complaint['id'];
+
+        $this->customerToken = $this->loginAs((string) $customerUser->getEmail());
+        $this->outsiderToken = $this->loginAs((string) $outsiderUser->getEmail());
+    }
+
     protected function tearDown(): void
     {
         self::$client = null;
@@ -72,7 +130,7 @@ final class ComplaintListTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -108,116 +166,46 @@ final class ComplaintListTest extends WebTestCase
         return $ids;
     }
 
-    /**
-     * Контекст: жалоба поставщика на тендер заказчика плюс посторонняя компания.
-     *
-     * @return array{customerToken: string, supplierToken: string, outsiderToken: string, complaintId: string, tenderId: string}
-     */
-    private static function context(): array
-    {
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $outsider = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cmp-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cmp-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $outsiderUser = UserFactory::createOne([
-            'companyId' => $outsider->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'cmp-out-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne([
-            'customerId' => $customer->getId(),
-            'createdBy' => $customer->getId(),
-            'status' => TenderStatusEnum::ACCEPTING_BIDS,
-        ]);
-
-        $supplierToken = self::loginAs((string) $supplierUser->getEmail());
-        $client = self::request(
-            'POST',
-            str_replace('{tenderId}', (string) $tender->getId(), ComplaintCreateController::URL),
-            $supplierToken,
-            ['text' => 'Документация ограничивает конкуренцию', 'ground' => 'Нарушение п. 1 ст. 33'],
-        );
-        self::assertResponseStatusCodeSame(201);
-        $complaint = json_decode((string) $client->getResponse()->getContent(), true);
-        self::assertIsArray($complaint);
-        self::assertIsString($complaint['id']);
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'supplierToken' => $supplierToken,
-            'outsiderToken' => self::loginAs((string) $outsiderUser->getEmail()),
-            'complaintId' => $complaint['id'],
-            'tenderId' => (string) $tender->getId(),
-        ];
-    }
-
     public function testFilerSeesOwnComplaint(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request('GET', ComplaintListController::URL, $ctx['supplierToken']);
+        $client = self::request('GET', ComplaintListController::URL, $this->supplierToken);
         self::assertResponseStatusCodeSame(200);
-        self::assertContains($ctx['complaintId'], self::idsOf($client));
+        self::assertContains($this->complaintId, self::idsOf($client));
     }
 
     public function testCustomerSeesComplaintOnOwnTender(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request('GET', ComplaintListController::URL, $ctx['customerToken']);
+        $client = self::request('GET', ComplaintListController::URL, $this->customerToken);
         self::assertResponseStatusCodeSame(200);
-        self::assertContains($ctx['complaintId'], self::idsOf($client));
+        self::assertContains($this->complaintId, self::idsOf($client));
     }
 
     public function testOutsiderSeesNothing(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        $client = self::request('GET', ComplaintListController::URL, $ctx['outsiderToken']);
+        $client = self::request('GET', ComplaintListController::URL, $this->outsiderToken);
         self::assertResponseStatusCodeSame(200);
-        self::assertNotContains($ctx['complaintId'], self::idsOf($client));
+        self::assertNotContains($this->complaintId, self::idsOf($client));
     }
 
     public function testFilterByTender(): void
     {
-        self::client();
-        $ctx = self::context();
-
         $client = self::request(
             'GET',
-            ComplaintListController::URL.'?tender_id='.$ctx['tenderId'],
-            $ctx['customerToken'],
+            ComplaintListController::URL.'?tender_id='.$this->tenderId,
+            $this->customerToken,
         );
         self::assertResponseStatusCodeSame(200);
-        self::assertContains($ctx['complaintId'], self::idsOf($client));
+        self::assertContains($this->complaintId, self::idsOf($client));
     }
 
     public function testInvalidTenderIdIsRejected(): void
     {
-        self::client();
-        $ctx = self::context();
-
-        self::request('GET', ComplaintListController::URL.'?tender_id=not-a-uuid', $ctx['customerToken']);
+        self::request('GET', ComplaintListController::URL.'?tender_id=not-a-uuid', $this->customerToken);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testUnauthorized(): void
     {
-        self::client();
         self::request('GET', ComplaintListController::URL, null);
         self::assertResponseStatusCodeSame(401);
     }

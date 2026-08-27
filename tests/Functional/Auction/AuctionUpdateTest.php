@@ -11,8 +11,12 @@ use App\Auction\Entity\Enum\AuctionStatusTransition;
 use App\Auction\Entity\Enum\AuctionStepModeEnum;
 use App\Auction\Entity\Enum\AuctionTypeEnum;
 use App\Iam\Controller\Auth\TokenController;
+use App\Iam\Entity\Company;
 use App\Iam\Entity\Enum\CompanyTypeEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
+use App\Iam\Entity\User;
+use App\Tender\Entity\Lot;
+use App\Tender\Entity\Tender;
 use App\Tests\Factory\AuctionFactory;
 use App\Tests\Factory\CompanyFactory;
 use App\Tests\Factory\LotFactory;
@@ -41,6 +45,64 @@ final class AuctionUpdateTest extends WebTestCase
     private const STEP_MINOR = 5_000_00;
 
     private static ?KernelBrowser $client = null;
+
+    private Company $customerCompany;
+    private User $customerUser;
+    private User $agentUser;
+    private Company $supplierCompany;
+    private User $supplierUser;
+    private Tender $tender;
+    private Lot $lot;
+    private Auction $auction;
+    private string $customerToken;
+    private string $agentToken;
+    private string $supplierToken;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        self::$client = self::createClient();
+
+        // Фикстуры создаются в setUp → QueryGuard считает их как fixtureQueries
+        $this->customerCompany = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
+        $this->customerUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'up-cust-'.random_int(1000, 999999).'@test.ru',
+        ]);
+        $this->agentUser = UserFactory::createOne([
+            'companyId' => $this->customerCompany->getId(),
+            'role' => UserRoleEnum::AGENT,
+            'email' => 'up-agent-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->supplierCompany = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
+        $this->supplierUser = UserFactory::createOne([
+            'companyId' => $this->supplierCompany->getId(),
+            'role' => UserRoleEnum::ADMIN,
+            'email' => 'up-supp-'.random_int(1000, 999999).'@test.ru',
+        ]);
+
+        $this->tender = TenderFactory::createOne([
+            'nmckMinor' => self::START_MINOR,
+            'customerId' => $this->customerCompany->getId(),
+        ]);
+        $this->lot = LotFactory::createOne(['tender' => $this->tender, 'priceNetMinor' => self::START_MINOR]);
+        $this->auction = AuctionFactory::new()
+            ->forTender($this->tender, $this->lot)
+            ->with([
+                'type' => AuctionTypeEnum::REDUCTION,
+                'stepMode' => AuctionStepModeEnum::FIXED,
+                'bidStepMinor' => self::STEP_MINOR,
+                'stepDurationSec' => 600,
+            ])
+            ->create();
+
+        $this->customerToken = $this->loginAs((string) $this->customerUser->getEmail());
+        $this->agentToken = $this->loginAs((string) $this->agentUser->getEmail());
+        $this->supplierToken = $this->loginAs((string) $this->supplierUser->getEmail());
+    }
 
     protected function tearDown(): void
     {
@@ -79,7 +141,7 @@ final class AuctionUpdateTest extends WebTestCase
         return $client;
     }
 
-    private static function loginAs(string $email): string
+    private function loginAs(string $email): string
     {
         $client = self::client();
         $client->setServerParameter('REMOTE_ADDR', self::uniqueIp());
@@ -99,57 +161,6 @@ final class AuctionUpdateTest extends WebTestCase
         return $body['access_token'];
     }
 
-    /**
-     * @return array{customerToken: string, agentToken: string,
-     *               supplierToken: string, auction: Auction}
-     */
-    private static function customerAuction(): array
-    {
-        self::client();
-        self::getContainer();
-
-        $customer = CompanyFactory::new(['type' => CompanyTypeEnum::CUSTOMER])->approved()->create();
-        $customerUser = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'up-cust-'.random_int(1000, 999999).'@test.ru',
-        ]);
-        $agent = UserFactory::createOne([
-            'companyId' => $customer->getId(),
-            'role' => UserRoleEnum::AGENT,
-            'email' => 'up-agent-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $supplier = CompanyFactory::new(['type' => CompanyTypeEnum::SUPPLIER])->approved()->create();
-        $supplierUser = UserFactory::createOne([
-            'companyId' => $supplier->getId(),
-            'role' => UserRoleEnum::ADMIN,
-            'email' => 'up-supp-'.random_int(1000, 999999).'@test.ru',
-        ]);
-
-        $tender = TenderFactory::createOne([
-            'nmckMinor' => self::START_MINOR,
-            'customerId' => $customer->getId(),
-        ]);
-        $lot = LotFactory::createOne(['tender' => $tender, 'priceNetMinor' => self::START_MINOR]);
-        $auction = AuctionFactory::new()
-            ->forTender($tender, $lot)
-            ->with([
-                'type' => AuctionTypeEnum::REDUCTION,
-                'stepMode' => AuctionStepModeEnum::FIXED,
-                'bidStepMinor' => self::STEP_MINOR,
-                'stepDurationSec' => 600,
-            ])
-            ->create();
-
-        return [
-            'customerToken' => self::loginAs((string) $customerUser->getEmail()),
-            'agentToken' => self::loginAs((string) $agent->getEmail()),
-            'supplierToken' => self::loginAs((string) $supplierUser->getEmail()),
-            'auction' => $auction,
-        ];
-    }
-
     private static function updateUrl(string $auctionId): string
     {
         return str_replace('{auctionId}', $auctionId, AuctionUpdateController::URL);
@@ -157,9 +168,7 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testCustomerUpdatesParams(): void
     {
-        $ctx = self::customerAuction();
-
-        $client = self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        $client = self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'step_duration_sec' => 300,
             'max_extensions' => 3,
             'price_min_limit_minor' => 90_000_000,
@@ -175,9 +184,7 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testCustomerChangesAuctionType(): void
     {
-        $ctx = self::customerAuction();
-
-        $client = self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        $client = self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'type' => 'free_price',
             'step_mode' => 'free',
             'price_max_limit_minor' => 110_000_000,
@@ -191,17 +198,16 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testCustomerUpdatesScheduledAuction(): void
     {
-        $ctx = self::customerAuction();
         $container = self::getContainer();
         $em = $container->get(EntityManagerInterface::class);
         $workflow = $container->get('state_machine.auction');
         self::assertInstanceOf(WorkflowInterface::class, $workflow);
-        $auction = $em->getRepository(Auction::class)->find($ctx['auction']->getId());
+        $auction = $em->getRepository(Auction::class)->find($this->auction->getId());
         self::assertInstanceOf(Auction::class, $auction);
         $workflow->apply($auction, AuctionStatusTransition::SCHEDULE->value);
         $em->flush();
 
-        $client = self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        $client = self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'max_extensions' => 5,
         ]);
         self::assertResponseStatusCodeSame(200);
@@ -213,18 +219,14 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testEmptyBodyReturns422(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken']);
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken);
         self::assertResponseStatusCodeSame(422);
     }
 
     public function testSameValuesReturns422(): void
     {
-        $ctx = self::customerAuction();
-
         // step_duration_sec = 600 — то же, что при создании → нечего менять.
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'step_duration_sec' => 600,
         ]);
         self::assertResponseStatusCodeSame(422);
@@ -232,15 +234,13 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testExplicitNullClearsField(): void
     {
-        $ctx = self::customerAuction();
-
         // Сначала задаём границу, затем явно сбрасываем её в null (PATCH: null = очистить).
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'price_min_limit_minor' => 90_000_000,
         ]);
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        $client = self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'price_min_limit_minor' => null,
         ]);
         self::assertResponseStatusCodeSame(200);
@@ -252,15 +252,13 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testAbsentFieldIsNotCleared(): void
     {
-        $ctx = self::customerAuction();
-
         // price_min_limit_minor НЕ передаётся — существующее значение сохраняется.
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'price_min_limit_minor' => 90_000_000,
         ]);
         self::assertResponseStatusCodeSame(200);
 
-        $client = self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        $client = self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'max_extensions' => 5,
         ]);
         self::assertResponseStatusCodeSame(200);
@@ -272,10 +270,8 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testReductionFixedWithoutStepReturns422(): void
     {
-        $ctx = self::customerAuction();
-
         // Смена на REDUCTION+fixed без шага (свободная цена → фиксированный шаг) — невалидно.
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'type' => 'reduction',
             'step_mode' => 'fixed',
             'bid_step_minor' => null,
@@ -286,10 +282,8 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testCanonicalLotFieldsAreNotEditable(): void
     {
-        $ctx = self::customerAuction();
-
         // price_basis — каноническое поле из лота, не входит в форму → 422 extra fields.
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'price_basis' => 'gross',
         ]);
         self::assertResponseStatusCodeSame(422);
@@ -297,7 +291,6 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testTradingAuctionReturns409(): void
     {
-        $ctx = self::customerAuction();
         $container = self::getContainer();
         $em = $container->get(EntityManagerInterface::class);
         $workflow = $container->get('state_machine.auction');
@@ -305,13 +298,13 @@ final class AuctionUpdateTest extends WebTestCase
         $auctionService = $container->get(AuctionService::class);
         self::assertInstanceOf(AuctionService::class, $auctionService);
 
-        $auction = $em->getRepository(Auction::class)->find($ctx['auction']->getId());
+        $auction = $em->getRepository(Auction::class)->find($this->auction->getId());
         self::assertInstanceOf(Auction::class, $auction);
         $workflow->apply($auction, AuctionStatusTransition::SCHEDULE->value);
         $em->flush();
         $auctionService->startTrading($auction);
 
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['customerToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->customerToken, [
             'step_duration_sec' => 300,
         ]);
         self::assertResponseStatusCodeSame(409);
@@ -319,9 +312,7 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testAgentCannotUpdate(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['agentToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->agentToken, [
             'step_duration_sec' => 300,
         ]);
         self::assertResponseStatusCodeSame(403);
@@ -329,9 +320,7 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testForeignCompanyCannotUpdate(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), $ctx['supplierToken'], [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), $this->supplierToken, [
             'step_duration_sec' => 300,
         ]);
         self::assertResponseStatusCodeSame(404);
@@ -339,9 +328,7 @@ final class AuctionUpdateTest extends WebTestCase
 
     public function testUnauthenticatedReturns401(): void
     {
-        $ctx = self::customerAuction();
-
-        self::request('PATCH', self::updateUrl((string) $ctx['auction']->getId()), '', [
+        self::request('PATCH', self::updateUrl((string) $this->auction->getId()), '', [
             'step_duration_sec' => 300,
         ]);
         self::assertResponseStatusCodeSame(401);
