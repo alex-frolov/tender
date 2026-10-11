@@ -129,6 +129,7 @@ final class RateLimitE2ETest extends WebTestCase
         $body = json_decode($content, true);
         self::assertIsArray($body);
         self::assertSame('Too Many Requests', $body['title'] ?? null);
+        self::assertSame('rate_limited', $body['code'] ?? null);
         self::assertSame(429, $body['status'] ?? null);
     }
 

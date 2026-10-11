@@ -125,6 +125,7 @@ final class RegistrationTest extends WebTestCase
         $body = json_decode($content, true);
         self::assertIsArray($body);
         self::assertSame('Validation error', $body['title'] ?? null);
+        self::assertSame('validation_error', $body['code'] ?? null);
     }
 
     public function testDuplicateInnReturns409(): void

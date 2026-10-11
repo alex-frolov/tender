@@ -31,6 +31,7 @@ final readonly class ForgotPasswordUseCase implements IamUseCase
                 [
                     'type' => 'https://tools.ietf.org/html/rfc6585#section-4',
                     'title' => 'Too Many Requests',
+                    'code' => 'rate_limited',
                     'status' => Response::HTTP_TOO_MANY_REQUESTS,
                     'detail' => 'Password reset cooldown, try later',
                     'retry_after' => $result['retry_after'] ?? 0,

@@ -66,7 +66,9 @@ POST /api/v1/auth/token  {email, password, totp_code?}
 AuthenticationService::authenticate()
    │  email exists? user deleted/blocked? email verified?
    │  password valid? (if 2FA enabled) totp valid?
-   ├── failure ──► 401 invalid_credentials
+   ├── failure ──► 401 invalid_credentials   (anything before the password check,
+   │                                          or a wrong password: not distinguished)
+   ├── password ok, 2FA on, totp missing/wrong ──► 401 two_factor_required
    ▼
 issueTokens(): access_token + refresh_token
    │  markLastLogin() · audit auth.login

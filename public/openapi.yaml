@@ -72,13 +72,15 @@ paths:
                                     token_type: { type: string, example: Bearer }
                 '401':
                     description: |
-                        Bad credentials, or second factor required. When 2FA is enabled the error
-                        carries code=totp_required / two_factor_required (see ErrorCode registry) —
-                        retry the same request with totp_code.
+                        Sign-in refused. Two codes, deliberately no more:
+                          * `invalid_credentials` — wrong email or password, and equally an unknown,
+                            deleted or blocked user or an unverified email: these are told apart
+                            only in metrics, so the response does not reveal whether an account
+                            exists or what state it is in;
+                          * `two_factor_required` — the password is correct, 2FA is enabled and
+                            totp_code is missing or wrong (the detail says which): retry the same
+                            request with totp_code.
                     $ref: '#/components/responses/Unauthorized'
-                '403':
-                    description: Email not verified / user deleted / blocked
-                    $ref: '#/components/responses/Forbidden'
 
     /auth/refresh:
         post:
@@ -735,7 +737,7 @@ paths:
                     entitled to take part.
 
                 Visibility does not grant participation: submitting a bid to a closed tender
-                still requires the contract (409 contract_required) — see
+                still requires the contract (409 access_denied) — see
                 GET /tenders/{tenderId}/access.
                 Access: tenders.board.view (all company roles).
             parameters:
@@ -1116,6 +1118,24 @@ paths:
             tags: [bids]
             summary: Submit a bid; re-submitting for a lot before the deadline replaces it
             operationId: submitBid
+            description: |
+                Submitting for a lot again before the deadline replaces the previous bid
+                (FR-1.2.5); the content is encrypted until opening (FR-1.2.2).
+
+                A closed tender (access_type=contract_holders) additionally requires an
+                active multi_use contract with the customer (FR-1.5.14): without it the
+                answer is 409 {access_denied} and the detail names the reason
+                (contract_required | contract_expired | contract_terminated), the same
+                values as GET /tenders/{tenderId}/access.
+
+                lot_id is required whenever the tender has lots (422 validation_error
+                otherwise) and must be omitted when it has none: admission to trading is
+                matched by the (tender, lot) pair, so a lot-less bid would never admit its
+                supplier to a lot auction.
+
+                A tender created with bids_required=false takes no bids at all — it never
+                enters accepting_bids — and answers 409 for every submission.
+                Access: the bids.submit permission.
             parameters:
                 - { $ref: '#/components/parameters/TenderId' }
                 - { $ref: '#/components/parameters/IdempotencyKey' }
@@ -1132,12 +1152,8 @@ paths:
                             schema: { $ref: '#/components/schemas/Bid' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: >-
-                        The tender is not accepting bids, or it requires no participation bid at all
-                        (bids_required=false — there is nothing to submit).
-                    content:
-                        application/json:
-                            schema: { $ref: '#/components/schemas/Error' }
+                    description: 'Not accepting bids, a tender that requires no participation bid at all (bids_required=false), or a closed tender without a contract (code: state_transition_forbidden | access_denied)'
+                    $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
 
     /bids/{bidId}/withdraw:
@@ -1286,7 +1302,7 @@ paths:
                 Validation: a step is required for REDUCTION+fixed; limits must be consistent;
                 scheduled_start_at (if set) must be in the future.
                 Access: the auction.control permission (admin/manager; agent — 403); customer only
-                (tender tenant). A duplicate auction for the lot → 409 {auction_exists}.
+                (tender tenant). A duplicate auction for the lot → 409 {conflict}.
             requestBody:
                 required: true
                 content:
@@ -1430,6 +1446,9 @@ paths:
                 bid fixes start_price_minor (price discovery, is_first_price=true).
                 Admitted participants only and only in TRADE;
                 idempotency — the Idempotency-Key header.
+                For a closed tender (access_type=contract_holders) the contract is
+                re-checked here, not only at bid submission: it may have been terminated
+                or have expired after the admission — 409 {access_denied}.
                 Access: the auction.bid permission (admin/manager; agent — 403).
             parameters:
                 - { $ref: '#/components/parameters/AuctionId' }
@@ -1449,7 +1468,7 @@ paths:
                 '403': { $ref: '#/components/responses/Forbidden' }
                 '404': { $ref: '#/components/responses/NotFound' }
                 '409':
-                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed)'
+                    description: 'Bid rejected (code: bid_rejected, duplicate_bid, auction_not_trade, auction_window_closed, access_denied)'
                     $ref: '#/components/responses/Conflict'
                 '422': { $ref: '#/components/responses/ValidationError' }
                 '429': { $ref: '#/components/responses/RateLimited' }
@@ -3492,7 +3511,14 @@ components:
             required: [supplier_id]
             properties:
                 supplier_id: { type: string, format: uuid }
-                lot_id: { type: string, format: uuid, nullable: true }
+                lot_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: |
+                        The lot the bid is for. Required when the tender has lots (422
+                        otherwise): admission to trading is matched by the (tender, lot)
+                        pair. Null only for a tender without lots (a single subject).
                 part1:
                     type: object
                     description: 'Consent, characteristics (confidential until opening)'
@@ -4180,60 +4206,74 @@ components:
         # ---------- Errors (RFC 9457) ----------
         Error:
             type: object
-            required: [type, title, status, detail, code, trace_id]
+            description: |
+                Error body (RFC 9457 subset) for every error this API produces itself — domain
+                exceptions, security (401/403) and the auth endpoints. `title` is always present;
+                `code` is present for all of them (see ErrorCode); `detail` when there is a
+                human-readable explanation. Validation errors (422) carry the offending fields in
+                `detail` as "field: message" lines. There is no `trace_id` member, and `type`/
+                `status` are sent only by 429 (with `retry_after`, seconds — the same value as the
+                Retry-After header): the HTTP status is the status line of the response.
+                Requests that never reach the application (unknown route, uncaught server
+                failure) are rendered by the framework and may not follow this schema.
+            required: [title]
             properties:
-                type:
-                    type: string
-                    description: Error type URI (or about:blank)
-                    example: about:blank
                 title:
                     type: string
                     example: State conflict
-                status:
-                    type: integer
-                    example: 409
-                detail:
-                    type: string
                 code:
                     type: string
-                    description: Code from the error registry (see below)
+                    description: Code from the error registry (ErrorCode)
                     example: bid_rejected
-                trace_id:
+                detail:
                     type: string
-                    format: uuid
-                    description: For end-to-end tracing
-                errors:
-                    type: array
-                    description: Validation details (for 422)
-                    items:
-                        type: object
-                        properties:
-                            field: { type: string }
-                            message: { type: string }
+                    example: 'Only admitted participants can place bids'
+                type:
+                    type: string
+                    description: 429 only — 'https://tools.ietf.org/html/rfc6585#section-4'
+                status:
+                    type: integer
+                    description: 429 only — duplicates the HTTP status
+                retry_after:
+                    type: integer
+                    description: 429 only — seconds until the limit resets (also in Retry-After)
 
         ErrorCode:
             type: string
             description: |
-                Error code registry:
-                - validation_error (422) — invalid input data
-                - unauthorized (401) — missing/expired token
-                - forbidden (403) — no permissions (incl. a private document)
+                Error code registry (every code the API sends; the list is checked against
+                the source — a code missing here is a spec bug):
+                - validation_error (422) — invalid input data, incl. a missing cancellation reason
+                  or code=other without text; the fields are listed in detail
+                - invalid_credentials (401) — missing/expired/invalid token, wrong sign-in data
+                  (POST /auth/token does not tell bad credentials from a blocked/unverified user),
+                  invalid refresh token
+                - two_factor_required (401) — POST /auth/token: the password is correct, a TOTP
+                  code is missing or wrong; retry with totp_code
+                - invalid_verification_token (401) — POST /auth/email/verify: unknown/expired token
+                - invalid_reset_token (401) — POST /auth/password/reset: unknown/expired/used token
+                - forbidden (403) — no permissions
+                - document_forbidden (403) — another company's private document
+                - org_pending (403) — the company is not approved by the superadmin: the customer cannot create tenders, the performer cannot submit bids
                 - not_found (404) — resource not found / tender not visible
+                - conflict (409) — generic state conflict (e.g. a second auction for a lot)
                 - state_transition_forbidden (409) — invalid status transition
-                - bid_rejected (409) — the bid failed validation (price/step/limits)
-                - duplicate_bid (409) — duplicate bid (idempotency)
+                - bid_rejected (409) — the bid failed validation (price/step/limits, not admitted)
+                - duplicate_bid (409) — one price proposal per participant per window (PRICE_REQUEST)
                 - auction_not_trade (409) — the auction is not in TRADE
                 - auction_window_closed (409) — the trading window is closed by time (planned_end_at has passed) while the auction is still in TRADE
+                - no_winner (409) — no accepted bids to pick a winner from
+                - wrong_auction_type (409) — automatic winner selection outside REDUCTION
+                - invalid_winner_bid (409) — the bid is not an accepted proposal of this auction
                 - contract_required (409) — DONE without a valid contract (B2)
-                - access_denied (409) — closed tender without an active framework contract
-                - org_pending (403) — the company is not approved by the superadmin: the customer cannot create tenders, the performer cannot submit bids
-                - email_not_verified (403) — the user's email is not verified
-                - two_factor_required (401) — second factor (TOTP) required to complete sign-in; retry with totp_code
-                - contract_expired (409) — contract expired/terminated
+                - access_denied (409) — closed tender without an active framework contract; the
+                  reason (contract_required | contract_expired | contract_terminated) is in detail
                 - idempotency_conflict (409) — repeated Idempotency-Key with a different payload
-                - cancel_reason_required (422) — cancellation without a reason
-                - other_reason_required (422) — code=other without text
                 - rating_not_allowed (409) — rating outside DONE/DONE_BY_CLAIM
+                - duplicate_favorite (409) — the tender is already in favorites
+                - last_active_admin (409) — removing/demoting the last active admin of a company
+                - export_not_ready (409) — downloading an export that is not ready yet
                 - lots_sum_mismatch (422) — Σ lots ≠ НМЦК
                 - rate_limited (429) — limit exceeded (Retry-After)
-                - internal_error (500) — internal error
+                - plugin_configuration (500) — the procurement plugin is misconfigured
+                - event_schema_violation (500) — an outgoing event failed its JSON Schema

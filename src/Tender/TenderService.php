@@ -176,7 +176,7 @@ final class TenderService
      * не раскрывается.
      *
      * Видимость ≠ участие: подача заявки в закрытый тендер по-прежнему требует
-     * договора (ContractAccessChecker, 409 contract_required), а мутации идут
+     * договора (ContractAccessChecker, 409 access_denied), а мутации идут
      * через resolveTender() с tenant-фильтром.
      *
      * @throws NotFoundException если тендер не найден или невидим компании актора
