@@ -4,97 +4,8 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "9eed984b448d0d644344ac306343f812",
+    "content-hash": "fbc3bf5b21d5c7cfacfe2f908595141f",
     "packages": [
-        {
-            "name": "alex-frolov/scalar-symfony",
-            "version": "v0.1.0",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/alex-frolov/scalar-symfony.git",
-                "reference": "27b362228897c76d276db26bce5ae7a4d28734a1"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/alex-frolov/scalar-symfony/zipball/27b362228897c76d276db26bce5ae7a4d28734a1",
-                "reference": "27b362228897c76d276db26bce5ae7a4d28734a1",
-                "shasum": ""
-            },
-            "require": {
-                "php": ">=8.2",
-                "symfony/config": "^6.4 || ^7.2 || ^8.0",
-                "symfony/dependency-injection": "^6.4 || ^7.2 || ^8.0",
-                "symfony/framework-bundle": "^6.4 || ^7.2 || ^8.0",
-                "symfony/http-foundation": "^6.4 || ^7.2 || ^8.0",
-                "symfony/http-kernel": "^6.4 || ^7.2 || ^8.0",
-                "symfony/routing": "^6.4 || ^7.2 || ^8.0",
-                "symfony/twig-bundle": "^6.4 || ^7.2 || ^8.0"
-            },
-            "require-dev": {
-                "friendsofphp/php-cs-fixer": "^3.64",
-                "phpstan/phpstan": "^2.1",
-                "phpunit/phpunit": "^10.5 || ^11.5",
-                "symfony/browser-kit": "^6.4 || ^7.2 || ^8.0",
-                "symfony/phpunit-bridge": "^6.4 || ^7.2 || ^8.0",
-                "symfony/security-bundle": "^6.4 || ^7.2 || ^8.0",
-                "symfony/security-core": "^6.4 || ^7.2 || ^8.0"
-            },
-            "suggest": {
-                "symfony/security-core": "Required for the attribute-based access control mode"
-            },
-            "type": "symfony-bundle",
-            "extra": {
-                "branch-alias": {
-                    "dev-main": "0.1.x-dev"
-                }
-            },
-            "autoload": {
-                "psr-4": {
-                    "FrolovGuru\\ScalarSymfony\\": "src/"
-                }
-            },
-            "autoload-dev": {
-                "psr-4": {
-                    "FrolovGuru\\ScalarSymfony\\Tests\\": "tests/"
-                }
-            },
-            "scripts": {
-                "test": [
-                    "phpunit"
-                ],
-                "analyse": [
-                    "phpstan analyse"
-                ],
-                "fix": [
-                    "php-cs-fixer fix --allow-risky=yes"
-                ]
-            },
-            "license": [
-                "MIT"
-            ],
-            "authors": [
-                {
-                    "name": "Aleksander Frolov",
-                    "email": "aleksander@frolov.guru",
-                    "homepage": "https://frolov.guru"
-                }
-            ],
-            "description": "Render modern Scalar API References in Symfony from any OpenAPI document",
-            "keywords": [
-                "api-docs",
-                "api-reference",
-                "bundle",
-                "openapi",
-                "scalar",
-                "swagger",
-                "symfony"
-            ],
-            "support": {
-                "source": "https://github.com/alex-frolov/scalar-symfony/tree/v0.1.0",
-                "issues": "https://github.com/alex-frolov/scalar-symfony/issues"
-            },
-            "time": "2026-08-17T10:51:20+00:00"
-        },
         {
             "name": "doctrine/collections",
             "version": "2.6.0",
@@ -2114,6 +2025,81 @@
                 "source": "https://github.com/php-fig/log/tree/3.0.2"
             },
             "time": "2024-09-11T13:17:53+00:00"
+        },
+        {
+            "name": "scalar/symfony",
+            "version": "v0.2.0",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/scalar/symfony.git",
+                "reference": "d89d8ae8a3cae69a8a037d73454ff1d0e1dec957"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/scalar/symfony/zipball/d89d8ae8a3cae69a8a037d73454ff1d0e1dec957",
+                "reference": "d89d8ae8a3cae69a8a037d73454ff1d0e1dec957",
+                "shasum": ""
+            },
+            "require": {
+                "php": "^8.2",
+                "symfony/config": "^6.4 || ^7.2 || ^8.0",
+                "symfony/dependency-injection": "^6.4 || ^7.2 || ^8.0",
+                "symfony/framework-bundle": "^6.4 || ^7.2 || ^8.0",
+                "symfony/http-foundation": "^6.4 || ^7.2 || ^8.0",
+                "symfony/http-kernel": "^6.4 || ^7.2 || ^8.0",
+                "symfony/routing": "^6.4 || ^7.2 || ^8.0",
+                "symfony/twig-bundle": "^6.4 || ^7.2 || ^8.0"
+            },
+            "require-dev": {
+                "friendsofphp/php-cs-fixer": "^3.64",
+                "phpstan/phpstan": "^2.1",
+                "phpunit/phpunit": "^10.5 || ^11.5",
+                "symfony/browser-kit": "^6.4 || ^7.2 || ^8.0",
+                "symfony/phpunit-bridge": "^6.4 || ^7.2 || ^8.0",
+                "symfony/security-bundle": "^6.4 || ^7.2 || ^8.0",
+                "symfony/security-core": "^6.4 || ^7.2 || ^8.0"
+            },
+            "suggest": {
+                "symfony/security-bundle": "Enable Symfony Security to use attribute-based access control"
+            },
+            "type": "symfony-bundle",
+            "extra": {
+                "branch-alias": {
+                    "dev-main": "0.2.x-dev"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Scalar\\Symfony\\": "src/"
+                }
+            },
+            "notification-url": "https://packagist.org/downloads/",
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Aleksander Frolov",
+                    "email": "aleksander@frolov.guru",
+                    "homepage": "https://frolov.guru"
+                }
+            ],
+            "description": "Render modern Scalar API References in Symfony from any OpenAPI document",
+            "homepage": "https://github.com/scalar/symfony",
+            "keywords": [
+                "api-docs",
+                "api-reference",
+                "bundle",
+                "openapi",
+                "scalar",
+                "swagger",
+                "symfony"
+            ],
+            "support": {
+                "issues": "https://github.com/scalar/symfony/issues",
+                "source": "https://github.com/scalar/symfony"
+            },
+            "time": "2026-09-18T09:27:23+00:00"
         },
         {
             "name": "symfony/amqp-messenger",
@@ -8861,16 +8847,16 @@
         },
         {
             "name": "league/commonmark",
-            "version": "2.10.0",
+            "version": "2.10.3",
             "source": {
                 "type": "git",
                 "url": "https://github.com/thephpleague/commonmark.git",
-                "reference": "d2d1aa8b35e072966c89bc0c66cf926e56767dc4"
+                "reference": "6efbd9c472b91db0a3350fcd601c8332c2382e1f"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/thephpleague/commonmark/zipball/d2d1aa8b35e072966c89bc0c66cf926e56767dc4",
-                "reference": "d2d1aa8b35e072966c89bc0c66cf926e56767dc4",
+                "url": "https://api.github.com/repos/thephpleague/commonmark/zipball/6efbd9c472b91db0a3350fcd601c8332c2382e1f",
+                "reference": "6efbd9c472b91db0a3350fcd601c8332c2382e1f",
                 "shasum": ""
             },
             "require": {
@@ -8964,7 +8950,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2026-08-11T16:06:25+00:00"
+            "time": "2026-09-21T13:07:34+00:00"
         },
         {
             "name": "league/config",

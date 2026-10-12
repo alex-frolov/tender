@@ -1453,14 +1453,20 @@ use Symfony\Component\Config\Loader\ParamConfigurator as Param;
  *     },
  * }
  * @psalm-type ScalarSymfonyConfig = array{
- *     url?: scalar|Param|null, // Public absolute or relative URL of your OpenAPI document.
- *     cdn?: scalar|Param|null, // URL of the Scalar API Reference standalone bundle. // Default: "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.65.1"
+ *     url?: scalar|Param|null, // Absolute or relative document URL fetched by the browser. // Default: null
+ *     content?: scalar|Param|null, // Raw JSON or YAML embedded in the page. Overrides url. // Default: null
+ *     file?: scalar|Param|null, // Local file embedded in the page. Use %kernel.project_dir% for project-relative paths. Overrides content and url. // Default: null
+ *     sources?: list<array{ // Default: []
+ *         title?: scalar|Param|null, // Default: null
+ *         slug?: scalar|Param|null, // Default: null
+ *         url?: scalar|Param|null, // Default: null
+ *         content?: scalar|Param|null, // Default: null
+ *         file?: scalar|Param|null, // Default: null
+ *         default?: bool|Param, // Default: false
+ *     }>,
+ *     cdn?: scalar|Param|null, // URL of the Scalar API Reference standalone bundle. // Default: "https://cdn.jsdelivr.net/npm/@scalar/api-reference"
  *     path?: scalar|Param|null, // Path of the API reference route. // Default: "/scalar"
- *     configuration?: array{ // Well-known options merged into the Scalar.createApiReference() configuration.
- *         theme?: scalar|Param|null, // Scalar theme: default, alternate, none, or any theme shipped with Scalar. // Default: "default"
- *         _integration?: scalar|Param|null, // Integration identifier sent to Scalar (used for their usage stats). // Default: "symfony"
- *         metaData?: list<mixed>,
- *     },
+ *     configuration?: list<mixed>,
  *     scalar_options?: list<mixed>,
  *     access_control?: array{ // Access control for the API reference route.
  *         mode?: "public"|"attribute"|Param, // "public" — everyone may view the docs; "attribute" — require a security attribute. // Default: "public"

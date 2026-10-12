@@ -1,7 +1,4 @@
 {
-    "alex-frolov/scalar-symfony": {
-        "version": "dev-main"
-    },
     "dama/doctrine-test-bundle": {
         "version": "v8.6.0"
     },
@@ -82,6 +79,9 @@
             "tests/bootstrap.php",
             "bin/phpunit"
         ]
+    },
+    "scalar/symfony": {
+        "version": "v0.2.0"
     },
     "symfony/console": {
         "version": "8.1",
