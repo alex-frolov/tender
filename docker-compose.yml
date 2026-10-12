@@ -44,6 +44,12 @@ services:
       redis: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
       mercure: { condition: service_healthy }
+    extra_hosts:
+      - "packagist.org:79.127.216.111"
+      - "repo.packagist.org:169.150.247.40"
+      - "api.github.com:140.82.121.6"
+      - "raw.githubusercontent.com:185.199.111.133"
+      - "codeload.github.com:140.82.121.10"
 
   web:
     image: nginx:1.27-alpine

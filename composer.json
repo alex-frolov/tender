@@ -9,7 +9,6 @@
         "ext-iconv": "*",
         "ext-redis": "*",
         "ext-sodium": "*",
-        "alex-frolov/scalar-symfony": "^0.1",
         "doctrine/doctrine-bundle": "^3.3",
         "doctrine/doctrine-migrations-bundle": "^4.0",
         "doctrine/orm": "^3.6",
@@ -17,6 +16,7 @@
         "openspout/openspout": "^5.10",
         "opis/json-schema": "^2",
         "promphp/prometheus_client_php": "^2.15",
+        "scalar/symfony": "^0.2.0",
         "symfony/amqp-messenger": "8.1.*",
         "symfony/console": "8.1.*",
         "symfony/dotenv": "8.1.*",
@@ -103,7 +103,7 @@
         ],
         "test": "composer test:prepare && php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/phpunit",
         "test:parallel": "bash scripts/test-parallel-prepare.sh",
-        "test:smoke": "composer test:prepare && php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/phpunit --configuration phpunit.smoke.xml --group=smoke",
+        "test:smoke": "composer test:prepare && php -d memory_limit=${PHP_MEMORY_LIMIT:-1G} vendor/bin/phpunit --group=smoke",
         "test:coverage": "bash scripts/test-coverage.sh",
         "test:parallel:full": [
             "@test:parallel",
@@ -129,12 +129,12 @@
         }
     },
     "require-dev": {
-        "alex-frolov/query-guard": "^0.1.0",
+        "alex-frolov/query-guard": "^1.0",
         "brianium/paratest": "^7.24",
         "dama/doctrine-test-bundle": "^8.6",
         "doctrine/doctrine-fixtures-bundle": "^4.3",
         "friendsofphp/php-cs-fixer": "^3.95",
-        "league/commonmark": "^2",
+        "league/commonmark": "^2.10.3",
         "phparkitect/phparkitect": "^1.3",
         "phpstan/phpstan": "^2.2",
         "phpstan/phpstan-symfony": "^2.0",
@@ -142,10 +142,5 @@
         "symfony/browser-kit": "8.1.*",
         "symfony/css-selector": "8.1.*",
         "zenstruck/foundry": "^2.11"
-    },
-    "repositories": [{
-        "name": "scalar-symfony",
-        "type": "vcs",
-        "url": "https://github.com/alex-frolov/scalar-symfony.git"
-    }]
+    }
 }

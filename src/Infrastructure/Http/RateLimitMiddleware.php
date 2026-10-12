@@ -95,6 +95,7 @@ final class RateLimitMiddleware implements EventSubscriberInterface
                 [
                     'type' => 'https://tools.ietf.org/html/rfc6585#section-4',
                     'title' => 'Too Many Requests',
+                    'code' => 'rate_limited',
                     'status' => Response::HTTP_TOO_MANY_REQUESTS,
                     'detail' => 'Rate limit exceeded',
                     'retry_after' => $hit->getRetryAfter()->getTimestamp() - time(),

@@ -61,6 +61,14 @@ final class AuthenticationTest extends WebTestCase
         parent::tearDown();
     }
 
+    /** Код ошибки из тела ответа (ErrorCode). */
+    private static function errorCode(KernelBrowser $client): mixed
+    {
+        $body = json_decode((string) $client->getResponse()->getContent(), true);
+
+        return \is_array($body) ? ($body['code'] ?? null) : null;
+    }
+
     /**
      * Один клиент на тест: createClient() можно вызвать только один раз
      * (Symfony 8.1: повторное создание после boot запрещено).
@@ -234,13 +242,21 @@ final class AuthenticationTest extends WebTestCase
         $user->enableTwoFactor($secret);
         static::getContainer()->get(EntityManagerInterface::class)->flush();
 
-        // без кода → 401
+        // без кода → 401 two_factor_required: пароль верен, клиент должен спросить TOTP
         $client = self::post(TokenController::URL, ['email' => self::EMAIL, 'password' => self::PASSWORD]);
         self::assertResponseStatusCodeSame(401);
+        self::assertSame('two_factor_required', self::errorCode($client));
 
-        // с неверным кодом → 401
+        // с неверным кодом → тот же код: шаг TOTP не пройден
         $client = self::post(TokenController::URL, ['email' => self::EMAIL, 'password' => self::PASSWORD, 'totp_code' => '000000']);
         self::assertResponseStatusCodeSame(401);
+        self::assertSame('two_factor_required', self::errorCode($client));
+
+        // неверный пароль при включённой 2FA → invalid_credentials: о 2FA узнаёт
+        // только тот, кто знает пароль
+        $client = self::post(TokenController::URL, ['email' => self::EMAIL, 'password' => 'wrong-password']);
+        self::assertResponseStatusCodeSame(401);
+        self::assertSame('invalid_credentials', self::errorCode($client));
 
         // с верным кодом → 200
         $client = self::post(TokenController::URL, ['email' => self::EMAIL, 'password' => self::PASSWORD, 'totp_code' => $totp->generate($secret)]);

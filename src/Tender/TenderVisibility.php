@@ -20,7 +20,7 @@ use Symfony\Component\Uid\Uuid;
  * (Auction: GET /auctions, состояние аукциона) спрашивают только этот контракт,
  * а не собирают условие заново. Видимость НЕ даёт права участия: подача заявки
  * в закрытый тендер по-прежнему проверяется ContractAccessChecker (409
- * contract_required), а live-торги — R7 (AuctionStreamVoter).
+ * access_denied), а live-торги — R7 (AuctionStreamVoter).
  *
  * Реализация — App\Tender\Service\TenderVisibilityService.
  */

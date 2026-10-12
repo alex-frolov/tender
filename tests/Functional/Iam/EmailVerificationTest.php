@@ -409,6 +409,7 @@ final class EmailVerificationTest extends WebTestCase
         $body = json_decode((string) $client->getResponse()->getContent(), true);
         self::assertIsArray($body);
         self::assertSame('Too Many Requests', $body['title'] ?? null);
+        self::assertSame('rate_limited', $body['code'] ?? null);
     }
 
     public function testUnverifiedUserCannotLogin(): void

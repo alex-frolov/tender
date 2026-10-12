@@ -27,13 +27,17 @@ Errors follow the Problem Details shape with machine-readable codes:
 
 | HTTP | title | code (examples) | Source |
 |---|---|---|---|
-| 401 | Unauthorized | `invalid_credentials`, `invalid_verification_token`, `invalid_reset_token` | security component / auth endpoints |
-| 403 | Forbidden | `forbidden` | security component |
-| 404 | Not Found | `not_found`, `user_not_found`, `company_not_found` | domain services |
+| 401 | Unauthorized | `invalid_credentials`, `two_factor_required`, `invalid_verification_token`, `invalid_reset_token` | security component / auth endpoints |
+| 403 | Forbidden | `forbidden`, `document_forbidden`, `org_pending` | security component / domain services |
+| 404 | Not Found | `not_found` | domain services |
 | 409 | Conflict | `conflict`, `state_transition_forbidden`, `idempotency_conflict`, `duplicate_bid`, `bid_rejected`, `auction_not_trade`, `duplicate_favorite`, `last_active_admin` | domain services |
-| 422 | Unprocessable Entity | (validation) | form validation |
-| 429 | Too Many Requests | (rate limit) | rate limiter |
-| 500 | Internal Server Error | `event_schema_violation` | schema guard / unexpected |
+| 422 | Unprocessable Entity | `validation_error`, `lots_sum_mismatch` | form validation / domain services |
+| 429 | Too Many Requests | `rate_limited` (+ `type`, `status`, `retry_after`) | rate limiter / email cooldowns |
+| 500 | Internal Server Error | `event_schema_violation`, `plugin_configuration` | schema guard / plugin config |
+
+The full list is the `ErrorCode` registry in `public/openapi.yaml`;
+`tests/Unit/Shared/OpenApiErrorCodeRegistryTest.php` fails when the registry and the codes in
+`src/` drift apart.
 
 `JsonApiExceptionSubscriber` converts any `ApiException` into the JSON body. The security component
 (`ApiAccessDeniedHandler`) produces the 401/403 bodies before the controller runs.

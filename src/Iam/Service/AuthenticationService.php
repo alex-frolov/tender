@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Iam\Service;
 
+use App\Iam\Entity\Enum\LoginFailureEnum;
 use App\Iam\Entity\Enum\UserRoleEnum;
 use App\Iam\Entity\Enum\UserStatusEnum;
 use App\Iam\Entity\RefreshToken;
@@ -19,14 +20,16 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
  *
  * Правила:
  * - пользователь должен существовать, не быть удалённым/заблокированным;
- * - email должен быть подтверждён (FR-1.5.5) — иначе 403;
+ * - email должен быть подтверждён (FR-1.5.5);
  * - при включённой 2FA код TOTP обязателен;
  * - при успехе: last_login_at обновляется, refresh-токен сохраняется.
  *
  * Наблюдаемость: исход каждой попытки пишется в
- * auth_logins_total{outcome}. Причина различается только В МЕТРИКЕ — наружу
- * по-прежнему единый 401 invalid_credentials (контракт API не раскрывает,
- * что именно не так).
+ * auth_logins_total{outcome}. Наружу причин всего две (LoginFailureEnum):
+ * всё до проверки пароля и сам неверный пароль — единый 401
+ * invalid_credentials (не раскрываем существование и состояние аккаунта);
+ * верный пароль без кода или с неверным кодом при включённой 2FA — 401
+ * two_factor_required, иначе клиент не узнает, что нужно спросить TOTP.
  */
 final readonly class AuthenticationService
 {
@@ -42,23 +45,23 @@ final readonly class AuthenticationService
     }
 
     /**
-     * Проверка учётных данных. Возвращает пользователя или null, если
-     * email/пароль неверны (не раскрываем, что именно не так).
+     * Проверка учётных данных. Возвращает пользователя или причину отказа
+     * (см. LoginFailureEnum — какие причины различимы снаружи и почему).
      */
-    public function authenticate(string $email, string $password, ?string $totpCode = null): ?User
+    public function authenticate(string $email, string $password, ?string $totpCode = null): User|LoginFailureEnum
     {
         $user = $this->em->getRepository(User::class)->findOneBy(['email' => $email]);
         if (null === $user) {
             $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_UNKNOWN_USER);
 
-            return null;
+            return LoginFailureEnum::INVALID_CREDENTIALS;
         }
 
         // удалённый пользователь не может логиниться (email замаскирован — find по email всё равно не сработает)
         if ($user->isDeleted() || UserStatusEnum::BLOCKED === $user->getVerificationStatus()) {
             $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_BLOCKED);
 
-            return null;
+            return LoginFailureEnum::INVALID_CREDENTIALS;
         }
 
         // email не подтверждён (FR-1.5.5): invited/email_pending — действия запрещены
@@ -67,14 +70,14 @@ final readonly class AuthenticationService
             || UserStatusEnum::EMAIL_PENDING === $user->getVerificationStatus()) {
             $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_UNVERIFIED);
 
-            return null;
+            return LoginFailureEnum::INVALID_CREDENTIALS;
         }
 
         if (null === $user->getPasswordHash()
             || !$this->passwordHasher->isPasswordValid($user, $password)) {
             $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_BAD_CREDENTIALS);
 
-            return null;
+            return LoginFailureEnum::INVALID_CREDENTIALS;
         }
 
         if ($user->isTwoFactorEnabled()) {
@@ -82,7 +85,7 @@ final readonly class AuthenticationService
             if (null === $secret || null === $totpCode || !$this->totp->verify($secret, $totpCode)) {
                 $this->authMetrics->loginAttempt(AuthMetricsCollector::LOGIN_2FA_REQUIRED);
 
-                return null;
+                return LoginFailureEnum::TWO_FACTOR_REQUIRED;
             }
         }
 
