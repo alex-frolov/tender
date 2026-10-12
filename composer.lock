@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "e3b18b6edff106d1f0a6e37d62026a1e",
+    "content-hash": "9eed984b448d0d644344ac306343f812",
     "packages": [
         {
             "name": "alex-frolov/scalar-symfony",
@@ -7686,16 +7686,16 @@
     "packages-dev": [
         {
             "name": "alex-frolov/query-guard",
-            "version": "v0.1.0",
+            "version": "v1.0.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/alex-frolov/query-guard.git",
-                "reference": "42defbb632752760e2131909b68e32a2c4332269"
+                "reference": "4308b061549ff51e9455cf8edacbaa26687c5615"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/alex-frolov/query-guard/zipball/42defbb632752760e2131909b68e32a2c4332269",
-                "reference": "42defbb632752760e2131909b68e32a2c4332269",
+                "url": "https://api.github.com/repos/alex-frolov/query-guard/zipball/4308b061549ff51e9455cf8edacbaa26687c5615",
+                "reference": "4308b061549ff51e9455cf8edacbaa26687c5615",
                 "shasum": ""
             },
             "require": {
@@ -7714,6 +7714,7 @@
             },
             "suggest": {
                 "doctrine/dbal": "Doctrine adapter: query interception via a DBAL middleware (^3.0 || ^4.0)",
+                "doctrine/orm": "Doctrine adapter: without it findings cannot name the lazy-loaded association, and n-plus-one stays a warning instead of an error (^2.20 || ^3.0)",
                 "illuminate/database": "Eloquent adapter: query interception via DB::listen"
             },
             "type": "library",
@@ -7724,7 +7725,7 @@
                     ]
                 },
                 "branch-alias": {
-                    "dev-main": "0.1.x-dev"
+                    "dev-main": "1.x-dev"
                 }
             },
             "autoload": {
@@ -7760,7 +7761,7 @@
                 "issues": "https://github.com/alex-frolov/query-guard/issues",
                 "source": "https://github.com/alex-frolov/query-guard"
             },
-            "time": "2026-08-27T12:15:31+00:00"
+            "time": "2026-09-12T22:52:01+00:00"
         },
         {
             "name": "brianium/paratest",
